@@ -24,12 +24,16 @@ OBS_DIM = 4 * (TOPO_NEI_MAX + 1) + 4 + 2 * NUM_OBS_GRID_MAX  # 192
 PASS = "\033[92m PASS\033[0m"
 FAIL = "\033[91m FAIL\033[0m"
 
+_failed_checks = []
+
 def check(name, cond, extra=""):
     tag = PASS if cond else FAIL
     msg = f"  [{tag}] {name}"
     if extra:
         msg += f"  ({extra})"
     print(msg)
+    if not cond:
+        _failed_checks.append(name)
     return cond
 
 
@@ -207,15 +211,22 @@ def test_physics_ball_repulsion():
     key = jax.random.PRNGKey(3)
     _, state = env.reset(key)
 
-    # Stack all agents at origin → they should spread out
-    p_pos = jnp.zeros((N_A, 2))
-    p_vel = jnp.zeros((N_A, 2))
+    # Place agents on a tight grid so pairwise distances are nonzero but
+    # well within collision range (2*size_a = 0.07).  Spacing = 0.01 < 0.07.
+    # Grid: ceil(sqrt(N_A)) x ceil(sqrt(N_A)), centered at origin.
+    side   = int(np.ceil(np.sqrt(N_A)))
+    xs     = (np.arange(side) - side // 2) * 0.01
+    ys     = (np.arange(side) - side // 2) * 0.01
+    xx, yy = np.meshgrid(xs, ys)
+    grid   = np.stack([xx.ravel(), yy.ravel()], axis=-1)[:N_A]
+    p_pos  = jnp.array(grid, dtype=jnp.float32)
+    p_vel  = jnp.zeros((N_A, 2))
     state2 = state.replace(p_pos=p_pos, p_vel=p_vel)
 
     actions = {a: jnp.zeros(2) for a in env.agents}
     _, state3, _, _, _ = env.step_env(key, state2, actions)
 
-    # Velocities should be non-zero (spring forces acted)
+    # Spring forces should accelerate agents outward → non-zero velocities
     check("ball repulsion creates non-zero velocities",
           bool(jnp.any(jnp.abs(state3.p_vel) > 1e-6)))
 
@@ -291,7 +302,8 @@ def test_jit_compile():
 
 
 def run_all():
-    all_ok = True
+    _failed_checks.clear()
+    exception_tests = []
     tests = [
         test_init,
         test_reset,
@@ -311,12 +323,21 @@ def run_all():
         except Exception as e:
             print(f"  [\033[91m FAIL\033[0m] {t.__name__} raised: {e}")
             import traceback; traceback.print_exc()
-            all_ok = False
+            exception_tests.append(t.__name__)
 
     print("\n" + ("=" * 40))
+    all_ok = not _failed_checks and not exception_tests
     if all_ok:
         print("\033[92mAll tests passed.\033[0m")
     else:
+        if _failed_checks:
+            print(f"\033[91mFailed checks ({len(_failed_checks)}):\033[0m")
+            for name in _failed_checks:
+                print(f"  - {name}")
+        if exception_tests:
+            print(f"\033[91mTests that raised exceptions:\033[0m")
+            for name in exception_tests:
+                print(f"  - {name}")
         print("\033[91mSome tests FAILED.\033[0m")
 
 
