@@ -8,12 +8,11 @@ import jax.numpy as jnp
 from typing import Dict
 import chex
 from functools import partial
-from flax import struct
 from typing import Tuple, Optional
 
 from jaxmarl.environments.spaces import Space
 
-@struct.dataclass
+@chex.dataclass
 class State:
     done: chex.Array
     step: int
