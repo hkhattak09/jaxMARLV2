@@ -26,7 +26,7 @@ def _find_jaxmarl_root(search_root):
         return os.path.dirname(os.path.dirname(hits[0]))
     return None
 
-repo_root = '/content/jaxMARL'
+repo_root = '/content/jaxMARLV2'
 found = _find_jaxmarl_root(repo_root)
 if found:
     sys.path.insert(0, found)
