@@ -216,8 +216,6 @@ def run(cfg):
         loss_critic = data[str(log_dir) + '/agent0/losses/vf_loss']
         loss_actor = data[str(log_dir) + '/agent0/losses/pol_loss']
         loss_regular = data[str(log_dir) + '/agent0/losses/regularization_loss']
-        
-        # Note: IRL-specific metrics removed (use train_assembly_airl.py separately if needed)
 
         # Process data for plotting
         timestamps1 = np.array([entry[1] for entry in episode_rewards_mean_bar])
@@ -256,9 +254,6 @@ def run(cfg):
         plt.title('Training Loss Curves', fontsize=12)
         plt.legend(loc='upper right', fontsize=12)
         plt.savefig(os.path.join(results_dir, 'loss.pdf'), format='pdf')
-        
-        # Note: IRL-specific plots (discriminator loss/accuracy) removed
-        # Use train_assembly_airl.py separately if IRL training is needed
         
         plt.show()
 
