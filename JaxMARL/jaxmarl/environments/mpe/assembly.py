@@ -224,7 +224,7 @@ class AssemblyEnv(MultiAgentEnv):
         dones = {a: done[i] for i, a in enumerate(self.agents)}
         dones["__all__"] = jnp.all(done)
 
-        return obs, new_state, rewards, dones, {}
+        return obs, new_state, rewards, dones, self.eval_metrics(new_state)
 
     # ────────────────────────────────────────────────────────────────────────
     # Physics
@@ -443,13 +443,17 @@ class AssemblyEnv(MultiAgentEnv):
         in_flag   = min_dist < (jnp.sqrt(2.0) * state.l_cell / 2.0)
 
         # ── is_collision: penalize_interaction (condition[3]) ─────────────
-        # Any neighbour (from neighbor_index, i.e. within d_sen) closer than r_avoid
-        agent_dists    = jnp.linalg.norm(state.p_pos - state.p_pos[i], axis=-1)  # [n_a]
+        # C++ uses neighbor_index[agent]: top topo_nei_max nearest within d_sen.
+        # We replicate that by sorting and taking the K nearest, then checking
+        # if any of those K neighbours is closer than r_avoid.
+        agent_dists      = jnp.linalg.norm(state.p_pos - state.p_pos[i], axis=-1)  # [n_a]
         agent_dists_excl = jnp.where(jnp.arange(self.n_a) == i, jnp.inf, agent_dists)
 
-        # neighbours = within d_sen (matches C++ _get_focused with d_sen threshold)
-        in_nei_range = agent_dists_excl < self.d_sen   # [n_a]
-        is_collision = jnp.any(in_nei_range & (agent_dists_excl < self.r_avoid))
+        # Top topo_nei_max nearest (same set as neighbor_index in C++)
+        sorted_nei_idx = jnp.argsort(agent_dists_excl)[:self.topo_nei_max]   # [K]
+        nei_dists_topo = agent_dists_excl[sorted_nei_idx]                     # [K]
+        in_nei_range   = nei_dists_topo < self.d_sen                          # [K]
+        is_collision   = jnp.any(in_nei_range & (nei_dists_topo < self.r_avoid))
 
         # ── is_uniform: penalize_exploration (condition[4]) ───────────────
         # Only evaluated when in_flag=True.
@@ -488,3 +492,166 @@ class AssemblyEnv(MultiAgentEnv):
     def _rho_cos_dec(z: chex.Array, r: float) -> chex.Array:
         """Cosine decay weight: 1 at z=0, 0 at z>=r.  Matches _rho_cos_dec(z, delta=0, r)."""
         return jnp.where(z < r, 0.5 * (1.0 + jnp.cos(jnp.pi * z / r)), 0.0)
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Evaluation Metrics  (mirrors AssemblySwarmWrapper in MARL-LLM)
+    # ────────────────────────────────────────────────────────────────────────
+
+    @partial(jax.jit, static_argnums=[0])
+    def coverage_rate(self, state: AssemblyState) -> chex.Array:
+        """Fraction of valid target grid cells occupied by at least one agent.
+
+        A cell is considered occupied when any agent centre lies within
+        r_avoid / 2 of the cell centre — matching AssemblySwarmWrapper.coverage_rate().
+        """
+        # a2g[i, j] = distance from agent i to grid cell j
+        a2g = state.grid_center.T[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
+        a2g_dist = jnp.linalg.norm(a2g, axis=-1)                          # [n_a, n_g_max]
+
+        # Cell occupied if ANY agent is within r_avoid/2
+        cell_occupied = jnp.any(a2g_dist < self.r_avoid / 2.0, axis=0)   # [n_g_max]
+
+        # Only count valid (non-padding) cells
+        n_g = jnp.sum(state.valid_mask.astype(jnp.float32))
+        n_occupied = jnp.sum((cell_occupied & state.valid_mask).astype(jnp.float32))
+        return n_occupied / n_g
+
+    @partial(jax.jit, static_argnums=[0])
+    def distribution_uniformity(self, state: AssemblyState) -> chex.Array:
+        """Normalised variance of minimum inter-agent distances.
+
+        For each agent, finds its nearest neighbour distance; computes
+        variance across all agents and normalises to [0, 1] — matching
+        AssemblySwarmWrapper.distribution_uniformity().
+        """
+        # Pairwise distances [n_a, n_a]
+        delta = state.p_pos[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_a, 2]
+        dists = jnp.linalg.norm(delta, axis=-1)                     # [n_a, n_a]
+
+        # Exclude self-distance
+        dists_excl = jnp.where(jnp.eye(self.n_a, dtype=bool), jnp.inf, dists)
+
+        # Nearest neighbour distance per agent
+        min_dists = jnp.min(dists_excl, axis=1)  # [n_a]
+
+        variance = jnp.var(min_dists)
+        min_d    = jnp.min(min_dists)
+        max_d    = jnp.max(min_dists)
+        # Guard against degenerate case where all nearest distances are equal
+        return (variance - min_d) / jnp.maximum(max_d - min_d, 1e-8)
+
+    @partial(jax.jit, static_argnums=[0])
+    def voronoi_based_uniformity(self, state: AssemblyState) -> chex.Array:
+        """Normalised variance of per-agent Voronoi cell counts.
+
+        Assigns each valid grid cell to its nearest agent (Voronoi partition),
+        counts cells per agent, then normalises the variance — matching
+        AssemblySwarmWrapper.voronoi_based_uniformity().
+        """
+        # a2g_dist[i, j] = distance from agent i to grid cell j
+        a2g = state.grid_center.T[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
+        a2g_dist = jnp.linalg.norm(a2g, axis=-1)                          # [n_a, n_g_max]
+
+        # Mask padding cells with inf so argmin ignores them
+        a2g_dist_masked = jnp.where(
+            state.valid_mask[None, :], a2g_dist, jnp.inf
+        )  # [n_a, n_g_max]
+
+        # Nearest agent index for each cell  [n_g_max]
+        nearest_agent = jnp.argmin(a2g_dist_masked, axis=0)
+
+        # Count valid cells assigned to each agent using one-hot accumulation
+        one_hot = jax.nn.one_hot(nearest_agent, self.n_a)         # [n_g_max, n_a]
+        voronoi_counts = jnp.sum(
+            one_hot * state.valid_mask[:, None].astype(jnp.float32), axis=0
+        )  # [n_a]
+
+        variance = jnp.var(voronoi_counts)
+        min_c    = jnp.min(voronoi_counts)
+        max_c    = jnp.max(voronoi_counts)
+        return (variance - min_c) / jnp.maximum(max_c - min_c, 1e-8)
+
+    @partial(jax.jit, static_argnums=[0])
+    def eval_metrics(self, state: AssemblyState) -> Dict[str, chex.Array]:
+        """Return all three evaluation metrics as a dict."""
+        return {
+            "coverage_rate":           self.coverage_rate(state),
+            "distribution_uniformity": self.distribution_uniformity(state),
+            "voronoi_uniformity":      self.voronoi_based_uniformity(state),
+        }
+
+    # ────────────────────────────────────────────────────────────────────────
+    # Prior Policy  (JAX port of C++ robotPolicy / calculateActionPrior)
+    # ────────────────────────────────────────────────────────────────────────
+
+    def _robot_policy_single(self, i: int, state: AssemblyState) -> chex.Array:
+        """Reynolds flocking prior action for agent i.
+
+        Exactly mirrors C++ robotPolicy():
+          - Target attraction:    2.0 × normalised direction to nearest grid cell
+          - Neighbour repulsion:  3.0 × (r_avoid/dist − 1) for neighbours < r_avoid
+          - Velocity sync:        2.0 × (mean_neighbour_vel − own_vel)
+        Neighbours = top topo_nei_max nearest agents (same set as neighbour_index in C++).
+        Total force is clamped to [−1, 1].
+        """
+        pos_i = state.p_pos[i]  # [2]
+        vel_i = state.p_vel[i]  # [2]
+
+        # ── Target position (matches _get_target_grid_state in C++) ──────
+        grid_rel  = state.grid_center.T - pos_i       # [n_g_max, 2]
+        grid_dist = jnp.linalg.norm(grid_rel, axis=-1)  # [n_g_max]
+        grid_dist_masked = jnp.where(state.valid_mask, grid_dist, jnp.inf)
+        nearest_idx = jnp.argmin(grid_dist_masked)
+        min_dist    = grid_dist_masked[nearest_idx]
+        in_flag     = min_dist < (jnp.sqrt(2.0) * state.l_cell / 2.0)
+
+        # When already in a cell: target = self → zero attraction
+        target_pos = jnp.where(in_flag, pos_i, state.grid_center.T[nearest_idx])
+
+        # ── Attraction: attraction_strength=2.0 ──────────────────────────
+        dir_to_tgt = target_pos - pos_i               # [2]
+        d_tgt      = jnp.linalg.norm(dir_to_tgt)
+        attraction = jnp.where(
+            d_tgt > 0,
+            2.0 * dir_to_tgt / jnp.maximum(d_tgt, 1e-8),
+            jnp.zeros(2),
+        )  # [2]
+
+        # ── Topological neighbours (top topo_nei_max nearest) ────────────
+        agent_dists      = jnp.linalg.norm(state.p_pos - pos_i, axis=-1)   # [n_a]
+        agent_dists_excl = jnp.where(jnp.arange(self.n_a) == i, jnp.inf, agent_dists)
+        sorted_nei_idx   = jnp.argsort(agent_dists_excl)[:self.topo_nei_max]  # [K]
+        nei_dists        = agent_dists_excl[sorted_nei_idx]                    # [K]
+        nei_pos          = state.p_pos[sorted_nei_idx]                         # [K, 2]
+        nei_vel          = state.p_vel[sorted_nei_idx]                         # [K, 2]
+
+        # ── Repulsion: repulsion_strength=3.0 ────────────────────────────
+        # Direction from neighbour toward self (pointing away from each neighbour)
+        dir_away      = pos_i - nei_pos                          # [K, 2]
+        safe_nei_dist = jnp.maximum(nei_dists, 1e-8)
+        unit_away     = dir_away / safe_nei_dist[:, None]        # [K, 2]
+        rep_factor    = jnp.where(
+            (nei_dists > 0) & (nei_dists < self.r_avoid),
+            3.0 * (self.r_avoid / safe_nei_dist - 1.0),
+            0.0,
+        )  # [K]
+        repulsion = jnp.sum(rep_factor[:, None] * unit_away, axis=0)  # [2]
+
+        # ── Velocity sync: sync_strength=2.0 ─────────────────────────────
+        # C++ averages over ALL topological neighbours regardless of d_sen range
+        avg_nei_vel = jnp.mean(nei_vel, axis=0)          # [2]
+        sync        = 2.0 * (avg_nei_vel - vel_i)         # [2]
+
+        total = attraction + repulsion + sync
+        return jnp.clip(total, -1.0, 1.0)
+
+    @partial(jax.jit, static_argnums=[0])
+    def robot_policy(self, state: AssemblyState) -> chex.Array:
+        """Prior actions for all agents via Reynolds flocking.
+
+        Returns:
+            [n_a, 2] array of clamped actions, one per agent.
+        """
+        return jax.vmap(self._robot_policy_single, in_axes=(0, None))(
+            self.agent_range, state
+        )

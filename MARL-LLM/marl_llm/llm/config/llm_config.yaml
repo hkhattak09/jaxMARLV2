@@ -1,0 +1,17 @@
+"api_base": {
+  "GPT": "put your api here",
+  "VLM": "put your api here",
+  "QWEN": "put your api here",
+}
+"api_key": {
+  "GPT": "put your key here",
+  "VLM": "put your key here",
+  "QWEN": "put your key here",
+  "CLAUDE": "put your key here"
+}
+"model": {
+  "VLM": "gpt-4o",
+  "GPT": "o1-preview",
+  "QWEN": "qwen-vl-plus",
+  "CLAUDE": "input the claude model here"
+}
