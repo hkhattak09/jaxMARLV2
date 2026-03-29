@@ -164,7 +164,7 @@ def run(cfg):
                     sample = agent_buffer[a_i].sample(
                         cfg.batch_size,
                         to_gpu=True if cfg.device == "gpu" else False,
-                        is_prior=False,
+                        is_prior=True,
                     )
                     obs_sample, acs_sample, rews_sample, next_obs_sample, dones_sample, acs_prior_sample, _ = sample
 
@@ -179,8 +179,8 @@ def run(cfg):
 
         maddpg.noise = max(0.5, maddpg.noise - cfg.noise_scale / cfg.n_episodes)
 
-        # Note: Prior action regularization disabled (env.alpha not used)
-        # env.alpha = 0.1
+        # Update alpha for prior action regularization
+        env.alpha = 0.1
         end_time_2 = time.time()
 
         ########################### Logging and Checkpointing ###########################
