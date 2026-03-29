@@ -161,8 +161,8 @@ parser.add_argument("--render-traj", type=bool, default=True, help="Render agent
 parser.add_argument("--traj_len", type=int, default=15, help="Length of trajectory history to display")
 
 # Agent behavior configuration
-parser.add_argument("--agent_strategy", type=str, default='input', help="Agent control strategy: input/random/llm/rule")
-parser.add_argument("--training_method", default="llm_rl", type=str, choices=['llm_rl', 'pid', 'manual_rl', 'irl'],help="Training methodology")
+parser.add_argument("--agent_strategy", type=str, default='input', help="Agent control strategy: input/random/rule")
+parser.add_argument("--training_method", default="manual_rl", type=str, choices=['manual_rl'],help="Training methodology (IRL removed - use train_assembly_airl.py separately if needed)")
 parser.add_argument("--is_collected", type=bool, default=False, help="Collect expert data for IRL or imitation learning")
 parser.add_argument("--results_file", type=type(results_file), default=results_file, help="Path to processed image results file")
 parser.add_argument("--video", type=bool, default=False, help="Enable video recording of simulations")

@@ -124,7 +124,7 @@ def run(cfg):
                     # Sample batch from replay buffer
                     sample = agent_buffer[a_i].sample(cfg.batch_size, 
                                                     to_gpu=True if cfg.device == 'gpu' else False, 
-                                                    is_prior=True if cfg.training_method == 'llm_rl' else False)  
+                                                    is_prior=False)  
                     obs_sample, acs_sample, rews_sample, next_obs_sample, dones_sample, acs_prior_sample, _ = sample
                     
                     # Update MADDPG networks
@@ -140,8 +140,8 @@ def run(cfg):
         maddpg.noise = max(0.5, maddpg.noise - cfg.noise_scale/cfg.n_episodes)
         # maddpg.epsilon = max(0.1, maddpg.epsilon - cfg.epsilon/cfg.n_episodes)  # Optional epsilon decay
 
-        # Update regularization coefficient for prior actions
-        env.env.alpha = 0.1
+        # Note: Prior action regularization disabled (env.env.alpha not used)
+        # env.env.alpha = 0.1
         end_time_2 = time.time()
 
         ########################### Logging and Checkpointing ###########################

@@ -1,3 +1,0 @@
-arguments:
-  --run_experiment_name:
-    default: [ 'bridging' ]

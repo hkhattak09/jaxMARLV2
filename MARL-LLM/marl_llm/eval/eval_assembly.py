@@ -217,11 +217,7 @@ def run(cfg):
         loss_actor = data[str(log_dir) + '/agent0/losses/pol_loss']
         loss_regular = data[str(log_dir) + '/agent0/losses/regularization_loss']
         
-        # Extract IRL-specific metrics if applicable
-        if cfg.training_method == 'irl':
-            loss_discriminator = data[str(log_dir) + '/agent0/losses/loss_discriminator']
-            accuracy_pi = data[str(log_dir) + '/agent0/losses/accuracy_pi']
-            accuracy_exp = data[str(log_dir) + '/agent0/losses/accuracy_exp']
+        # Note: IRL-specific metrics removed (use train_assembly_airl.py separately if needed)
 
         # Process data for plotting
         timestamps1 = np.array([entry[1] for entry in episode_rewards_mean_bar])
@@ -232,12 +228,6 @@ def run(cfg):
         loss_critic = np.array([entry[2] for entry in loss_critic])
         loss_actor = np.array([entry[2] for entry in loss_actor])
         loss_regular = np.array([entry[2] for entry in loss_regular])
-
-        if cfg.training_method == 'irl':
-            timestamps3 = np.array([entry[1] for entry in loss_discriminator])
-            loss_discriminator = np.array([entry[2] for entry in loss_discriminator])
-            accuracy_pi = np.array([entry[2] for entry in accuracy_pi])
-            accuracy_exp = np.array([entry[2] for entry in accuracy_exp])
 
         # Plot 1: Episode Reward Curve
         plt.figure(figsize=(8, 6))
@@ -267,32 +257,8 @@ def run(cfg):
         plt.legend(loc='upper right', fontsize=12)
         plt.savefig(os.path.join(results_dir, 'loss.pdf'), format='pdf')
         
-        # Plot 3: IRL-specific plots
-        if cfg.training_method == 'irl':
-            # Discriminator loss
-            plt.figure(figsize=(8, 6))
-            plt.plot(timestamps3, loss_discriminator, label='Discriminator Loss')
-            plt.xlabel('Step', fontsize=12)
-            plt.ylabel('Loss', fontsize=12)
-            plt.xticks(fontsize=12)
-            plt.yticks(fontsize=12)
-            plt.grid(True)
-            plt.title('Discriminator Loss Curve', fontsize=12)
-            plt.legend(loc='upper right', fontsize=12)
-            plt.savefig(os.path.join(results_dir, 'loss_discriminator.pdf'), format='pdf')
-
-            # Discriminator accuracy
-            plt.figure(figsize=(8, 6))
-            plt.plot(timestamps3, accuracy_pi, label='Policy Accuracy')
-            plt.plot(timestamps3, accuracy_exp, label='Expert Accuracy')
-            plt.xlabel('Step', fontsize=12)
-            plt.ylabel('Accuracy', fontsize=12)
-            plt.xticks(fontsize=12)
-            plt.yticks(fontsize=12)
-            plt.grid(True)
-            plt.title('Discriminator Accuracy Curves', fontsize=12)
-            plt.legend(loc='lower right', fontsize=12)
-            plt.savefig(os.path.join(results_dir, 'accuracy.pdf'), format='pdf')
+        # Note: IRL-specific plots (discriminator loss/accuracy) removed
+        # Use train_assembly_airl.py separately if IRL training is needed
         
         plt.show()
 
