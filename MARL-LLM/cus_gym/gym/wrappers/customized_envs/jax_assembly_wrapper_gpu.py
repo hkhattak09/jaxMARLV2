@@ -86,16 +86,42 @@ class JaxAssemblyAdapterGPU:
 
         self._key = jax.random.PRNGKey(seed)
         self._states: AssemblyState = None
+        self._agent_list = jax_env.agents  # Cache agent list
 
         # JIT-compile vmapped functions
         if n_envs == 1:
             self._jit_reset = jax.jit(jax_env.reset)
             self._jit_step = jax.jit(jax_env.step_env)
             self._jit_prior = jax.jit(jax_env.robot_policy)
+            
+            # JIT-compiled output conversion (single env)
+            @jax.jit
+            def _convert_outputs(obs_dict, rew_dict, done_dict, prior):
+                """Convert dicts to stacked arrays in one JIT call."""
+                obs = jnp.stack([obs_dict[a] for a in self._agent_list], axis=0).T  # [obs_dim, n_a]
+                rew = jnp.stack([rew_dict[a] for a in self._agent_list])[None, :]   # [1, n_a]
+                done = jnp.stack([done_dict[a] for a in self._agent_list])[None, :] # [1, n_a]
+                prior_out = prior.T  # [2, n_a]
+                return obs, rew, done, prior_out
+            self._jit_convert = _convert_outputs
         else:
             self._jit_reset = jax.jit(jax.vmap(jax_env.reset))
             self._jit_step = jax.jit(jax.vmap(jax_env.step_env))
             self._jit_prior = jax.jit(jax.vmap(jax_env.robot_policy))
+            
+            # JIT-compiled output conversion (batched envs)
+            @jax.jit
+            def _convert_outputs_batched(obs_dict, rew_dict, done_dict, prior):
+                """Convert dicts to stacked arrays in one JIT call."""
+                obs = jnp.stack([obs_dict[a] for a in self._agent_list], axis=1)  # [N, n_a, obs_dim]
+                obs_flat = obs.reshape(n_envs * jax_env.n_a, jax_env.obs_dim).T   # [obs_dim, N*n_a]
+                rew = jnp.stack([rew_dict[a] for a in self._agent_list], axis=1)  # [N, n_a]
+                rew_flat = rew.reshape(1, -1)                                      # [1, N*n_a]
+                done = jnp.stack([done_dict[a] for a in self._agent_list], axis=1) # [N, n_a]
+                done_flat = done.reshape(1, -1)                                    # [1, N*n_a]
+                prior_flat = prior.reshape(n_envs * jax_env.n_a, 2).T              # [2, N*n_a]
+                return obs_flat, rew_flat, done_flat, prior_flat
+            self._jit_convert = _convert_outputs_batched
 
     def reset(self) -> torch.Tensor:
         """Reset all parallel environments.
@@ -133,7 +159,7 @@ class JaxAssemblyAdapterGPU:
 
         if self.n_envs == 1:
             actions_dict = {
-                a: actions_jax[i] for i, a in enumerate(self.env.agents)
+                a: actions_jax[i] for i, a in enumerate(self._agent_list)
             }
             key, step_key = jax.random.split(self._key)
             self._key = key
@@ -149,7 +175,7 @@ class JaxAssemblyAdapterGPU:
             )
             actions_dict = {
                 a: actions_reshaped[:, i, :]
-                for i, a in enumerate(self.env.agents)
+                for i, a in enumerate(self._agent_list)
             }
 
             keys = jax.random.split(self._key, self.n_envs + 1)
@@ -162,11 +188,18 @@ class JaxAssemblyAdapterGPU:
             self._states = new_states
             a_prior_jax = self._jit_prior(new_states)
 
-        # Convert all outputs via DLPack (zero-copy, GPU → GPU)
-        obs_torch = self._obs_dict_to_torch(obs_dict)
-        rew_torch = self._rew_dict_to_torch(rew_dict)
-        done_torch = self._done_dict_to_torch(done_dict)
-        prior_torch = self._prior_to_torch(a_prior_jax)
+        # JIT-compiled conversion: dicts → stacked arrays (single JAX dispatch)
+        obs_jax, rew_jax, done_jax, prior_jax = self._jit_convert(
+            obs_dict, rew_dict, done_dict, a_prior_jax
+        )
+        
+        # DLPack zero-copy: JAX GPU → PyTorch GPU
+        obs_torch = torch_from_dlpack(obs_jax)
+        rew_torch = torch_from_dlpack(rew_jax)
+        done_torch = torch_from_dlpack(done_jax)
+        prior_torch = torch_from_dlpack(prior_jax)
+
+        return obs_torch, rew_torch, done_torch, {}, prior_torch
 
         return obs_torch, rew_torch, done_torch, {}, prior_torch
 
@@ -188,63 +221,6 @@ class JaxAssemblyAdapterGPU:
         if self.n_envs == 1:
             return float(self.env.voronoi_based_uniformity(self._states))
         return float(jnp.mean(jax.vmap(self.env.voronoi_based_uniformity)(self._states)))
-
-    # ──────────────────────────────────────────────────────────────────────
-    # JAX → PyTorch conversions via DLPack (zero-copy on GPU)
-    # ──────────────────────────────────────────────────────────────────────
-
-    def _obs_dict_to_torch(self, obs_dict) -> torch.Tensor:
-        """Convert obs dict to (obs_dim, N*n_a) torch.cuda.FloatTensor via DLPack."""
-        if self.n_envs == 1:
-            obs_arr = jnp.stack(
-                [obs_dict[a] for a in self.env.agents], axis=0
-            )  # [n_a, obs_dim]
-            obs_transposed = obs_arr.T  # [obs_dim, n_a]
-        else:
-            obs_arr = jnp.stack(
-                [obs_dict[a] for a in self.env.agents], axis=1
-            )  # [N, n_a, obs_dim]
-            obs_flat = obs_arr.reshape(self.n_envs * self._n_a_per_env, self.env.obs_dim)
-            obs_transposed = obs_flat.T  # [obs_dim, N*n_a]
-
-        # DLPack zero-copy: JAX GPU → PyTorch GPU (JAX 0.7+ API)
-        return torch_from_dlpack(obs_transposed)
-
-    def _rew_dict_to_torch(self, rew_dict) -> torch.Tensor:
-        """Convert reward dict to (1, N*n_a) torch.cuda.FloatTensor via DLPack."""
-        if self.n_envs == 1:
-            rew = jnp.stack([rew_dict[a] for a in self.env.agents])  # [n_a]
-            rew_reshaped = rew[None, :]  # [1, n_a]
-        else:
-            rew = jnp.stack(
-                [rew_dict[a] for a in self.env.agents], axis=1
-            )  # [N, n_a]
-            rew_reshaped = rew.reshape(1, -1)  # [1, N*n_a]
-
-        return torch_from_dlpack(rew_reshaped)
-
-    def _done_dict_to_torch(self, done_dict) -> torch.Tensor:
-        """Convert done dict to (1, N*n_a) torch.cuda.BoolTensor via DLPack."""
-        if self.n_envs == 1:
-            done = jnp.stack([done_dict[a] for a in self.env.agents])  # [n_a]
-            done_reshaped = done[None, :]  # [1, n_a]
-        else:
-            done = jnp.stack(
-                [done_dict[a] for a in self.env.agents], axis=1
-            )  # [N, n_a]
-            done_reshaped = done.reshape(1, -1)  # [1, N*n_a]
-
-        return torch_from_dlpack(done_reshaped)
-
-    def _prior_to_torch(self, a_prior_jax) -> torch.Tensor:
-        """Convert robot_policy output to (2, N*n_a) torch.cuda.FloatTensor via DLPack."""
-        if self.n_envs == 1:
-            prior_transposed = a_prior_jax.T  # [n_a, 2] → [2, n_a]
-        else:
-            prior_flat = a_prior_jax.reshape(self.n_envs * self._n_a_per_env, 2)
-            prior_transposed = prior_flat.T  # [N*n_a, 2] → [2, N*n_a]
-
-        return torch_from_dlpack(prior_transposed)
 
 
 class _DummyAgent:

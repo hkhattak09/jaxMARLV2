@@ -88,16 +88,42 @@ class JaxAssemblyAdapter:
         # PRNG key (owned by adapter, advanced each call)
         self._key = jax.random.PRNGKey(seed)
         self._states: AssemblyState = None  # set by reset()
+        self._agent_list = jax_env.agents  # Cache agent list
 
         # JIT-compile vmapped functions once at construction time
         if n_envs == 1:
             self._jit_reset = jax.jit(jax_env.reset)
             self._jit_step = jax.jit(jax_env.step_env)
             self._jit_prior = jax.jit(jax_env.robot_policy)
+            
+            # JIT-compiled output conversion (single env)
+            @jax.jit
+            def _convert_outputs(obs_dict, rew_dict, done_dict, prior):
+                """Convert dicts to stacked arrays in one JIT call."""
+                obs = jnp.stack([obs_dict[a] for a in self._agent_list], axis=0).T  # [obs_dim, n_a]
+                rew = jnp.stack([rew_dict[a] for a in self._agent_list])[None, :]   # [1, n_a]
+                done = jnp.stack([done_dict[a] for a in self._agent_list])[None, :] # [1, n_a]
+                prior_out = prior.T  # [2, n_a]
+                return obs, rew, done, prior_out
+            self._jit_convert = _convert_outputs
         else:
             self._jit_reset = jax.jit(jax.vmap(jax_env.reset))
             self._jit_step = jax.jit(jax.vmap(jax_env.step_env))
             self._jit_prior = jax.jit(jax.vmap(jax_env.robot_policy))
+            
+            # JIT-compiled output conversion (batched envs)
+            @jax.jit
+            def _convert_outputs_batched(obs_dict, rew_dict, done_dict, prior):
+                """Convert dicts to stacked arrays in one JIT call."""
+                obs = jnp.stack([obs_dict[a] for a in self._agent_list], axis=1)  # [N, n_a, obs_dim]
+                obs_flat = obs.reshape(n_envs * jax_env.n_a, jax_env.obs_dim).T   # [obs_dim, N*n_a]
+                rew = jnp.stack([rew_dict[a] for a in self._agent_list], axis=1)  # [N, n_a]
+                rew_flat = rew.reshape(1, -1)                                      # [1, N*n_a]
+                done = jnp.stack([done_dict[a] for a in self._agent_list], axis=1) # [N, n_a]
+                done_flat = done.reshape(1, -1)                                    # [1, N*n_a]
+                prior_flat = prior.reshape(n_envs * jax_env.n_a, 2).T              # [2, N*n_a]
+                return obs_flat, rew_flat, done_flat, prior_flat
+            self._jit_convert = _convert_outputs_batched
 
     # ──────────────────────────────────────────────────────────────────────
     # Public API
@@ -166,10 +192,16 @@ class JaxAssemblyAdapter:
             self._states = new_states
             a_prior_jax = self._jit_prior(new_states)  # [N, n_a, 2]
 
-        obs_np    = self._obs_dict_to_np(obs_dict)   # (obs_dim, N*n_a)
-        rew_np    = self._rew_dict_to_np(rew_dict)   # (1, N*n_a)
-        done_np   = self._done_dict_to_np(done_dict) # (1, N*n_a)
-        prior_np  = self._prior_to_np(a_prior_jax)   # (2, N*n_a)
+        # JIT-compiled conversion: dicts → stacked arrays (single JAX dispatch)
+        obs_jax, rew_jax, done_jax, prior_jax = self._jit_convert(
+            obs_dict, rew_dict, done_dict, a_prior_jax
+        )
+        
+        # JAX → NumPy
+        obs_np = np.asarray(obs_jax)
+        rew_np = np.asarray(rew_jax)
+        done_np = np.asarray(done_jax)
+        prior_np = np.asarray(prior_jax)
 
         return obs_np, rew_np, done_np, {}, prior_np
 
@@ -193,58 +225,6 @@ class JaxAssemblyAdapter:
         if self.n_envs == 1:
             return float(self.env.voronoi_based_uniformity(self._states))
         return float(jnp.mean(jax.vmap(self.env.voronoi_based_uniformity)(self._states)))
-
-    # ──────────────────────────────────────────────────────────────────────
-    # Private helpers: JAX → NumPy conversions
-    # ──────────────────────────────────────────────────────────────────────
-
-    def _obs_dict_to_np(self, obs_dict) -> np.ndarray:
-        """Convert obs dict from step/reset to (obs_dim, N*n_a) NumPy."""
-        if self.n_envs == 1:
-            # obs_dict: {agent_i: [obs_dim]}
-            obs_arr = jnp.stack(
-                [obs_dict[a] for a in self.env.agents], axis=0
-            )  # [n_a, obs_dim]
-            return np.asarray(obs_arr.T, dtype=np.float32)  # [obs_dim, n_a]
-        else:
-            # obs_dict: {agent_i: [N, obs_dim]} (batched by vmap)
-            obs_arr = jnp.stack(
-                [obs_dict[a] for a in self.env.agents], axis=1
-            )  # [N, n_a, obs_dim]
-            obs_flat = obs_arr.reshape(self.n_envs * self._n_a_per_env, self.env.obs_dim)
-            return np.asarray(obs_flat.T, dtype=np.float32)  # [obs_dim, N*n_a]
-
-    def _rew_dict_to_np(self, rew_dict) -> np.ndarray:
-        """Convert reward dict to (1, N*n_a) NumPy."""
-        if self.n_envs == 1:
-            rew = jnp.stack([rew_dict[a] for a in self.env.agents])  # [n_a]
-            return np.asarray(rew[None, :], dtype=np.float32)         # [1, n_a]
-        else:
-            rew = jnp.stack(
-                [rew_dict[a] for a in self.env.agents], axis=1
-            )  # [N, n_a]
-            return np.asarray(rew.reshape(1, -1), dtype=np.float32)   # [1, N*n_a]
-
-    def _done_dict_to_np(self, done_dict) -> np.ndarray:
-        """Convert done dict to (1, N*n_a) NumPy bool (skips '__all__' key)."""
-        if self.n_envs == 1:
-            done = jnp.stack([done_dict[a] for a in self.env.agents])  # [n_a]
-            return np.asarray(done[None, :], dtype=np.bool_)            # [1, n_a]
-        else:
-            done = jnp.stack(
-                [done_dict[a] for a in self.env.agents], axis=1
-            )  # [N, n_a]
-            return np.asarray(done.reshape(1, -1), dtype=np.bool_)      # [1, N*n_a]
-
-    def _prior_to_np(self, a_prior_jax) -> np.ndarray:
-        """Convert robot_policy output to (2, N*n_a) NumPy — matches a_prior format."""
-        if self.n_envs == 1:
-            # a_prior_jax: [n_a, 2]
-            return np.asarray(a_prior_jax.T, dtype=np.float32)  # [2, n_a]
-        else:
-            # a_prior_jax: [N, n_a, 2]
-            prior_flat = a_prior_jax.reshape(self.n_envs * self._n_a_per_env, 2)
-            return np.asarray(prior_flat.T, dtype=np.float32)   # [2, N*n_a]
 
 
 class _DummyAgent:
