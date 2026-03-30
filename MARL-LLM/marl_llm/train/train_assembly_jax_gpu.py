@@ -221,12 +221,12 @@ def run(cfg):
             # detach() required for DLPack export (can't export tensors with gradients)
             next_obs_gpu, rewards_gpu, dones_gpu, _, agent_actions_prior_gpu = env.step(agent_actions_gpu.t().detach())
 
-            # Copy to CPU for buffer storage
+            # Copy to CPU for buffer storage (detach required for tensors with gradients)
             obs_cpu = obs_gpu.cpu().numpy()
             next_obs_cpu = next_obs_gpu.cpu().numpy()
             rewards_cpu = rewards_gpu.cpu().numpy()
             dones_cpu = dones_gpu.cpu().numpy()
-            actions_cpu = agent_actions_gpu.cpu().numpy()  # already (2, N*n_a) for buffer
+            actions_cpu = agent_actions_gpu.detach().cpu().numpy()  # already (2, N*n_a) for buffer
             prior_cpu = agent_actions_prior_gpu.cpu().numpy()
 
             agent_buffer[0].push(
