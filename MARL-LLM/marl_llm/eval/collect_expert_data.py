@@ -1,3 +1,11 @@
+"""
+Expert Data Collection Script
+
+TODO: Migrate from C++ AssemblySwarmWrapper to JAX AssemblyEnv + JaxAssemblyAdapter.
+      Currently uses the old C++ environment. Update to use JaxMARL for consistency
+      with train_assembly_jax.py and train_assembly_jax_gpu.py.
+"""
+
 import torch
 import time
 import os

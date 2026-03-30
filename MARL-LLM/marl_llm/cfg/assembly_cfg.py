@@ -156,21 +156,11 @@ results_file = os.path.join(_repo_root, 'fig', 'results.pkl')
 ## ==================== Environment Configuration ====================
 # Multi-agent system parameters
 parser.add_argument("--n_a", type=int, default=30, help='Number of agents in the swarm') 
-parser.add_argument("--is_boundary", type=bool, default=True, help='Enable wall boundaries (vs periodic boundaries)') 
-parser.add_argument("--is_con_self_state", type=bool, default=True, help="Include agent's own state in observation") 
-parser.add_argument("--is_feature_norm", type=bool, default=False, help="Normalize input features") 
-parser.add_argument("--dynamics_mode", type=str, default='Cartesian', help="Agent dynamics model (Cartesian coordinates)") 
-
-# Visualization parameters
-parser.add_argument("--render-traj", type=bool, default=True, help="Render agent trajectories during simulation") 
-parser.add_argument("--traj_len", type=int, default=15, help="Length of trajectory history to display")
 
 # Agent behavior configuration
 parser.add_argument("--agent_strategy", type=str, default='input', help="Agent control strategy: input/random/rule")
-parser.add_argument("--training_method", default="manual_rl", type=str, choices=['manual_rl'],help="Training methodology")
-parser.add_argument("--is_collected", type=bool, default=False, help="Collect expert data for IRL or imitation learning")
+parser.add_argument("--is_collected", type=bool, default=False, help="Collect expert data for imitation learning")
 parser.add_argument("--results_file", type=type(results_file), default=results_file, help="Path to processed image results file")
-parser.add_argument("--video", type=bool, default=False, help="Enable video recording of simulations")
 ## ==================== End of Environment Configuration ====================
 
 ## ==================== Training Hyperparameters ====================
@@ -199,17 +189,12 @@ parser.add_argument("--tau", default=0.01, type=float,help="Soft update rate for
 # Algorithm and hardware configuration
 parser.add_argument("--agent_alg", default="MADDPG", type=str, choices=['MADDPG', 'DDPG'],help="Multi-agent reinforcement learning algorithm")
 parser.add_argument("--device", default="gpu", type=str, choices=['cpu', 'gpu'],help="Compute device for training")
-parser.add_argument("--save_interval", default=10, type=int, help="Episode interval for saving checkpoints")
+parser.add_argument("--save_interval", default=100, type=int, help="Episode interval for saving checkpoints")
 
 # Evaluation configuration
 parser.add_argument("--eval_interval", default=100, type=int, help="Episode interval between evaluation runs")
 parser.add_argument("--eval_episodes", default=3, type=int, help="Number of episodes to run per evaluation")
 parser.add_argument("--gif_dir", default="./eval_gifs", type=str, help="Directory to save evaluation GIFs")
-
-# Inverse Reinforcement Learning parameters
-parser.add_argument("--lr_discriminator", default=1e-3, type=float,help="Learning rate for IRL discriminator")
-parser.add_argument("--disc_use_linear_lr_decay", default=False, type=bool,help="Enable linear learning rate decay for discriminator")
-parser.add_argument("--hidden_num", default=4, type=int,help="Number of hidden layers in discriminator")
 ## ==================== End of Training Hyperparameters ====================
 
 # Parse all arguments and measure loading time

@@ -268,25 +268,30 @@ def run(cfg):
         end_time_2 = time.time()
 
         ########################### Logging and Checkpointing ###########################
+        # Compute end-of-episode metrics
+        coverage = env.coverage_rate()
+        uniformity = env.distribution_uniformity()
+        avg_reward = episode_reward_mean_bar / cfg.episode_length
+        
         if ep_index % 10 == 0:
             print(
-                "Episodes %i of %i, agent num: %i, episode reward: %f, "
-                "step time: %f, training time: %f"
-                % (
-                    ep_index, cfg.n_episodes, env.n_a,
-                    episode_reward_mean_bar / cfg.episode_length,
-                    end_time_1 - start_time_1, end_time_2 - start_time_2,
-                )
+                f"Episode {ep_index:4d}/{cfg.n_episodes} | "
+                f"reward: {avg_reward:7.4f} | "
+                f"coverage: {coverage:.4f} | "
+                f"uniformity: {uniformity:.4f} | "
+                f"step: {end_time_1 - start_time_1:.2f}s | "
+                f"train: {end_time_2 - start_time_2:.2f}s | "
+                f"noise: {maddpg.noise:.3f}"
             )
 
         if ep_index % cfg.save_interval == 0:
-            ALIGN_epi = 0
             logger.add_scalars(
                 "agent/data",
                 {
-                    "episode_reward_mean_bar": episode_reward_mean_bar / cfg.episode_length,
-                    "episode_reward_std_bar":  episode_reward_std_bar  / cfg.episode_length,
-                    "ALIGN_epi": ALIGN_epi,
+                    "episode_reward": avg_reward,
+                    "coverage": coverage,
+                    "uniformity": uniformity,
+                    "noise": maddpg.noise,
                 },
                 ep_index,
             )
