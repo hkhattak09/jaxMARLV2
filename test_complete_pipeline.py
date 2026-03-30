@@ -256,8 +256,12 @@ try:
         agent_alg="MADDPG",
         adversary_alg="MADDPG",
         tau=cfg.tau,
-        lr=cfg.lr,
+        lr_actor=cfg.lr_actor,
+        lr_critic=cfg.lr_critic,
         hidden_dim=cfg.hidden_dim,
+        epsilon=cfg.epsilon,
+        noise=cfg.noise_scale,
+        name='assembly',
         device="gpu"
     )
     
