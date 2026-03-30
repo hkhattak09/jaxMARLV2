@@ -357,14 +357,16 @@ try:
         agent_actions_gpu = torch.column_stack(torch_agent_actions)
         
         # Environment step (JAX GPU, returns via DLPack)
-        next_obs_gpu, rewards_gpu, dones_gpu, _, prior_gpu = env.step(agent_actions_gpu)
-        
+        # agent_actions_gpu is (action_dim, num_agents); env.step expects (num_agents, action_dim)
+        next_obs_gpu, rewards_gpu, dones_gpu, _, prior_gpu = env.step(agent_actions_gpu.t())
+
         # Copy to CPU for buffer
+        # push() expects actions_orig in (action_dim, num_agents) format — no .T needed
         obs_cpu = obs_gpu.cpu().numpy()
         next_obs_cpu = next_obs_gpu.cpu().numpy()
         rewards_cpu = rewards_gpu.cpu().numpy()
         dones_cpu = dones_gpu.cpu().numpy()
-        actions_cpu = agent_actions_gpu.cpu().numpy().T
+        actions_cpu = agent_actions_gpu.cpu().numpy()
         prior_cpu = prior_gpu.cpu().numpy()
         
         # Push to buffer
@@ -414,11 +416,11 @@ try:
         for _ in range(10):
             torch_agent_actions, _ = maddpg.step(obs_gpu, start_stop_num, explore=True)
             agent_actions_gpu = torch.column_stack(torch_agent_actions)
-            next_obs_gpu, rewards_gpu, dones_gpu, _, prior_gpu = env.step(agent_actions_gpu)
-            
+            next_obs_gpu, rewards_gpu, dones_gpu, _, prior_gpu = env.step(agent_actions_gpu.t())
+
             agent_buffer[0].push(
                 obs_gpu.cpu().numpy(),
-                agent_actions_gpu.cpu().numpy().T,
+                agent_actions_gpu.cpu().numpy(),
                 rewards_gpu.cpu().numpy(),
                 next_obs_gpu.cpu().numpy(),
                 dones_gpu.cpu().numpy(),
