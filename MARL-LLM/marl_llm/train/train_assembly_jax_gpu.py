@@ -350,6 +350,8 @@ def run(cfg):
         if ep_index % (4 * cfg.save_interval) < cfg.n_rollout_threads:
             os.makedirs(run_dir / "incremental", exist_ok=True)
             maddpg.save(run_dir / "incremental" / ("model_ep%i.pt" % (ep_index + 1)))
+            # Restore networks to GPU after save (save moves them to CPU)
+            maddpg.prep_rollouts(device="gpu")
 
         if ep_index > 0 and ep_index % cfg.eval_interval < cfg.n_rollout_threads:
             run_eval(maddpg, env, cfg, ep_index, logger)
