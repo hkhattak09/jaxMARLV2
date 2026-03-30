@@ -121,23 +121,12 @@ try:
     print(f"  ✓ Agents: {jax_env.n_a}")
     print(f"  ✓ Observation dim: {jax_env.obs_dim}")
     print(f"  ✓ Action dim: 2")
+    print(f"  ✓ Agent list: {jax_env.agents[:3]}... ({len(jax_env.agents)} total)")
     
-    # Test basic env operations
-    key = jax.random.PRNGKey(0)
-    state = jax_env.reset(key)
-    print(f"  ✓ Reset successful: state type = {type(state).__name__}")
+    # Note: We test actual env operations (reset, step) through the adapter in TEST 5
+    # The adapter is what the training code uses, not the raw JAX env
     
-    # Test step
-    key, subkey = jax.random.split(key)
-    actions = jnp.zeros((jax_env.n_a, 2), dtype=jnp.float32)
-    new_state = jax_env.step_env(subkey, state, actions)
-    print(f"  ✓ Step successful: new_state type = {type(new_state).__name__}")
-    
-    # Test prior policy
-    prior_actions = jax_env.robot_policy(state)
-    print(f"  ✓ Prior policy: shape = {prior_actions.shape}")
-    
-    print("\n✓ TEST 3 PASSED: JAX environment working")
+    print("\n✓ TEST 3 PASSED: JAX environment created successfully")
     
 except Exception as e:
     print(f"  ✗ TEST 3 FAILED: {e}")

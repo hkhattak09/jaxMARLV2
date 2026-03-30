@@ -1,8 +1,9 @@
-jax>=0.7.2
-jaxlib>=0.7.2
-flax>=0.8.0
-safetensors
+jax[cuda12]>=0.7.2
+torch
 chex>=0.1.86
+numpy
 matplotlib
+opencv-python
 pillow
 scipy
+tensorboardX
