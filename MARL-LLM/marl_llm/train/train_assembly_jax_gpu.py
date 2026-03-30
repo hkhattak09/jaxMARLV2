@@ -218,7 +218,8 @@ def run(cfg):
 
             # DDPGAgent.step returns action.t() so agent_actions_gpu is (2, N*n_a).
             # env.step expects (N*n_a, 2); buffer.push expects (2, N*n_a) via [:, index].T.
-            next_obs_gpu, rewards_gpu, dones_gpu, _, agent_actions_prior_gpu = env.step(agent_actions_gpu.t())
+            # detach() required for DLPack export (can't export tensors with gradients)
+            next_obs_gpu, rewards_gpu, dones_gpu, _, agent_actions_prior_gpu = env.step(agent_actions_gpu.t().detach())
 
             # Copy to CPU for buffer storage
             obs_cpu = obs_gpu.cpu().numpy()
