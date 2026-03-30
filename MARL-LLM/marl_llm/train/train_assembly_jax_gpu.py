@@ -42,8 +42,11 @@ from algorithm.algorithms import MADDPG
 import sys
 _REPO_ROOT = str(Path(__file__).resolve().parents[3])
 _JAXMARL_PATH = os.path.join(_REPO_ROOT, "JaxMARL")
+_CUS_GYM_PATH = os.path.join(_REPO_ROOT, "MARL-LLM", "cus_gym")
 if _JAXMARL_PATH not in sys.path:
     sys.path.insert(0, _JAXMARL_PATH)
+if _CUS_GYM_PATH not in sys.path:
+    sys.path.insert(0, _CUS_GYM_PATH)
 
 from jaxmarl.environments.mpe.assembly import AssemblyEnv
 from gym.wrappers.customized_envs.jax_assembly_wrapper_gpu import JaxAssemblyAdapterGPU
