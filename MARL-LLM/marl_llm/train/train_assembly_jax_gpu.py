@@ -215,20 +215,27 @@ def run(cfg):
         prior_list = []
 
         start_time_1 = time.time()
+        policy_time = 0.0
+        env_time = 0.0
+        
         for et_index in range(cfg.episode_length):
             if ep_index % 500 == 0:
                 env.render()
 
             # obs_gpu is already a torch.cuda tensor (via DLPack)
+            t0 = time.time()
             torch_agent_actions, _ = maddpg.step(obs_gpu, start_stop_num, explore=True)
-
-            # Stack actions (already on GPU)
             agent_actions_gpu = torch.column_stack(torch_agent_actions)  # (2, N*n_a) GPU
+            torch.cuda.synchronize()  # Ensure timing is accurate
+            policy_time += time.time() - t0
 
             # DDPGAgent.step returns action.t() so agent_actions_gpu is (2, N*n_a).
             # env.step expects (N*n_a, 2); buffer.push expects (2, N*n_a) via [:, index].T.
             # detach() required for DLPack export (can't export tensors with gradients)
+            t0 = time.time()
             next_obs_gpu, rewards_gpu, dones_gpu, _, agent_actions_prior_gpu = env.step(agent_actions_gpu.t().detach())
+            torch.cuda.synchronize()
+            env_time += time.time() - t0
 
             # Accumulate on GPU (no CPU transfer yet)
             obs_list.append(obs_gpu)
@@ -241,12 +248,17 @@ def run(cfg):
             obs_gpu = next_obs_gpu  # Stay on GPU for next step
 
         # Single bulk GPU→CPU transfer at episode end
+        t0 = time.time()
         obs_batch = torch.stack(obs_list).cpu().numpy()           # (T, obs_dim, N*n_a)
         actions_batch = torch.stack(actions_list).cpu().numpy()   # (T, 2, N*n_a)
         rewards_batch = torch.stack(rewards_list).cpu().numpy()   # (T, N*n_a)
         next_obs_batch = torch.stack(next_obs_list).cpu().numpy() # (T, obs_dim, N*n_a)
         dones_batch = torch.stack(dones_list).cpu().numpy()       # (T, N*n_a)
         prior_batch = torch.stack(prior_list).cpu().numpy()       # (T, 2, N*n_a)
+        transfer_time = time.time() - t0
+        
+        if ep_index % 10 == 0:
+            print(f"  [TIMING] policy: {policy_time:.2f}s | env: {env_time:.2f}s | transfer: {transfer_time:.2f}s")
 
         # Push all transitions to buffer
         for t in range(cfg.episode_length):
