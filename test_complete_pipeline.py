@@ -300,9 +300,10 @@ try:
     agent_buffer = [
         ReplayBufferAgent(
             buffer_length,
-            env.observation_space.shape,
-            env.action_space.shape,
-            env.n_a
+            env.n_a,
+            slice(0, env.num_agents),
+            env.observation_space.shape[0],
+            env.action_space.shape[0]
         )
     ]
     

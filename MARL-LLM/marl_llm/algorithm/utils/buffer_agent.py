@@ -141,17 +141,8 @@ class ReplayBufferAgent(object):
             tuple: Batch of (observations, actions, rewards, next_observations, 
                           dones, prior_actions, log_probabilities)
         """
-        # Define sampling range 
-        begin_index_range = 3e5 
-        begin_index = np.random.randint(0, begin_index_range)
-        
-        # Randomly sample indices from valid range
-        inds = np.random.choice(
-            np.arange(begin_index, 
-                     self.total_length - begin_index_range + begin_index, 
-                     dtype=np.int32), 
-            size=N, replace=False
-        )
+        # Randomly sample indices from filled portion of buffer
+        inds = np.random.choice(self.filled_i, size=N, replace=False)
 
         # Extract sampled experiences
         obs_inds = self.obs_buffs[inds, :]
