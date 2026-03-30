@@ -135,18 +135,23 @@ def process_image(image_path):
 
 
 # Process all images in the specified folder
-image_folder = 'Your/Image/Folder/Path'  # Replace with your image folder path
-image_paths = sorted(glob.glob(os.path.join(image_folder, '*.png')), 
-                    key=lambda x: int(os.path.basename(x).split('.')[0]))
+# image_folder = 'Your/Image/Folder/Path'  # Replace with your image folder path
+# image_paths = sorted(glob.glob(os.path.join(image_folder, '*.png')), 
+#                     key=lambda x: int(os.path.basename(x).split('.')[0]))
 
 # Process each image file
-for image_path in image_paths:
-    process_image(image_path)
+# for image_path in image_paths:
+#     process_image(image_path)
 
 # Save processed results to pickle file
-results_file = os.path.join(image_folder, 'results.pkl')
-with open(results_file, 'wb') as f:
-    pickle.dump(results, f)
+# results_file = os.path.join(image_folder, 'results.pkl')
+# with open(results_file, 'wb') as f:
+#     pickle.dump(results, f)
+
+# Use pre-generated results file
+_config_dir = os.path.dirname(os.path.abspath(__file__))
+_repo_root = os.path.dirname(os.path.dirname(os.path.dirname(_config_dir)))
+results_file = os.path.join(_repo_root, 'fig', 'results.pkl')
 
 ## ==================== Environment Configuration ====================
 # Multi-agent system parameters

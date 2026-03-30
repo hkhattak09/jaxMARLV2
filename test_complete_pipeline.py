@@ -107,18 +107,15 @@ try:
     from jaxmarl.environments.mpe.assembly import AssemblyEnv
     print("\n[Creating AssemblyEnv]")
     
-    # Check if results file exists
-    results_file = _REPO_ROOT / "data" / "results.pkl"
-    if not results_file.exists():
-        print(f"  ⚠ Results file not found: {results_file}")
-        print(f"  Creating dummy file for testing...")
-        results_file.parent.mkdir(exist_ok=True)
-        # Create minimal dummy data
-        import pickle
-        dummy_data = {'grid_centers': np.random.randn(100, 2).astype(np.float32)}
-        with open(results_file, 'wb') as f:
-            pickle.dump(dummy_data, f)
+    # Use actual results file
+    results_file = _REPO_ROOT / "fig" / "results.pkl"
     
+    if not results_file.exists():
+        print(f"  ✗ Results file not found: {results_file}")
+        print(f"  Please ensure fig/results.pkl exists in the repository")
+        sys.exit(1)
+    
+    print(f"  ✓ Found results file: {results_file}")
     jax_env = AssemblyEnv(results_file=str(results_file), n_a=30)
     print(f"  ✓ Environment created")
     print(f"  ✓ Agents: {jax_env.n_a}")
