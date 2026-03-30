@@ -19,7 +19,6 @@ import os
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.15'
 
 import sys
-import tempfile
 from pathlib import Path
 import numpy as np
 
@@ -170,57 +169,35 @@ def test_end_to_end_real_env():
     obs = env.reset()
     state_history = []
 
-    print(f"  [diag] env.n_a={env.n_a}, obs.shape={obs.shape}")
-    print(f"  [diag] obs_space.shape={env.observation_space.shape}, act_space.shape={env.action_space.shape}")
-    print(f"  [diag] maddpg.nagents={maddpg.nagents}, start_stop_num={start_stop_num}")
-
-    with torch.no_grad():
-        torch_obs = torch.Tensor(obs).requires_grad_(False)
-        torch_agent_actions, _ = maddpg.step(torch_obs, start_stop_num, explore=False)
-        print(f"  [diag] len(torch_agent_actions)={len(torch_agent_actions)}")
-        for i, ac in enumerate(torch_agent_actions):
-            print(f"  [diag] torch_agent_actions[{i}].shape={ac.shape}")
-        actions = np.column_stack([ac.data.numpy() for ac in torch_agent_actions])
-        print(f"  [diag] actions.shape after column_stack={actions.shape}")
-        # Try a single env step with detailed error reporting
-        try:
-            obs, _, _, _, _ = env.step(actions)
-            print(f"  [diag] env.step OK, obs.shape={obs.shape}")
-        except Exception as e:
-            import traceback
-            print(f"  [diag] env.step FAILED: {e}")
-            traceback.print_exc()
-            raise
-
-    # Full rollout if single step passed
-    obs = env.reset()
     with torch.no_grad():
         for _ in range(T):
             torch_obs = torch.Tensor(obs).requires_grad_(False)
             torch_agent_actions, _ = maddpg.step(torch_obs, start_stop_num, explore=False)
+            # DDPGAgent.step returns action.t() → shape (action_dim, n_agents) = (2, 30)
+            # env.step expects (n_agents, action_dim) = (30, 2)
             actions = np.column_stack([ac.data.numpy() for ac in torch_agent_actions])
-            obs, _, _, _, _ = env.step(actions)
+            obs, _, _, _, _ = env.step(actions.T)
             state_history.append(env._states)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        gif_path = Path(tmpdir) / "eval_real.gif"
-        save_eval_gif(state_history, gif_path, fps=10)
+    # Save GIF in the same directory as this test file
+    gif_path = _REPO_ROOT / "eval_real.gif"
+    save_eval_gif(state_history, gif_path, fps=10)
 
-        assert gif_path.exists(), "GIF file was not created"
+    assert gif_path.exists(), "GIF file was not created"
 
-        # Read back and verify frame count + dimensions
-        reader  = imageio.get_reader(str(gif_path))
-        frames  = list(reader)
-        reader.close()
+    # Read back and verify frame count + dimensions
+    reader  = imageio.get_reader(str(gif_path))
+    frames  = list(reader)
+    reader.close()
 
-        expected_frames = len(state_history[::2])  # frame_skip=2 default
-        assert len(frames) == expected_frames, f"Expected {expected_frames} frames, got {len(frames)}"
-        h, w, c = frames[0].shape
-        assert h == 480 and w == 480, f"Expected 480×480, got {h}×{w}"
-        assert c == 3, f"Expected 3 channels, got {c}"
+    expected_frames = len(state_history[::2])  # frame_skip=2 default
+    assert len(frames) == expected_frames, f"Expected {expected_frames} frames, got {len(frames)}"
+    h, w, c = frames[0].shape
+    assert h == 480 and w == 480, f"Expected 480×480, got {h}×{w}"
+    assert c == 3, f"Expected 3 channels, got {c}"
 
-        size_kb = gif_path.stat().st_size / 1024
-        return f"{T} frames, {h}×{w}px, {size_kb:.1f} KB"
+    size_kb = gif_path.stat().st_size / 1024
+    return f"{T} frames, {h}×{w}px, {size_kb:.1f} KB — saved to {gif_path}"
 
 run_test("end-to-end: real AssemblyEnv + MADDPG → GIF → readback", test_end_to_end_real_env)
 

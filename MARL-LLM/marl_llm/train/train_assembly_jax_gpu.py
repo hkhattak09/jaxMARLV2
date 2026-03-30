@@ -216,16 +216,16 @@ def run(cfg):
             # Stack actions (already on GPU)
             agent_actions_gpu = torch.column_stack(torch_agent_actions)  # (N*n_a, 2) GPU
 
-            # Environment step returns GPU tensors via DLPack (zero-copy)
-            next_obs_gpu, rewards_gpu, dones_gpu, _, agent_actions_prior_gpu = env.step(agent_actions_gpu)
+            # DDPGAgent.step returns action.t() so agent_actions_gpu is (2, N*n_a).
+            # env.step expects (N*n_a, 2); buffer.push expects (2, N*n_a) via [:, index].T.
+            next_obs_gpu, rewards_gpu, dones_gpu, _, agent_actions_prior_gpu = env.step(agent_actions_gpu.t())
 
             # Copy to CPU for buffer storage
-            # Buffer expects NumPy arrays on CPU
             obs_cpu = obs_gpu.cpu().numpy()
             next_obs_cpu = next_obs_gpu.cpu().numpy()
             rewards_cpu = rewards_gpu.cpu().numpy()
             dones_cpu = dones_gpu.cpu().numpy()
-            actions_cpu = agent_actions_gpu.cpu().numpy().T  # Transpose: (N*n_a, 2) → (2, N*n_a)
+            actions_cpu = agent_actions_gpu.cpu().numpy()  # already (2, N*n_a) for buffer
             prior_cpu = agent_actions_prior_gpu.cpu().numpy()
 
             agent_buffer[0].push(

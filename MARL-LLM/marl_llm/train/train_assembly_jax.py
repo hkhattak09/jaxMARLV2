@@ -216,11 +216,11 @@ def run(cfg):
                 [ac.data.numpy() for ac in torch_agent_actions]
             )  # (N*n_a, 2)
 
-            next_obs, rewards, dones, _, agent_actions_prior = env.step(agent_actions)
+            # DDPGAgent.step returns action.t() so agent_actions is (2, N*n_a).
+            # env.step expects (N*n_a, 2); buffer.push expects (2, N*n_a) via [:, index].T.
+            next_obs, rewards, dones, _, agent_actions_prior = env.step(agent_actions.T)
 
-            # Buffer expects (act_dim, N*n_a) layout for the [:, index].T slicing
-            # inside ReplayBufferAgent.push — transpose the (N*n_a, 2) actions.
-            agent_actions_buf = agent_actions.T  # (2, N*n_a)
+            agent_actions_buf = agent_actions  # already (2, N*n_a) for buffer
 
             agent_buffer[0].push(
                 obs, agent_actions_buf, rewards, next_obs, dones,
