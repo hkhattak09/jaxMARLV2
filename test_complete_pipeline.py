@@ -39,11 +39,14 @@ from torch.utils.dlpack import to_dlpack, from_dlpack
 _REPO_ROOT = Path(__file__).resolve().parent
 _JAXMARL_PATH = _REPO_ROOT / "JaxMARL"
 _MARL_LLM_PATH = _REPO_ROOT / "MARL-LLM"
+_CUS_GYM_PATH = _REPO_ROOT / "MARL-LLM" / "cus_gym"
 
 if str(_JAXMARL_PATH) not in sys.path:
     sys.path.insert(0, str(_JAXMARL_PATH))
 if str(_MARL_LLM_PATH) not in sys.path:
     sys.path.insert(0, str(_MARL_LLM_PATH))
+if str(_CUS_GYM_PATH) not in sys.path:
+    sys.path.insert(0, str(_CUS_GYM_PATH))
 
 print("\n" + "="*70)
 print("TEST 1: GPU Detection and Configuration")
