@@ -38,6 +38,10 @@ class MADDPG(object):
         self.spatial_loss = False
         self.temporal_loss = False 
         self.niter = 0
+        
+        if device != 'cpu':
+            self.prep_training(device=device)
+
 
     @property           
     def policies(self):
