@@ -351,7 +351,7 @@ def run(cfg):
             os.makedirs(run_dir / "incremental", exist_ok=True)
             maddpg.save(run_dir / "incremental" / ("model_ep%i.pt" % (ep_index + 1)))
 
-        if ep_index % cfg.eval_interval < cfg.n_rollout_threads:
+        if ep_index > 0 and ep_index % cfg.eval_interval < cfg.n_rollout_threads:
             run_eval(maddpg, env, cfg, ep_index, logger)
 
     maddpg.save(run_dir / "model.pt")
