@@ -75,8 +75,8 @@ class DDPGAgent(object):
         Outputs:
             action (PyTorch Variable): Actions for this agent
         """
-        action = self.policy(obs)     
-        log_pi = torch.full((action.shape[0], 1), -action.shape[1] * np.log(1))          
+        action = self.policy(obs)
+        log_pi = torch.full((action.shape[0], 1), -action.shape[1] * np.log(1), device=action.device)
         if self.discrete_action: # discrete action
             if explore:
                 action = gumbel_softmax(action, hard=True)
@@ -84,12 +84,13 @@ class DDPGAgent(object):
                 action = onehot_from_logits(action)
         else:  # continuous action
             if explore:
+                dev = action.device
                 if np.random.rand() < self.epsilon:
-                    action = Tensor(np.random.uniform(-1, 1, size=action.shape)).requires_grad_(False)
-                    log_pi = torch.full((action.shape[0], 1), -action.shape[1] * np.log(2))
+                    action = Tensor(np.random.uniform(-1, 1, size=action.shape)).to(dev).requires_grad_(False)
+                    log_pi = torch.full((action.shape[0], 1), -action.shape[1] * np.log(2), device=dev)
                 else:
-                    action_noise = Tensor(self.exploration.noise(action.shape[0])).requires_grad_(False)
-                    log_pi =  Tensor(self.exploration.log_prob(action_noise)).unsqueeze(-1).requires_grad_(False)
+                    action_noise = Tensor(self.exploration.noise(action.shape[0])).to(dev).requires_grad_(False)
+                    log_pi = Tensor(self.exploration.log_prob(action_noise)).to(dev).unsqueeze(-1).requires_grad_(False)
                     action += action_noise
                     action = action.clamp(-1, 1)
         
