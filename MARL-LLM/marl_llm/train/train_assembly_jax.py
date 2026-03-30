@@ -17,6 +17,13 @@ Memory note for n_rollout_threads > 1:
   if GPU/CPU memory is limited.
 """
 
+# Configure JAX GPU memory BEFORE any imports
+# JAX only runs environments (~20-100MB), PyTorch runs networks (needs most GPU memory)
+# Limit JAX to 15% of 14GB T4 GPU (~2.1GB), leaving ~11.9GB for PyTorch
+import os
+os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.15'
+print(f"[JAX Memory] Limited to 15% of GPU memory (~2.1GB on T4)")
+
 import torch
 import time
 import os

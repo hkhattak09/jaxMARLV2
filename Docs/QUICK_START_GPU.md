@@ -15,16 +15,21 @@ import os
 os.chdir('/content/new_marl_llm_implementation')
 ```
 
-### 2. Verify GPU Setup
+### 2. Verify Complete Pipeline
 ```python
-!python test_gpu_integration.py
+!python test_complete_pipeline.py
 ```
 
-Expected output:
-- ✓ PyTorch CUDA available
-- ✓ JAX on GPU
-- ✓ DLPack tests pass
-- ✓ 1.5-2× speedup measured
+This comprehensive test verifies:
+- GPU detection and memory configuration
+- JAX environment operations
+- DLPack zero-copy transfers
+- MADDPG algorithm integration
+- Replay buffer functionality
+- Complete rollout and training loops
+- Data flow correctness
+
+Expected: All 11 tests pass
 
 ### 3. Run Training (GPU Version)
 ```python
@@ -132,8 +137,8 @@ new_marl_llm_implementation/
 ## Quick Commands
 
 ```bash
-# Test only
-python test_gpu_integration.py
+# Complete pipeline test (run this first!)
+python test_complete_pipeline.py
 
 # Full training (GPU)
 python MARL-LLM/marl_llm/train/train_assembly_jax_gpu.py
@@ -162,4 +167,4 @@ Training is working correctly if you see:
 
 ---
 
-**Ready to run!** Start with `test_gpu_integration.py` to verify setup.
+**Ready to run!** Start with `test_complete_pipeline.py` to verify the entire pipeline.
