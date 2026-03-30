@@ -19,6 +19,7 @@ import os
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.15'
 
 import sys
+import tempfile
 from pathlib import Path
 import numpy as np
 
@@ -171,7 +172,7 @@ def test_end_to_end_real_env():
 
     with torch.no_grad():
         for _ in range(T):
-            torch_obs = torch.Tensor(obs).requires_grad_(False)
+            torch_obs = torch.from_numpy(np.asarray(obs).copy())
             torch_agent_actions, _ = maddpg.step(torch_obs, start_stop_num, explore=False)
             # DDPGAgent.step returns action.t() → shape (action_dim, n_agents) = (2, 30)
             # env.step expects (n_agents, action_dim) = (30, 2)
