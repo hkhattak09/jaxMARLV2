@@ -25,12 +25,14 @@ import os
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.15'
 print(f"[JAX Memory] Limited to 15% of GPU memory (~2.1GB on T4)")
 
+import matplotlib
+matplotlib.use('Agg')  # headless backend — must be set before any other matplotlib import
+import matplotlib.pyplot as plt
 import torch
 import time
 import os
 import random
 import numpy as np
-import matplotlib.pyplot as plt
 from tensorboardX import SummaryWriter
 from datetime import datetime
 from pathlib import Path
@@ -50,7 +52,71 @@ if _CUS_GYM_PATH not in sys.path:
 
 from jaxmarl.environments.mpe.assembly import AssemblyEnv
 from gym.wrappers.customized_envs.jax_assembly_wrapper_gpu import JaxAssemblyAdapterGPU
+from train.eval_render import save_eval_gif
 # ──────────────────────────────────────────────────────────────────────────
+
+
+def run_eval(maddpg, env, cfg, ep_index, logger):
+    """Run evaluation episodes with no exploration noise or gradient tracking.
+
+    Switches networks to eval mode for the duration, then restores training mode.
+    Logs per-episode reward and environment quality metrics to TensorBoard.
+    On the last eval episode, collects JAX states on GPU and saves a GIF in one
+    bulk CPU transfer after the episode finishes.
+    """
+    maddpg.prep_rollouts(device="gpu")
+    start_stop_num = [slice(0, env.n_a)]
+
+    total_reward = 0.0
+    total_coverage = 0.0
+    total_uniformity = 0.0
+
+    with torch.no_grad():
+        for ep_i in range(cfg.eval_episodes):
+            obs_gpu = env.reset()
+            ep_reward = 0.0
+            is_last_ep = (ep_i == cfg.eval_episodes - 1)
+            state_history = [] if is_last_ep else None
+
+            for _ in range(cfg.episode_length):
+                torch_agent_actions, _ = maddpg.step(obs_gpu, start_stop_num, explore=False)
+                agent_actions_gpu = torch.column_stack(torch_agent_actions)  # (N*n_a, 2)
+                obs_gpu, rewards_gpu, _, _, _ = env.step(agent_actions_gpu)
+                ep_reward += rewards_gpu.cpu().mean().item()
+
+                # Collect state snapshot on GPU — no transfer yet
+                if is_last_ep:
+                    state_history.append(env._states)
+
+            total_reward    += ep_reward / cfg.episode_length
+            total_coverage  += env.coverage_rate()
+            total_uniformity += env.distribution_uniformity()
+
+            # Bulk GPU→CPU transfer + GIF rendering after the episode is done
+            if is_last_ep:
+                gif_path = Path(cfg.gif_dir) / f"eval_{ep_index}.gif"
+                save_eval_gif(state_history, gif_path)
+
+    mean_reward     = total_reward    / cfg.eval_episodes
+    mean_coverage   = total_coverage  / cfg.eval_episodes
+    mean_uniformity = total_uniformity / cfg.eval_episodes
+
+    print(
+        f"[EVAL] ep {ep_index} | reward: {mean_reward:.4f} | "
+        f"coverage: {mean_coverage:.4f} | uniformity: {mean_uniformity:.4f}"
+    )
+    logger.add_scalars(
+        "eval",
+        {
+            "reward":      mean_reward,
+            "coverage":    mean_coverage,
+            "uniformity":  mean_uniformity,
+        },
+        ep_index,
+    )
+
+    # Restore training mode so the main loop can continue updating
+    maddpg.prep_training(device="gpu")
 
 
 def run(cfg):
@@ -121,6 +187,9 @@ def run(cfg):
     ]
 
     torch_agent_actions = []
+
+    # Set all networks to train mode and ensure they are on GPU
+    maddpg.prep_training(device="gpu")
 
     ## ======================================= Training Loop =======================================
     print("Training Starts (GPU-optimized mode)...")
@@ -225,6 +294,9 @@ def run(cfg):
         if ep_index % (4 * cfg.save_interval) < cfg.n_rollout_threads:
             os.makedirs(run_dir / "incremental", exist_ok=True)
             maddpg.save(run_dir / "incremental" / ("model_ep%i.pt" % (ep_index + 1)))
+
+        if ep_index % cfg.eval_interval < cfg.n_rollout_threads:
+            run_eval(maddpg, env, cfg, ep_index, logger)
 
     maddpg.save(run_dir / "model.pt")
 

@@ -1,4 +1,5 @@
 certifi
+imageio
 charset-normalizer
 cloudpickle
 contourpy

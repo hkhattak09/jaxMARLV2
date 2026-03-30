@@ -198,8 +198,13 @@ parser.add_argument("--tau", default=0.01, type=float,help="Soft update rate for
 
 # Algorithm and hardware configuration
 parser.add_argument("--agent_alg", default="MADDPG", type=str, choices=['MADDPG', 'DDPG'],help="Multi-agent reinforcement learning algorithm")
-parser.add_argument("--device", default="cpu", type=str, choices=['cpu', 'gpu'],help="Compute device for training")
+parser.add_argument("--device", default="gpu", type=str, choices=['cpu', 'gpu'],help="Compute device for training")
 parser.add_argument("--save_interval", default=10, type=int, help="Episode interval for saving checkpoints")
+
+# Evaluation configuration
+parser.add_argument("--eval_interval", default=100, type=int, help="Episode interval between evaluation runs")
+parser.add_argument("--eval_episodes", default=3, type=int, help="Number of episodes to run per evaluation")
+parser.add_argument("--gif_dir", default="./eval_gifs", type=str, help="Directory to save evaluation GIFs")
 
 # Inverse Reinforcement Learning parameters
 parser.add_argument("--lr_discriminator", default=1e-3, type=float,help="Learning rate for IRL discriminator")
