@@ -36,24 +36,24 @@ import numpy as np
 from tensorboardX import SummaryWriter
 from datetime import datetime
 from pathlib import Path
+
+# ── sys.path setup (must be before local imports) ─────────────────────────
+import sys
+_REPO_ROOT = str(Path(__file__).resolve().parents[3])
+_MARL_LLM_PATH = os.path.join(_REPO_ROOT, "MARL-LLM", "marl_llm")
+_JAXMARL_PATH = os.path.join(_REPO_ROOT, "JaxMARL")
+_CUS_GYM_PATH = os.path.join(_REPO_ROOT, "MARL-LLM", "cus_gym")
+for p in [_MARL_LLM_PATH, _JAXMARL_PATH, _CUS_GYM_PATH]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+# ───────────────────────────────────────────────────────────────────────────
+
 from cfg.assembly_cfg import gpsargs as args
 from algorithm.utils import ReplayBufferAgent
 from algorithm.algorithms import MADDPG
-
-# ── JAX env imports ────────────────────────────────────────────────────────
-import sys
-_REPO_ROOT = str(Path(__file__).resolve().parents[3])
-_JAXMARL_PATH = os.path.join(_REPO_ROOT, "JaxMARL")
-_CUS_GYM_PATH = os.path.join(_REPO_ROOT, "MARL-LLM", "cus_gym")
-if _JAXMARL_PATH not in sys.path:
-    sys.path.insert(0, _JAXMARL_PATH)
-if _CUS_GYM_PATH not in sys.path:
-    sys.path.insert(0, _CUS_GYM_PATH)
-
 from jaxmarl.environments.mpe.assembly import AssemblyEnv
 from gym.wrappers.customized_envs.jax_assembly_wrapper_gpu import JaxAssemblyAdapterGPU
 from train.eval_render import save_eval_gif
-# ──────────────────────────────────────────────────────────────────────────
 
 
 def run_eval(maddpg, env, cfg, ep_index, logger):
