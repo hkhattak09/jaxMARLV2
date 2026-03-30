@@ -206,6 +206,14 @@ def run(cfg):
         maddpg.reset_noise()
 
         ########################### Episode Rollout ###########################
+        # Accumulate on GPU, single bulk transfer at episode end
+        obs_list = []
+        actions_list = []
+        rewards_list = []
+        next_obs_list = []
+        dones_list = []
+        prior_list = []
+
         start_time_1 = time.time()
         for et_index in range(cfg.episode_length):
             if ep_index % 500 == 0:
@@ -215,30 +223,41 @@ def run(cfg):
             torch_agent_actions, _ = maddpg.step(obs_gpu, start_stop_num, explore=True)
 
             # Stack actions (already on GPU)
-            agent_actions_gpu = torch.column_stack(torch_agent_actions)  # (N*n_a, 2) GPU
+            agent_actions_gpu = torch.column_stack(torch_agent_actions)  # (2, N*n_a) GPU
 
             # DDPGAgent.step returns action.t() so agent_actions_gpu is (2, N*n_a).
             # env.step expects (N*n_a, 2); buffer.push expects (2, N*n_a) via [:, index].T.
             # detach() required for DLPack export (can't export tensors with gradients)
             next_obs_gpu, rewards_gpu, dones_gpu, _, agent_actions_prior_gpu = env.step(agent_actions_gpu.t().detach())
 
-            # Copy to CPU for buffer storage (detach required for tensors with gradients)
-            obs_cpu = obs_gpu.cpu().numpy()
-            next_obs_cpu = next_obs_gpu.cpu().numpy()
-            rewards_cpu = rewards_gpu.cpu().numpy()
-            dones_cpu = dones_gpu.cpu().numpy()
-            actions_cpu = agent_actions_gpu.detach().cpu().numpy()  # already (2, N*n_a) for buffer
-            prior_cpu = agent_actions_prior_gpu.cpu().numpy()
-
-            agent_buffer[0].push(
-                obs_cpu, actions_cpu, rewards_cpu, next_obs_cpu, dones_cpu,
-                start_stop_num[0], prior_cpu,
-            )
+            # Accumulate on GPU (no CPU transfer yet)
+            obs_list.append(obs_gpu)
+            actions_list.append(agent_actions_gpu.detach())
+            rewards_list.append(rewards_gpu)
+            next_obs_list.append(next_obs_gpu)
+            dones_list.append(dones_gpu)
+            prior_list.append(agent_actions_prior_gpu)
             
             obs_gpu = next_obs_gpu  # Stay on GPU for next step
 
-            episode_reward_mean_bar += rewards_cpu.mean()
-            episode_reward_std_bar  += rewards_cpu.std()
+        # Single bulk GPU→CPU transfer at episode end
+        obs_batch = torch.stack(obs_list).cpu().numpy()           # (T, obs_dim, N*n_a)
+        actions_batch = torch.stack(actions_list).cpu().numpy()   # (T, 2, N*n_a)
+        rewards_batch = torch.stack(rewards_list).cpu().numpy()   # (T, N*n_a)
+        next_obs_batch = torch.stack(next_obs_list).cpu().numpy() # (T, obs_dim, N*n_a)
+        dones_batch = torch.stack(dones_list).cpu().numpy()       # (T, N*n_a)
+        prior_batch = torch.stack(prior_list).cpu().numpy()       # (T, 2, N*n_a)
+
+        # Push all transitions to buffer
+        for t in range(cfg.episode_length):
+            agent_buffer[0].push(
+                obs_batch[t], actions_batch[t], rewards_batch[t], 
+                next_obs_batch[t], dones_batch[t],
+                start_stop_num[0], prior_batch[t],
+            )
+
+        episode_reward_mean_bar = rewards_batch.mean() * cfg.episode_length
+        episode_reward_std_bar = rewards_batch.std() * cfg.episode_length
 
         end_time_1 = time.time()
 
