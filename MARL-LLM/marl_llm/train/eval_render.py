@@ -75,7 +75,8 @@ def render_frame(p_pos_np, grid_center_np, valid_mask_np, l_cell, step):
     fig.canvas.draw()
 
     w, h = fig.canvas.get_width_height()
-    frame = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8).reshape(h, w, 3).copy()
+    buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)
+    frame = buf[:, :, :3].copy()
     plt.close(fig)
     return frame
 
