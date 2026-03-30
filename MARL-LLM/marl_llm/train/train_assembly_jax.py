@@ -239,6 +239,7 @@ def run(cfg):
 
         total_vf_loss = 0.0
         total_pol_loss = 0.0
+        total_reg_loss = 0.0
         update_count = 0
 
         for _ in range(20):
@@ -251,12 +252,13 @@ def run(cfg):
                     )
                     obs_sample, acs_sample, rews_sample, next_obs_sample, dones_sample, acs_prior_sample, _ = sample
 
-                    vf_loss, pol_loss = maddpg.update(
+                    vf_loss, pol_loss, reg_loss = maddpg.update(
                         obs_sample, acs_sample, rews_sample, next_obs_sample,
                         dones_sample, a_i, acs_prior_sample, env.alpha, logger=logger,
                     )
                     total_vf_loss += vf_loss
                     total_pol_loss += pol_loss
+                    total_reg_loss += reg_loss
                     update_count += 1
 
             maddpg.update_all_targets()
@@ -266,6 +268,7 @@ def run(cfg):
         maddpg.noise = max(0.5, maddpg.noise - cfg.noise_scale / cfg.n_episodes)
         avg_vf_loss = total_vf_loss / max(update_count, 1)
         avg_pol_loss = total_pol_loss / max(update_count, 1)
+        avg_reg_loss = total_reg_loss / max(update_count, 1)
 
         # Update alpha for prior action regularization
         env.alpha = 0.1
@@ -277,18 +280,19 @@ def run(cfg):
         uniformity = env.distribution_uniformity()
         voronoi_uniformity = env.voronoi_based_uniformity()
         avg_reward = episode_reward_mean_bar / cfg.episode_length
+        reward_uniformity = 1.0 / (1.0 + episode_reward_std_bar / (abs(episode_reward_mean_bar) + 1e-8))
         
         if ep_index % 10 == 0:
-            print(
-                f"Episode {ep_index:4d}/{cfg.n_episodes} | "
-                f"reward: {avg_reward:7.4f} | "
-                f"cov: {coverage:.4f} | "
-                f"nn: {uniformity:.4f} | "
-                f"vor: {voronoi_uniformity:.4f} | "
-                f"vf: {avg_vf_loss:.4f} | "
-                f"pol: {avg_pol_loss:.4f} | "
-                f"t: {end_time_1 - start_time_1:.1f}s/{end_time_2 - start_time_2:.1f}s"
-            )
+            sep = "=" * 100
+            print(f"\n{sep}")
+            print(f"Episode {ep_index:5d}/{cfg.n_episodes:5d} | Agents: {env.n_a}")
+            print(sep)
+            print(f"REWARDS:            Mean: {avg_reward:7.4f} | Std: {episode_reward_std_bar:7.4f} | Uniformity: {reward_uniformity:6.3f}")
+            print(f"ENVIRONMENT METRICS:")
+            print(f"  - Coverage Rate: {coverage:6.3f} | Dist Uniformity (NN): {uniformity:6.3f} | Voronoi Uniformity: {voronoi_uniformity:7.3f}")
+            print(f"LOSSES:             VF: {avg_vf_loss:7.4f} | Policy: {avg_pol_loss:7.4f} | Reg: {avg_reg_loss:7.4f}")
+            print(f"TIMING (sec):       Rollout: {end_time_1 - start_time_1:6.2f} | Policy Exec: {policy_time:6.2f} | Env Step: {env_time:6.2f} | Training: {end_time_2 - start_time_2:.2f}")
+            print(f"{sep}\n")
 
         if ep_index % cfg.save_interval == 0:
             logger.add_scalars(

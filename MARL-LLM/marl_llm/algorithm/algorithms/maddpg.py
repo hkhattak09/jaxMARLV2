@@ -193,7 +193,7 @@ class MADDPG(object):
                 'regularization_loss': 0.5 * alpha * regularization_term
             }, self.niter)
         
-        return vf_loss.item(), pol_loss.item()
+        return vf_loss.item(), pol_loss.item(), (0.3 * alpha * regularization_term).item()
 
     def update_all_targets(self):    
         """
