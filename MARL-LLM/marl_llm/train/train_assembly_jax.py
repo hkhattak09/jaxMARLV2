@@ -237,6 +237,10 @@ def run(cfg):
         start_time_2 = time.time()
         maddpg.prep_training(device=cfg.device)
 
+        total_vf_loss = 0.0
+        total_pol_loss = 0.0
+        update_count = 0
+
         for _ in range(20):
             for a_i in range(maddpg.nagents):
                 if len(agent_buffer[a_i]) >= cfg.batch_size:
@@ -247,16 +251,21 @@ def run(cfg):
                     )
                     obs_sample, acs_sample, rews_sample, next_obs_sample, dones_sample, acs_prior_sample, _ = sample
 
-                    maddpg.update(
+                    vf_loss, pol_loss = maddpg.update(
                         obs_sample, acs_sample, rews_sample, next_obs_sample,
                         dones_sample, a_i, acs_prior_sample, env.alpha, logger=logger,
                     )
+                    total_vf_loss += vf_loss
+                    total_pol_loss += pol_loss
+                    update_count += 1
 
             maddpg.update_all_targets()
 
         maddpg.prep_rollouts(device="cpu")
 
         maddpg.noise = max(0.5, maddpg.noise - cfg.noise_scale / cfg.n_episodes)
+        avg_vf_loss = total_vf_loss / max(update_count, 1)
+        avg_pol_loss = total_pol_loss / max(update_count, 1)
 
         # Update alpha for prior action regularization
         env.alpha = 0.1
@@ -266,17 +275,19 @@ def run(cfg):
         # Compute end-of-episode metrics
         coverage = env.coverage_rate()
         uniformity = env.distribution_uniformity()
+        voronoi_uniformity = env.voronoi_based_uniformity()
         avg_reward = episode_reward_mean_bar / cfg.episode_length
         
         if ep_index % 10 == 0:
             print(
                 f"Episode {ep_index:4d}/{cfg.n_episodes} | "
                 f"reward: {avg_reward:7.4f} | "
-                f"coverage: {coverage:.4f} | "
-                f"uniformity: {uniformity:.4f} | "
-                f"step: {end_time_1 - start_time_1:.2f}s | "
-                f"train: {end_time_2 - start_time_2:.2f}s | "
-                f"noise: {maddpg.noise:.3f}"
+                f"cov: {coverage:.4f} | "
+                f"nn: {uniformity:.4f} | "
+                f"vor: {voronoi_uniformity:.4f} | "
+                f"vf: {avg_vf_loss:.4f} | "
+                f"pol: {avg_pol_loss:.4f} | "
+                f"t: {end_time_1 - start_time_1:.1f}s/{end_time_2 - start_time_2:.1f}s"
             )
 
         if ep_index % cfg.save_interval == 0:
@@ -285,7 +296,10 @@ def run(cfg):
                 {
                     "episode_reward": avg_reward,
                     "coverage": coverage,
-                    "uniformity": uniformity,
+                    "nn_uniformity": uniformity,
+                    "voronoi_uniformity": voronoi_uniformity,
+                    "vf_loss": avg_vf_loss,
+                    "pol_loss": avg_pol_loss,
                     "noise": maddpg.noise,
                 },
                 ep_index,
