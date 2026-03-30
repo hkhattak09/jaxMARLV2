@@ -128,7 +128,8 @@ class JaxAssemblyAdapterGPU:
             prior_torch: (2,        n_envs*n_a)  torch.cuda.FloatTensor
         """
         # DLPack: PyTorch GPU → JAX GPU (zero-copy, JAX 0.7+ API)
-        actions_jax = jax_dlpack.from_dlpack(actions_torch)
+        # .contiguous() ensures C-contiguous layout; from_dlpack requires row-major
+        actions_jax = jax_dlpack.from_dlpack(actions_torch.contiguous())
 
         if self.n_envs == 1:
             actions_dict = {
