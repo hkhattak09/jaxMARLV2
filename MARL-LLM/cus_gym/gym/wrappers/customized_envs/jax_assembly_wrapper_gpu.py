@@ -104,6 +104,13 @@ class JaxAssemblyAdapterGPU:
                 prior_out = prior.T  # [2, n_a]
                 return obs, rew, done, prior_out
             self._jit_convert = _convert_outputs
+            
+            # JIT-compiled obs conversion for reset (single env)
+            @jax.jit
+            def _convert_obs(obs_dict):
+                """Convert obs dict to stacked array."""
+                return jnp.stack([obs_dict[a] for a in self._agent_list], axis=0).T  # [obs_dim, n_a]
+            self._jit_convert_obs = _convert_obs
         else:
             self._jit_reset = jax.jit(jax.vmap(jax_env.reset))
             self._jit_step = jax.jit(jax.vmap(jax_env.step_env))
@@ -122,6 +129,31 @@ class JaxAssemblyAdapterGPU:
                 prior_flat = prior.reshape(n_envs * jax_env.n_a, 2).T              # [2, N*n_a]
                 return obs_flat, rew_flat, done_flat, prior_flat
             self._jit_convert = _convert_outputs_batched
+            
+            # JIT-compiled obs conversion for reset (batched envs)
+            @jax.jit
+            def _convert_obs_batched(obs_dict):
+                """Convert obs dict to stacked array."""
+                obs = jnp.stack([obs_dict[a] for a in self._agent_list], axis=1)  # [N, n_a, obs_dim]
+                return obs.reshape(n_envs * jax_env.n_a, jax_env.obs_dim).T        # [obs_dim, N*n_a]
+            self._jit_convert_obs = _convert_obs_batched
+
+    def _obs_dict_to_torch(self, obs_dict) -> torch.Tensor:
+        """Convert observation dict to PyTorch GPU tensor.
+        
+        Args:
+            obs_dict: Dict of observations from JAX environment
+            
+        Returns:
+            obs_torch: (obs_dim, n_envs*n_a)  torch.cuda.FloatTensor
+        """
+        # JIT-compiled conversion: dict → stacked JAX array
+        obs_jax = self._jit_convert_obs(obs_dict)
+        
+        # DLPack zero-copy: JAX GPU → PyTorch GPU
+        obs_torch = torch_from_dlpack(obs_jax)
+        
+        return obs_torch
 
     def reset(self) -> torch.Tensor:
         """Reset all parallel environments.
