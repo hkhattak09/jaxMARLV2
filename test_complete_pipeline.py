@@ -142,8 +142,8 @@ print("="*70)
 print("\n[Testing PyTorch -> JAX]")
 try:
     torch_tensor = torch.randn(100, 50, device='cuda')
-    capsule = to_dlpack(torch_tensor)
-    jax_array = jax_dlpack.from_dlpack(capsule)
+    # JAX 0.7+ API: pass tensor directly
+    jax_array = jax_dlpack.from_dlpack(torch_tensor)
     
     # Verify data integrity
     torch_np = torch_tensor.cpu().numpy()
@@ -162,8 +162,8 @@ except Exception as e:
 print("\n[Testing JAX -> PyTorch]")
 try:
     jax_array = jnp.ones((50, 100), dtype=jnp.float32)
-    capsule = jax_dlpack.to_dlpack(jax_array)
-    torch_tensor = from_dlpack(capsule)
+    # JAX 0.7+ API: pass array directly
+    torch_tensor = from_dlpack(jax_array)
     
     # Verify data integrity
     jax_np = np.array(jax_array)

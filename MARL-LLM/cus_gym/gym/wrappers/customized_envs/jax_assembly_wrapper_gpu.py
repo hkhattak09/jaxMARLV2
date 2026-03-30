@@ -31,7 +31,6 @@ import jax
 import jax.numpy as jnp
 from jax import dlpack as jax_dlpack
 import torch
-from torch.utils.dlpack import to_dlpack as torch_to_dlpack
 from torch.utils.dlpack import from_dlpack as torch_from_dlpack
 
 _JAXMARL_DIR = os.path.join(
@@ -128,8 +127,8 @@ class JaxAssemblyAdapterGPU:
             info:        {}  (empty dict)
             prior_torch: (2,        n_envs*n_a)  torch.cuda.FloatTensor
         """
-        # DLPack: PyTorch GPU → JAX GPU (zero-copy)
-        actions_jax = jax_dlpack.from_dlpack(torch_to_dlpack(actions_torch))
+        # DLPack: PyTorch GPU → JAX GPU (zero-copy, JAX 0.7+ API)
+        actions_jax = jax_dlpack.from_dlpack(actions_torch)
 
         if self.n_envs == 1:
             actions_dict = {
@@ -207,8 +206,8 @@ class JaxAssemblyAdapterGPU:
             obs_flat = obs_arr.reshape(self.n_envs * self._n_a_per_env, self.env.obs_dim)
             obs_transposed = obs_flat.T  # [obs_dim, N*n_a]
 
-        # DLPack zero-copy: JAX GPU → PyTorch GPU
-        return torch_from_dlpack(jax_dlpack.to_dlpack(obs_transposed))
+        # DLPack zero-copy: JAX GPU → PyTorch GPU (JAX 0.7+ API)
+        return torch_from_dlpack(obs_transposed)
 
     def _rew_dict_to_torch(self, rew_dict) -> torch.Tensor:
         """Convert reward dict to (1, N*n_a) torch.cuda.FloatTensor via DLPack."""
@@ -221,7 +220,7 @@ class JaxAssemblyAdapterGPU:
             )  # [N, n_a]
             rew_reshaped = rew.reshape(1, -1)  # [1, N*n_a]
 
-        return torch_from_dlpack(jax_dlpack.to_dlpack(rew_reshaped))
+        return torch_from_dlpack(rew_reshaped)
 
     def _done_dict_to_torch(self, done_dict) -> torch.Tensor:
         """Convert done dict to (1, N*n_a) torch.cuda.BoolTensor via DLPack."""
@@ -234,7 +233,7 @@ class JaxAssemblyAdapterGPU:
             )  # [N, n_a]
             done_reshaped = done.reshape(1, -1)  # [1, N*n_a]
 
-        return torch_from_dlpack(jax_dlpack.to_dlpack(done_reshaped))
+        return torch_from_dlpack(done_reshaped)
 
     def _prior_to_torch(self, a_prior_jax) -> torch.Tensor:
         """Convert robot_policy output to (2, N*n_a) torch.cuda.FloatTensor via DLPack."""
@@ -244,7 +243,7 @@ class JaxAssemblyAdapterGPU:
             prior_flat = a_prior_jax.reshape(self.n_envs * self._n_a_per_env, 2)
             prior_transposed = prior_flat.T  # [N*n_a, 2] → [2, N*n_a]
 
-        return torch_from_dlpack(jax_dlpack.to_dlpack(prior_transposed))
+        return torch_from_dlpack(prior_transposed)
 
 
 class _DummyAgent:
