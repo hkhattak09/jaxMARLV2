@@ -395,69 +395,118 @@ class AssemblyEnv(MultiAgentEnv):
         return {a: obs_arr[i] for i, a in enumerate(self.agents)}
     
     def _get_obs_fast(self, state: AssemblyState, cached: CachedDistances) -> Dict[str, chex.Array]:
-        """Fast observation using pre-computed distances (no argsort)."""
-        obs_arr = jax.vmap(self._obs_single_fast, in_axes=(0, None, None))(
-            self.agent_range, state, cached
-        )  # [n_a, obs_dim]
+        """Fully vectorized observation - NO vmap, pure batched ops."""
+        obs_arr = self._get_obs_vectorized(state, cached)  # [n_a, obs_dim]
         return {a: obs_arr[i] for i, a in enumerate(self.agents)}
     
-    def _obs_single_fast(self, i: int, state: AssemblyState, cached: CachedDistances) -> chex.Array:
-        """Observation for agent i using pre-computed distances."""
-        # ── Relative positions/velocities using cached neighbor indices ──
-        nei_idx = cached.nei_idx[i]  # [K]
-        nei_dists = cached.nei_dists[i]  # [K]
+    def _get_obs_vectorized(self, state: AssemblyState, cached: CachedDistances) -> chex.Array:
+        """Fully vectorized observations for ALL agents at once.
         
-        rel_pos = state.p_pos[nei_idx] - state.p_pos[i]  # [K, 2]
-        rel_vel = state.p_vel[nei_idx] - state.p_vel[i]  # [K, 2]
+        No vmap - uses advanced indexing and broadcasting.
+        Returns [n_a, obs_dim] array.
+        """
+        n_a = self.n_a
+        K = self.topo_nei_max
+        M = self.num_obs_grid_max
         
-        # Zero out neighbours outside sensor range
-        in_range = (nei_dists < self.d_sen)[:, None]
-        nei_rel_pos = rel_pos * in_range
-        nei_rel_vel = rel_vel * in_range
+        # ══════════════════════════════════════════════════════════════════════
+        # Part 1: Neighbor observations [n_a, 4*(K+1)]
+        # ══════════════════════════════════════════════════════════════════════
         
-        # obs_agent: column-major flatten
-        own_col = jnp.concatenate([state.p_pos[i], state.p_vel[i]])  # [4]
-        nei_cols = jnp.concatenate([nei_rel_pos, nei_rel_vel], axis=-1)  # [K, 4]
-        obs_agent_flat = jnp.concatenate([own_col[None], nei_cols], axis=0).flatten()
+        # Gather neighbor positions/velocities for all agents at once
+        # nei_idx: [n_a, K] - indices of K nearest neighbors per agent
+        nei_pos = state.p_pos[cached.nei_idx]  # [n_a, K, 2]
+        nei_vel = state.p_vel[cached.nei_idx]  # [n_a, K, 2]
         
-        # ── Target grid cell (using cached distances) ──
+        # Relative to each agent
+        rel_pos = nei_pos - state.p_pos[:, None, :]  # [n_a, K, 2]
+        rel_vel = nei_vel - state.p_vel[:, None, :]  # [n_a, K, 2]
+        
+        # Zero out neighbors outside sensor range
+        in_range = (cached.nei_dists < self.d_sen)[:, :, None]  # [n_a, K, 1]
+        rel_pos = rel_pos * in_range
+        rel_vel = rel_vel * in_range
+        
+        # Own state: [n_a, 4]
+        own_state = jnp.concatenate([state.p_pos, state.p_vel], axis=-1)
+        
+        # Neighbor cols: [n_a, K, 4]
+        nei_cols = jnp.concatenate([rel_pos, rel_vel], axis=-1)
+        
+        # Stack own + neighbors, flatten: [n_a, 4*(K+1)]
+        obs_agent = jnp.concatenate([own_state[:, None, :], nei_cols], axis=1)  # [n_a, K+1, 4]
+        obs_agent_flat = obs_agent.reshape(n_a, -1)  # [n_a, 4*(K+1)]
+        
+        # ══════════════════════════════════════════════════════════════════════
+        # Part 2: Target grid cell [n_a, 4]
+        # ══════════════════════════════════════════════════════════════════════
+        
         grid_pos = state.grid_center.T  # [n_g_max, 2]
-        nearest_idx = cached.nearest_grid_idx[i]
-        in_flag = cached.in_flag[i]
         
-        target_pos = jnp.where(in_flag, state.p_pos[i], grid_pos[nearest_idx])
-        target_vel = jnp.where(in_flag, state.p_vel[i], jnp.zeros(2))
+        # Gather nearest grid position for each agent
+        nearest_grid_pos = grid_pos[cached.nearest_grid_idx]  # [n_a, 2]
         
-        target_grid_pos_rel = target_pos - state.p_pos[i]
-        target_grid_vel_rel = target_vel - state.p_vel[i]
+        # Target position: self if in_flag, else nearest grid
+        in_flag = cached.in_flag[:, None]  # [n_a, 1]
+        target_pos = jnp.where(in_flag, state.p_pos, nearest_grid_pos)  # [n_a, 2]
+        target_vel = jnp.where(in_flag, state.p_vel, jnp.zeros_like(state.p_vel))  # [n_a, 2]
         
-        # ── Sensed unoccupied grid cells ──
-        grid_rel = grid_pos - state.p_pos[i]  # [n_g_max, 2]
-        grid_dist = cached.a2g_dist[i]  # [n_g_max] (pre-computed)
+        target_rel_pos = target_pos - state.p_pos  # [n_a, 2]
+        target_rel_vel = target_vel - state.p_vel  # [n_a, 2]
         
-        in_sensor = (grid_dist < self.d_sen) & state.valid_mask
+        # ══════════════════════════════════════════════════════════════════════
+        # Part 3: Sensed unoccupied grid cells [n_a, M*2]
+        # ══════════════════════════════════════════════════════════════════════
         
-        # Nearby agents (use pre-computed agent distances)
-        agent_dists = cached.agent_dists[i]  # [n_a]
-        is_nearby = agent_dists < (self.d_sen + self.r_avoid / 2.0)
+        # a2g_dist: [n_a, n_g_max]
+        # in_sensor: cells within d_sen for each agent
+        in_sensor = (cached.a2g_dist < self.d_sen) & state.valid_mask[None, :]  # [n_a, n_g_max]
         
-        # Cell occupied if any nearby agent is within r_avoid/2 (use cached a2g_dist)
-        is_occupied_by_nearby = jnp.any(
-            is_nearby[:, None] & (cached.a2g_dist < self.r_avoid / 2.0), axis=0
-        )
-        is_occupied = in_flag & is_occupied_by_nearby
-        is_sensed_unoccupied = in_sensor & ~is_occupied
+        # is_nearby: agents within d_sen + r_avoid/2 of each agent
+        is_nearby = cached.agent_dists < (self.d_sen + self.r_avoid / 2.0)  # [n_a, n_a]
         
-        # Use top_k instead of argsort for grid cells
-        sort_dist = jnp.where(is_sensed_unoccupied, grid_dist, jnp.inf)
-        _, sensed_idx = jax.lax.top_k(-sort_dist, self.num_obs_grid_max)
-        sensed_valid = is_sensed_unoccupied[sensed_idx]
+        # Cell occupied if any nearby agent is within r_avoid/2 of it
+        # For each agent i, check if any agent j (where is_nearby[i,j]) is close to each grid cell
+        # is_nearby: [n_a, n_a], a2g_dist: [n_a, n_g_max]
+        # We need: for each agent i, for each grid cell g: any(is_nearby[i,j] & (a2g_dist[j,g] < r_avoid/2))
+        cell_agent_close = cached.a2g_dist < (self.r_avoid / 2.0)  # [n_a, n_g_max]
+        # is_occupied_by_nearby[i,g] = any_j(is_nearby[i,j] & cell_agent_close[j,g])
+        # This is: is_nearby @ cell_agent_close (treating bools as 0/1)
+        is_occupied_by_nearby = jnp.matmul(
+            is_nearby.astype(jnp.float32), 
+            cell_agent_close.astype(jnp.float32)
+        ) > 0  # [n_a, n_g_max]
         
-        sensed_pos_abs = grid_pos[sensed_idx]
-        sensed_rel = jnp.where(sensed_valid[:, None], sensed_pos_abs - state.p_pos[i], jnp.zeros(2))
-        sensed_flat = sensed_rel.flatten()
+        is_occupied = cached.in_flag[:, None] & is_occupied_by_nearby  # [n_a, n_g_max]
+        is_sensed_unoccupied = in_sensor & ~is_occupied  # [n_a, n_g_max]
         
-        return jnp.concatenate([obs_agent_flat, target_grid_pos_rel, target_grid_vel_rel, sensed_flat])
+        # For each agent, get M nearest sensed unoccupied cells
+        # Set non-sensed to inf, then take top_k of negative distances
+        sort_dist = jnp.where(is_sensed_unoccupied, cached.a2g_dist, jnp.inf)  # [n_a, n_g_max]
+        _, sensed_idx = jax.lax.top_k(-sort_dist, M)  # [n_a, M]
+        
+        # Gather grid positions for sensed cells
+        # sensed_idx: [n_a, M] - need to gather grid_pos[sensed_idx[i, m]] for each (i, m)
+        sensed_pos_abs = grid_pos[sensed_idx]  # [n_a, M, 2]
+        
+        # Check validity and compute relative positions
+        sensed_valid = jnp.take_along_axis(is_sensed_unoccupied, sensed_idx, axis=1)  # [n_a, M]
+        sensed_rel = jnp.where(
+            sensed_valid[:, :, None],
+            sensed_pos_abs - state.p_pos[:, None, :],
+            jnp.zeros((n_a, M, 2))
+        )  # [n_a, M, 2]
+        sensed_flat = sensed_rel.reshape(n_a, -1)  # [n_a, M*2]
+        
+        # ══════════════════════════════════════════════════════════════════════
+        # Concatenate all parts
+        # ══════════════════════════════════════════════════════════════════════
+        return jnp.concatenate([
+            obs_agent_flat,    # [n_a, 4*(K+1)]
+            target_rel_pos,    # [n_a, 2]
+            target_rel_vel,    # [n_a, 2]
+            sensed_flat,       # [n_a, M*2]
+        ], axis=-1)  # [n_a, obs_dim]
 
     def _obs_single(self, i: int, state: AssemblyState) -> chex.Array:
         """Observation for agent i."""
@@ -570,47 +619,65 @@ class AssemblyEnv(MultiAgentEnv):
         return {a: rew_arr[i] for i, a in enumerate(self.agents)}
     
     def _rewards_fast(self, state: AssemblyState, cached: CachedDistances) -> Dict[str, float]:
-        """Fast rewards using pre-computed distances."""
-        rew_arr = jax.vmap(self._reward_single_fast, in_axes=(0, None, None))(
-            self.agent_range, state, cached
-        )  # [n_a]
+        """Fully vectorized rewards - NO vmap."""
+        rew_arr = self._rewards_vectorized(state, cached)  # [n_a]
         return {a: rew_arr[i] for i, a in enumerate(self.agents)}
     
-    def _reward_single_fast(self, i: int, state: AssemblyState, cached: CachedDistances) -> chex.Array:
-        """Fast reward using pre-computed distances (no argsort)."""
-        in_flag = cached.in_flag[i]
+    def _rewards_vectorized(self, state: AssemblyState, cached: CachedDistances) -> chex.Array:
+        """Fully vectorized rewards for ALL agents at once.
         
-        # ── is_collision: using cached neighbor distances ──
-        nei_dists = cached.nei_dists[i]  # [K]
-        in_nei_range = nei_dists < self.d_sen
-        is_collision = jnp.any(in_nei_range & (nei_dists < self.r_avoid))
+        No vmap - uses broadcasting and batched operations.
+        Returns [n_a] array.
+        """
+        n_a = self.n_a
+        in_flag = cached.in_flag  # [n_a]
         
-        # ── is_uniform: using cached a2g distances ──
-        grid_rel = state.grid_center.T - state.p_pos[i]
-        grid_dist = cached.a2g_dist[i]  # [n_g_max]
+        # ══════════════════════════════════════════════════════════════════════
+        # is_collision: any neighbor within r_avoid AND within d_sen
+        # ══════════════════════════════════════════════════════════════════════
+        nei_dists = cached.nei_dists  # [n_a, K]
+        in_nei_range = nei_dists < self.d_sen  # [n_a, K]
+        is_collision = jnp.any(in_nei_range & (nei_dists < self.r_avoid), axis=1)  # [n_a]
         
-        in_sensor = (grid_dist < self.d_sen) & state.valid_mask
+        # ══════════════════════════════════════════════════════════════════════
+        # is_uniform: sensed unoccupied cells are uniformly distributed
+        # ══════════════════════════════════════════════════════════════════════
         
-        agent_dists = cached.agent_dists[i]
-        is_nearby = agent_dists < (self.d_sen + self.r_avoid / 2.0)
-        is_occupied_by_nearby = jnp.any(
-            is_nearby[:, None] & (cached.a2g_dist < self.r_avoid / 2.0), axis=0
-        )
-        is_occupied = in_flag & is_occupied_by_nearby
-        is_sensed_unoccupied = in_sensor & ~is_occupied
+        # Grid relative positions for each agent: [n_a, n_g_max, 2]
+        grid_pos = state.grid_center.T  # [n_g_max, 2]
+        grid_rel = grid_pos[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
         
-        psi = self._rho_cos_dec(grid_dist, self.d_sen)
-        psi_valid = jnp.where(is_sensed_unoccupied, psi, 0.0)
+        # in_sensor: [n_a, n_g_max]
+        in_sensor = (cached.a2g_dist < self.d_sen) & state.valid_mask[None, :]
         
-        numerator = jnp.sum(psi_valid[:, None] * grid_rel, axis=0)
-        denominator = jnp.sum(psi_valid) + 1e-8
-        v_exp = numerator / denominator
-        v_exp_norm = jnp.linalg.norm(v_exp)
+        # is_nearby: [n_a, n_a]
+        is_nearby = cached.agent_dists < (self.d_sen + self.r_avoid / 2.0)
         
-        any_sensed = jnp.any(is_sensed_unoccupied)
-        is_uniform = in_flag & any_sensed & (v_exp_norm < 0.05)
+        # Cell occupied if any nearby agent is within r_avoid/2
+        cell_agent_close = cached.a2g_dist < (self.r_avoid / 2.0)  # [n_a, n_g_max]
+        is_occupied_by_nearby = jnp.matmul(
+            is_nearby.astype(jnp.float32),
+            cell_agent_close.astype(jnp.float32)
+        ) > 0  # [n_a, n_g_max]
         
-        return jnp.where(in_flag & ~is_collision & is_uniform, 1.0, 0.0)
+        is_occupied = in_flag[:, None] & is_occupied_by_nearby  # [n_a, n_g_max]
+        is_sensed_unoccupied = in_sensor & ~is_occupied  # [n_a, n_g_max]
+        
+        # psi = rho_cos_dec for all agents/cells: [n_a, n_g_max]
+        psi = self._rho_cos_dec(cached.a2g_dist, self.d_sen)
+        psi_valid = jnp.where(is_sensed_unoccupied, psi, 0.0)  # [n_a, n_g_max]
+        
+        # v_exp for each agent: [n_a, 2]
+        numerator = jnp.sum(psi_valid[:, :, None] * grid_rel, axis=1)  # [n_a, 2]
+        denominator = jnp.sum(psi_valid, axis=1, keepdims=True) + 1e-8  # [n_a, 1]
+        v_exp = numerator / denominator  # [n_a, 2]
+        v_exp_norm = jnp.linalg.norm(v_exp, axis=1)  # [n_a]
+        
+        any_sensed = jnp.any(is_sensed_unoccupied, axis=1)  # [n_a]
+        is_uniform = in_flag & any_sensed & (v_exp_norm < 0.05)  # [n_a]
+        
+        # Final reward
+        return jnp.where(in_flag & ~is_collision & is_uniform, 1.0, 0.0)  # [n_a]
 
     def _reward_single(self, i: int, state: AssemblyState) -> chex.Array:
         # ── in_flag ──────────────────────────────────────────────────────
@@ -835,50 +902,71 @@ class AssemblyEnv(MultiAgentEnv):
         )
     
     def _robot_policy_fast(self, state: AssemblyState, cached: CachedDistances) -> chex.Array:
-        """Fast prior actions using pre-computed distances (no argsort)."""
-        return jax.vmap(self._robot_policy_single_fast, in_axes=(0, None, None))(
-            self.agent_range, state, cached
-        )
+        """Fully vectorized prior actions - NO vmap."""
+        return self._robot_policy_vectorized(state, cached)
     
-    def _robot_policy_single_fast(self, i: int, state: AssemblyState, cached: CachedDistances) -> chex.Array:
-        """Fast Reynolds flocking prior using pre-computed neighbor data."""
-        pos_i = state.p_pos[i]
-        vel_i = state.p_vel[i]
+    def _robot_policy_vectorized(self, state: AssemblyState, cached: CachedDistances) -> chex.Array:
+        """Fully vectorized Reynolds flocking prior for ALL agents.
         
-        # ── Target position (using cached nearest grid) ──
-        nearest_idx = cached.nearest_grid_idx[i]
-        in_flag = cached.in_flag[i]
-        target_pos = jnp.where(in_flag, pos_i, state.grid_center.T[nearest_idx])
+        No vmap - uses broadcasting and batched operations.
+        Returns [n_a, 2] array.
+        """
+        n_a = self.n_a
+        K = self.topo_nei_max
         
-        # ── Attraction ──
-        dir_to_tgt = target_pos - pos_i
-        d_tgt = jnp.linalg.norm(dir_to_tgt)
+        # ══════════════════════════════════════════════════════════════════════
+        # Target attraction
+        # ══════════════════════════════════════════════════════════════════════
+        
+        grid_pos = state.grid_center.T  # [n_g_max, 2]
+        nearest_grid_pos = grid_pos[cached.nearest_grid_idx]  # [n_a, 2]
+        
+        # Target: self if in_flag, else nearest grid
+        in_flag = cached.in_flag[:, None]  # [n_a, 1]
+        target_pos = jnp.where(in_flag, state.p_pos, nearest_grid_pos)  # [n_a, 2]
+        
+        # Direction to target
+        dir_to_tgt = target_pos - state.p_pos  # [n_a, 2]
+        d_tgt = jnp.linalg.norm(dir_to_tgt, axis=1, keepdims=True)  # [n_a, 1]
         attraction = jnp.where(
             d_tgt > 0,
             2.0 * dir_to_tgt / jnp.maximum(d_tgt, 1e-8),
-            jnp.zeros(2),
-        )
+            jnp.zeros_like(dir_to_tgt)
+        )  # [n_a, 2]
         
-        # ── Using cached neighbor data (no argsort!) ──
-        nei_idx = cached.nei_idx[i]        # [K]
-        nei_dists = cached.nei_dists[i]    # [K]
-        nei_pos = state.p_pos[nei_idx]     # [K, 2]
-        nei_vel = state.p_vel[nei_idx]     # [K, 2]
+        # ══════════════════════════════════════════════════════════════════════
+        # Neighbor repulsion
+        # ══════════════════════════════════════════════════════════════════════
         
-        # ── Repulsion ──
-        dir_away = pos_i - nei_pos
-        safe_nei_dist = jnp.maximum(nei_dists, 1e-8)
-        unit_away = dir_away / safe_nei_dist[:, None]
+        # Gather neighbor positions/velocities
+        nei_pos = state.p_pos[cached.nei_idx]  # [n_a, K, 2]
+        nei_vel = state.p_vel[cached.nei_idx]  # [n_a, K, 2]
+        nei_dists = cached.nei_dists  # [n_a, K]
+        
+        # Direction away from each neighbor
+        dir_away = state.p_pos[:, None, :] - nei_pos  # [n_a, K, 2]
+        safe_nei_dist = jnp.maximum(nei_dists, 1e-8)  # [n_a, K]
+        unit_away = dir_away / safe_nei_dist[:, :, None]  # [n_a, K, 2]
+        
+        # Repulsion factor
         rep_factor = jnp.where(
             (nei_dists > 0) & (nei_dists < self.r_avoid),
             3.0 * (self.r_avoid / safe_nei_dist - 1.0),
-            0.0,
-        )
-        repulsion = jnp.sum(rep_factor[:, None] * unit_away, axis=0)
+            0.0
+        )  # [n_a, K]
         
-        # ── Velocity sync ──
-        avg_nei_vel = jnp.mean(nei_vel, axis=0)
-        sync = 2.0 * (avg_nei_vel - vel_i)
+        repulsion = jnp.sum(rep_factor[:, :, None] * unit_away, axis=1)  # [n_a, 2]
+        
+        # ══════════════════════════════════════════════════════════════════════
+        # Velocity sync
+        # ══════════════════════════════════════════════════════════════════════
+        
+        avg_nei_vel = jnp.mean(nei_vel, axis=1)  # [n_a, 2]
+        sync = 2.0 * (avg_nei_vel - state.p_vel)  # [n_a, 2]
+        
+        # ══════════════════════════════════════════════════════════════════════
+        # Total
+        # ══════════════════════════════════════════════════════════════════════
         
         total = attraction + repulsion + sync
-        return jnp.clip(total, -1.0, 1.0)
+        return jnp.clip(total, -1.0, 1.0)  # [n_a, 2]
