@@ -209,6 +209,49 @@ class AssemblyEnv(MultiAgentEnv):
 
         return self.get_obs(state), state
 
+    @partial(jax.jit, static_argnums=[0, 2])
+    def reset_eval(self, key: chex.PRNGKey, shape_index: int) -> Tuple[Dict, AssemblyState]:
+        """Reset for evaluation: specific shape, no rotation, no offset.
+        
+        Args:
+            key: PRNG key for agent position initialization only.
+            shape_index: Which shape to use (0 to num_shapes-1).
+            
+        Returns:
+            obs: Dict of observations per agent.
+            state: Initial AssemblyState with shape centered at origin.
+        """
+        key_pos, key_vel = jax.random.split(key, 2)
+
+        # Retrieve shape data (no random selection)
+        grid_center = self.all_grid_centers[shape_index]  # [2, n_g_max]
+        valid_mask  = self.all_valid_masks[shape_index]   # [n_g_max]
+        l_cell      = self.all_l_cells[shape_index]       # scalar
+
+        # No rotation, no offset - shape stays centered at origin
+
+        # Agent initial positions: uniform in boundary
+        p_pos = jax.random.uniform(
+            key_pos, (self.n_a, 2),
+            minval=-self.boundary_half, maxval=self.boundary_half,
+        )
+
+        # Initial velocity uniform in [-0.5, 0.5]
+        p_vel = jax.random.uniform(key_vel, (self.n_a, 2), minval=-0.5, maxval=0.5)
+
+        state = AssemblyState(
+            p_pos=p_pos,
+            p_vel=p_vel,
+            grid_center=grid_center,
+            valid_mask=valid_mask,
+            l_cell=l_cell,
+            shape_index=jnp.int32(shape_index),
+            done=jnp.zeros(self.n_a, dtype=bool),
+            step=0,
+        )
+
+        return self.get_obs(state), state
+
     # ────────────────────────────────────────────────────────────────────────
     # Step
     # ────────────────────────────────────────────────────────────────────────

@@ -56,6 +56,119 @@ from gym.wrappers.customized_envs.jax_assembly_wrapper_gpu import JaxAssemblyAda
 from train.eval_render import save_eval_gif
 
 
+def run_final_eval(maddpg, env, cfg, logger, run_dir):
+    """Run final evaluation on each shape after training completes.
+    
+    For each shape (no random rotation/offset):
+      - Runs 3 episodes
+      - Averages metrics across the 3 episodes
+      - Saves a GIF of the last episode
+      
+    Results are logged to TensorBoard under 'final_eval/shape_{i}'.
+    """
+    print("\n" + "="*80)
+    print("FINAL EVALUATION - Testing on each shape")
+    print("="*80)
+    
+    maddpg.prep_rollouts(device="gpu")
+    start_stop_num = [slice(0, env.n_a)]
+    num_shapes = env.num_shapes
+    episodes_per_shape = 3
+    
+    # Store results for summary
+    all_results = []
+    
+    with torch.no_grad():
+        for shape_idx in range(num_shapes):
+            shape_reward = 0.0
+            shape_coverage = 0.0
+            shape_uniformity = 0.0
+            shape_voronoi = 0.0
+            
+            for ep_i in range(episodes_per_shape):
+                # Reset with specific shape, no rotation/offset
+                obs_gpu = env.reset_eval(shape_idx)
+                ep_reward = 0.0
+                is_last_ep = (ep_i == episodes_per_shape - 1)
+                state_history = [] if is_last_ep else None
+                
+                for _ in range(cfg.episode_length):
+                    torch_agent_actions, _ = maddpg.step(obs_gpu, start_stop_num, explore=False)
+                    agent_actions_gpu = torch.column_stack(torch_agent_actions)
+                    obs_gpu, rewards_gpu, _, _, _ = env.step(agent_actions_gpu.t().detach())
+                    ep_reward += rewards_gpu.cpu().mean().item()
+                    
+                    if is_last_ep:
+                        state_history.append(env._states)
+                
+                shape_reward += ep_reward / cfg.episode_length
+                shape_coverage += env.coverage_rate()
+                shape_uniformity += env.distribution_uniformity()
+                shape_voronoi += env.voronoi_based_uniformity()
+                
+                # Save GIF of last episode for this shape
+                if is_last_ep:
+                    gif_path = run_dir / "final_eval" / f"shape_{shape_idx}.gif"
+                    save_eval_gif(state_history, gif_path)
+            
+            # Average over episodes
+            mean_reward = shape_reward / episodes_per_shape
+            mean_coverage = shape_coverage / episodes_per_shape
+            mean_uniformity = shape_uniformity / episodes_per_shape
+            mean_voronoi = shape_voronoi / episodes_per_shape
+            
+            all_results.append({
+                'shape': shape_idx,
+                'reward': mean_reward,
+                'coverage': mean_coverage,
+                'uniformity': mean_uniformity,
+                'voronoi': mean_voronoi,
+            })
+            
+            print(f"Shape {shape_idx}: reward={mean_reward:.4f} | coverage={mean_coverage:.4f} | "
+                  f"uniformity={mean_uniformity:.4f} | voronoi={mean_voronoi:.4f}")
+            
+            # Log to TensorBoard
+            logger.add_scalars(
+                f"final_eval/shape_{shape_idx}",
+                {
+                    "reward": mean_reward,
+                    "coverage": mean_coverage,
+                    "uniformity": mean_uniformity,
+                    "voronoi": mean_voronoi,
+                },
+                0,  # Single data point
+            )
+    
+    # Print summary
+    print("\n" + "-"*80)
+    print("FINAL EVAL SUMMARY (averaged across all shapes):")
+    avg_reward = np.mean([r['reward'] for r in all_results])
+    avg_coverage = np.mean([r['coverage'] for r in all_results])
+    avg_uniformity = np.mean([r['uniformity'] for r in all_results])
+    avg_voronoi = np.mean([r['voronoi'] for r in all_results])
+    print(f"  Reward: {avg_reward:.4f} | Coverage: {avg_coverage:.4f} | "
+          f"Uniformity: {avg_uniformity:.4f} | Voronoi: {avg_voronoi:.4f}")
+    print("="*80 + "\n")
+    
+    # Log overall averages
+    logger.add_scalars(
+        "final_eval/overall",
+        {
+            "reward": avg_reward,
+            "coverage": avg_coverage,
+            "uniformity": avg_uniformity,
+            "voronoi": avg_voronoi,
+        },
+        0,
+    )
+    
+    # Restore training mode (in case user wants to continue)
+    maddpg.prep_training(device="gpu")
+    
+    return all_results
+
+
 def run_eval(maddpg, env, cfg, ep_index, logger):
     """Run evaluation episodes with no exploration noise or gradient tracking.
 
@@ -355,6 +468,10 @@ def run(cfg):
 
         if ep_index > 0 and ep_index % cfg.eval_interval < cfg.n_rollout_threads:
             run_eval(maddpg, env, cfg, ep_index, logger)
+
+    # ========================== Final Evaluation ==========================
+    # Run evaluation on each shape (no rotation/offset), 3 episodes each
+    run_final_eval(maddpg, env, cfg, logger, run_dir)
 
     maddpg.save(run_dir / "model.pt")
 

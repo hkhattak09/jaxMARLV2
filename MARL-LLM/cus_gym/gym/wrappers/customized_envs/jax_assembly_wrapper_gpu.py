@@ -168,6 +168,36 @@ class JaxAssemblyAdapterGPU:
 
         return self._obs_dict_to_torch(obs_dict)
 
+    def reset_eval(self, shape_index: int) -> torch.Tensor:
+        """Reset for evaluation: specific shape, no rotation, no offset.
+        
+        Args:
+            shape_index: Which shape to use (0 to num_shapes-1).
+            
+        Returns:
+            obs_torch: (obs_dim, n_envs*n_a)  torch.cuda.FloatTensor
+        """
+        key, reset_key = jax.random.split(self._key)
+        self._key = key
+
+        if self.n_envs == 1:
+            obs_dict, self._states = self.env.reset_eval(reset_key, shape_index)
+        else:
+            # For multi-env, all envs get the same shape
+            keys = jax.random.split(reset_key, self.n_envs)
+            # vmap over keys, but shape_index is static
+            reset_eval_vmapped = jax.vmap(
+                lambda k: self.env.reset_eval(k, shape_index)
+            )
+            obs_dict, self._states = reset_eval_vmapped(keys)
+
+        return self._obs_dict_to_torch(obs_dict)
+
+    @property
+    def num_shapes(self) -> int:
+        """Number of available shapes."""
+        return self.env.num_shapes
+
     def step(self, actions_torch: torch.Tensor):
         """Step all parallel environments.
         
