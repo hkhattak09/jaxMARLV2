@@ -190,7 +190,7 @@ class AssemblyEnv(MultiAgentEnv):
             jax.random.uniform(key_pos, (self.n_a, 2), minval=-1.0, maxval=1.0)
             + cluster_center
         )
-        use_uniform = jax.random.uniform(key_choice, ()) > 0.0  # prob 0.5 each
+        use_uniform = jax.random.uniform(key_choice, (), minval=-1.0, maxval=1.0) > 0.0  # prob 0.5 each
         p_pos = jax.lax.cond(use_uniform, lambda: p_pos_uniform, lambda: p_pos_clustered)
 
         # Initial velocity uniform in [-0.5, 0.5]
@@ -221,7 +221,7 @@ class AssemblyEnv(MultiAgentEnv):
             obs: Dict of observations per agent.
             state: Initial AssemblyState with shape centered at origin.
         """
-        key_pos, key_vel = jax.random.split(key, 2)
+        key_pos, key_vel, key_cluster, key_choice = jax.random.split(key, 4)
 
         # Retrieve shape data (no random selection)
         grid_center = self.all_grid_centers[shape_index]  # [2, n_g_max]
@@ -230,11 +230,21 @@ class AssemblyEnv(MultiAgentEnv):
 
         # No rotation, no offset - shape stays centered at origin
 
-        # Agent initial positions: uniform in boundary
-        p_pos = jax.random.uniform(
+        # Agent initial positions: 50/50 uniform-in-boundary vs clustered
+        p_pos_uniform = jax.random.uniform(
             key_pos, (self.n_a, 2),
             minval=-self.boundary_half, maxval=self.boundary_half,
         )
+        cluster_center = jax.random.uniform(
+            key_cluster, (2,),
+            minval=-self.boundary_half + 1.0, maxval=self.boundary_half - 1.0,
+        )
+        p_pos_clustered = (
+            jax.random.uniform(key_pos, (self.n_a, 2), minval=-1.0, maxval=1.0)
+            + cluster_center
+        )
+        use_uniform = jax.random.uniform(key_choice, (), minval=-1.0, maxval=1.0) > 0.0  # prob 0.5 each
+        p_pos = jax.lax.cond(use_uniform, lambda: p_pos_uniform, lambda: p_pos_clustered)
 
         # Initial velocity uniform in [-0.5, 0.5]
         p_vel = jax.random.uniform(key_vel, (self.n_a, 2), minval=-0.5, maxval=0.5)
