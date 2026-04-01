@@ -94,7 +94,6 @@ class JaxAssemblyAdapter:
         if n_envs == 1:
             self._jit_reset = jax.jit(jax_env.reset)
             self._jit_step = jax.jit(jax_env.step_env)
-            self._jit_prior = jax.jit(jax_env.robot_policy)
             
             # JIT-compiled output conversion (single env)
             @jax.jit
@@ -109,7 +108,6 @@ class JaxAssemblyAdapter:
         else:
             self._jit_reset = jax.jit(jax.vmap(jax_env.reset))
             self._jit_step = jax.jit(jax.vmap(jax_env.step_env))
-            self._jit_prior = jax.jit(jax.vmap(jax_env.robot_policy))
             
             # JIT-compiled output conversion (batched envs)
             @jax.jit
@@ -167,11 +165,11 @@ class JaxAssemblyAdapter:
             }
             key, step_key = jax.random.split(self._key)
             self._key = key
-            obs_dict, new_state, rew_dict, done_dict, _ = self._jit_step(
+            # prior is now returned from step_env (fused for performance)
+            obs_dict, new_state, rew_dict, done_dict, a_prior_jax = self._jit_step(
                 step_key, self._states, actions_dict
             )
             self._states = new_state
-            a_prior_jax = self._jit_prior(new_state)  # [n_a, 2]
         else:
             # Reshape flat (N*n_a, 2) → (N, n_a, 2) and build per-env action dicts
             actions_reshaped = actions_jax.reshape(
@@ -186,11 +184,11 @@ class JaxAssemblyAdapter:
             self._key = keys[0]
             step_keys = keys[1:]  # [N, 2]
 
-            obs_dict, new_states, rew_dict, done_dict, _ = self._jit_step(
+            # prior is now returned from step_env (fused for performance)
+            obs_dict, new_states, rew_dict, done_dict, a_prior_jax = self._jit_step(
                 step_keys, self._states, actions_dict
             )
             self._states = new_states
-            a_prior_jax = self._jit_prior(new_states)  # [N, n_a, 2]
 
         # JIT-compiled conversion: dicts → stacked arrays (single JAX dispatch)
         obs_jax, rew_jax, done_jax, prior_jax = self._jit_convert(

@@ -200,7 +200,7 @@ class AssemblyEnv(MultiAgentEnv):
         key: chex.PRNGKey,
         state: AssemblyState,
         actions: Dict,
-    ) -> Tuple[Dict, AssemblyState, Dict, Dict, Dict]:
+    ) -> Tuple[Dict, AssemblyState, Dict, Dict, chex.Array]:
 
         # Actions: dict → [n_a, 2], clipped to [-1, 1]
         u = jnp.stack([actions[a] for a in self.agents])  # [n_a, 2]
@@ -224,7 +224,10 @@ class AssemblyEnv(MultiAgentEnv):
         dones = {a: done[i] for i, a in enumerate(self.agents)}
         dones["__all__"] = jnp.all(done)
 
-        return obs, new_state, rewards, dones, self.eval_metrics(new_state)
+        # Compute prior actions (fused to avoid separate kernel launch)
+        prior = self.robot_policy(new_state)
+
+        return obs, new_state, rewards, dones, prior
 
     # ────────────────────────────────────────────────────────────────────────
     # Physics

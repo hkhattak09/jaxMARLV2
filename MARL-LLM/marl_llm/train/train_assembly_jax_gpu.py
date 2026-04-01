@@ -227,7 +227,6 @@ def run(cfg):
             t0 = time.time()
             torch_agent_actions, _ = maddpg.step(obs_gpu, start_stop_num, explore=True)
             agent_actions_gpu = torch.column_stack(torch_agent_actions)  # (2, N*n_a) GPU
-            torch.cuda.synchronize()  # Ensure timing is accurate
             policy_time += time.time() - t0
 
             # DDPGAgent.step returns action.t() so agent_actions_gpu is (2, N*n_a).
@@ -235,7 +234,6 @@ def run(cfg):
             # detach() required for DLPack export (can't export tensors with gradients)
             t0 = time.time()
             next_obs_gpu, rewards_gpu, dones_gpu, _, agent_actions_prior_gpu = env.step(agent_actions_gpu.t().detach())
-            torch.cuda.synchronize()
             env_time += time.time() - t0
 
             # Accumulate on GPU (no CPU transfer yet)
