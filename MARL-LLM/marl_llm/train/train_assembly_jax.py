@@ -234,7 +234,7 @@ def run(cfg):
         # Compute reward stats on full episode batch (correct std computation)
         rewards_batch = np.stack(rewards_history)  # Shape: (T, N*n_a)
         episode_reward_mean_bar = rewards_batch.mean() * cfg.episode_length
-        episode_reward_std_bar = rewards_batch.std() * cfg.episode_length
+        episode_reward_std_bar = rewards_batch.std()  # Don't scale std - it's reported directly
 
         ########################### Training Phase ###########################
         start_time_2 = time.time()

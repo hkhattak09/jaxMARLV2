@@ -381,7 +381,7 @@ def run(cfg):
             )
 
         episode_reward_mean_bar = rewards_batch.mean() * cfg.episode_length
-        episode_reward_std_bar = rewards_batch.std() * cfg.episode_length
+        episode_reward_std_bar = rewards_batch.std()  # Don't scale std - it's reported directly
 
         end_time_1 = time.time()
 
