@@ -87,24 +87,21 @@ class JaxAssemblyAdapterGPU:
         self._key = jax.random.PRNGKey(seed)
         self._states: AssemblyState = None
         self._agent_list = jax_env.agents  # Cache agent list
-
-        # JIT-compile vmapped functions
+        
+        # Use pure-array step for maximum performance
+        # step_env_array takes [n_a, 2] actions and returns arrays directly
         if n_envs == 1:
             self._jit_reset = jax.jit(jax_env.reset)
-            self._jit_step = jax.jit(jax_env.step_env)
+            self._jit_step = jax.jit(jax_env.step_env_array)  # Array-based step
             
-            # JIT-compiled output conversion (single env)
+            # Simple array reshape (no dict conversion needed!)
             @jax.jit
-            def _convert_outputs(obs_dict, rew_dict, done_dict, prior):
-                """Convert dicts to stacked arrays in one JIT call."""
-                obs = jnp.stack([obs_dict[a] for a in self._agent_list], axis=0).T  # [obs_dim, n_a]
-                rew = jnp.stack([rew_dict[a] for a in self._agent_list])[None, :]   # [1, n_a]
-                done = jnp.stack([done_dict[a] for a in self._agent_list])[None, :] # [1, n_a]
-                prior_out = prior.T  # [2, n_a]
-                return obs, rew, done, prior_out
+            def _convert_outputs(obs, rew, done, prior):
+                """Reshape arrays for output format."""
+                return obs.T, rew[None, :], done[None, :], prior.T  # [obs_dim, n_a], [1, n_a], [1, n_a], [2, n_a]
             self._jit_convert = _convert_outputs
             
-            # JIT-compiled obs conversion for reset (single env)
+            # JIT-compiled obs conversion for reset (single env - still uses dict)
             @jax.jit
             def _convert_obs(obs_dict):
                 """Convert obs dict to stacked array."""
@@ -112,23 +109,24 @@ class JaxAssemblyAdapterGPU:
             self._jit_convert_obs = _convert_obs
         else:
             self._jit_reset = jax.jit(jax.vmap(jax_env.reset))
-            self._jit_step = jax.jit(jax.vmap(jax_env.step_env))
+            self._jit_step = jax.jit(jax.vmap(jax_env.step_env_array))  # Array-based step
             
-            # JIT-compiled output conversion (batched envs)
+            # Simple array reshape (no dict conversion needed!)
             @jax.jit
-            def _convert_outputs_batched(obs_dict, rew_dict, done_dict, prior):
-                """Convert dicts to stacked arrays in one JIT call."""
-                obs = jnp.stack([obs_dict[a] for a in self._agent_list], axis=1)  # [N, n_a, obs_dim]
-                obs_flat = obs.reshape(n_envs * jax_env.n_a, jax_env.obs_dim).T   # [obs_dim, N*n_a]
-                rew = jnp.stack([rew_dict[a] for a in self._agent_list], axis=1)  # [N, n_a]
-                rew_flat = rew.reshape(1, -1)                                      # [1, N*n_a]
-                done = jnp.stack([done_dict[a] for a in self._agent_list], axis=1) # [N, n_a]
-                done_flat = done.reshape(1, -1)                                    # [1, N*n_a]
-                prior_flat = prior.reshape(n_envs * jax_env.n_a, 2).T              # [2, N*n_a]
+            def _convert_outputs_batched(obs, rew, done, prior):
+                """Reshape batched arrays for output format."""
+                # obs: [N, n_a, obs_dim] -> [obs_dim, N*n_a]
+                obs_flat = obs.reshape(n_envs * jax_env.n_a, jax_env.obs_dim).T
+                # rew: [N, n_a] -> [1, N*n_a]
+                rew_flat = rew.reshape(1, -1)
+                # done: [N, n_a] -> [1, N*n_a]
+                done_flat = done.reshape(1, -1)
+                # prior: [N, n_a, 2] -> [2, N*n_a]
+                prior_flat = prior.reshape(n_envs * jax_env.n_a, 2).T
                 return obs_flat, rew_flat, done_flat, prior_flat
             self._jit_convert = _convert_outputs_batched
             
-            # JIT-compiled obs conversion for reset (batched envs)
+            # JIT-compiled obs conversion for reset (batched envs - still uses dict)
             @jax.jit
             def _convert_obs_batched(obs_dict):
                 """Convert obs dict to stacked array."""
@@ -188,39 +186,32 @@ class JaxAssemblyAdapterGPU:
         actions_jax = jax_dlpack.from_dlpack(actions_torch.contiguous())
 
         if self.n_envs == 1:
-            actions_dict = {
-                a: actions_jax[i] for i, a in enumerate(self._agent_list)
-            }
+            # step_env_array takes [n_a, 2] directly - no dict conversion!
             key, step_key = jax.random.split(self._key)
             self._key = key
-            # prior is now returned from step_env (fused for performance)
-            obs_dict, new_state, rew_dict, done_dict, a_prior_jax = self._jit_step(
-                step_key, self._states, actions_dict
+            obs_arr, new_state, rew_arr, done_arr, prior_arr = self._jit_step(
+                step_key, self._states, actions_jax  # Pass array directly
             )
             self._states = new_state
         else:
-            # Reshape flat (N*n_a, 2) → (N, n_a, 2)
+            # Reshape flat (N*n_a, 2) → (N, n_a, 2) for vmap
             actions_reshaped = actions_jax.reshape(
                 self.n_envs, self._n_a_per_env, 2
             )
-            actions_dict = {
-                a: actions_reshaped[:, i, :]
-                for i, a in enumerate(self._agent_list)
-            }
 
             keys = jax.random.split(self._key, self.n_envs + 1)
             self._key = keys[0]
             step_keys = keys[1:]
 
-            # prior is now returned from step_env (fused for performance)
-            obs_dict, new_states, rew_dict, done_dict, a_prior_jax = self._jit_step(
-                step_keys, self._states, actions_dict
+            # step_env_array returns arrays: [N, n_a, obs_dim], [N, n_a], [N, n_a], [N, n_a, 2]
+            obs_arr, new_states, rew_arr, done_arr, prior_arr = self._jit_step(
+                step_keys, self._states, actions_reshaped  # Pass array directly
             )
             self._states = new_states
 
-        # JIT-compiled conversion: dicts → stacked arrays (single JAX dispatch)
+        # JIT-compiled reshape (no dict conversion - just array reshaping!)
         obs_jax, rew_jax, done_jax, prior_jax = self._jit_convert(
-            obs_dict, rew_dict, done_dict, a_prior_jax
+            obs_arr, rew_arr, done_arr, prior_arr
         )
         
         # DLPack zero-copy: JAX GPU → PyTorch GPU

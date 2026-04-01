@@ -220,7 +220,7 @@ class AssemblyEnv(MultiAgentEnv):
         state: AssemblyState,
         actions: Dict,
     ) -> Tuple[Dict, AssemblyState, Dict, Dict, chex.Array]:
-
+        """Standard step returning dicts (for compatibility)."""
         # Actions: dict → [n_a, 2], clipped to [-1, 1]
         u = jnp.stack([actions[a] for a in self.agents])  # [n_a, 2]
         u = jnp.clip(u, -1.0, 1.0)
@@ -250,6 +250,46 @@ class AssemblyEnv(MultiAgentEnv):
         prior = self._robot_policy_fast(new_state, cached)
 
         return obs, new_state, rewards, dones, prior
+    
+    @partial(jax.jit, static_argnums=[0])
+    def step_env_array(
+        self,
+        key: chex.PRNGKey,
+        state: AssemblyState,
+        actions: chex.Array,  # [n_a, 2] instead of dict
+    ) -> Tuple[chex.Array, AssemblyState, chex.Array, chex.Array, chex.Array]:
+        """Pure-array step for maximum JIT performance.
+        
+        Returns arrays instead of dicts to avoid Python dict overhead in JIT:
+          obs:    [n_a, obs_dim]
+          rew:    [n_a]
+          done:   [n_a]
+          prior:  [n_a, 2]
+        """
+        # Actions already [n_a, 2], just clip
+        u = jnp.clip(actions, -1.0, 1.0)
+
+        # Physics (single substep, n_frames=1)
+        p_pos, p_vel = self._world_step(state, u)
+
+        done = jnp.full((self.n_a,), state.step + 1 >= self.max_steps)
+
+        new_state = state.replace(
+            p_pos=p_pos,
+            p_vel=p_vel,
+            done=done,
+            step=state.step + 1,
+        )
+
+        # Pre-compute all distances ONCE (eliminates redundant argsort calls)
+        cached = self._compute_cached_distances(new_state)
+
+        # Return arrays directly, no dict conversion
+        obs = self._get_obs_vectorized(new_state, cached)   # [n_a, obs_dim]
+        rew = self._rewards_vectorized(new_state, cached)   # [n_a]
+        prior = self._robot_policy_vectorized(new_state, cached)  # [n_a, 2]
+
+        return obs, new_state, rew, done, prior
     
     def _compute_cached_distances(self, state: AssemblyState) -> CachedDistances:
         """Compute all distance metrics ONCE per step.
