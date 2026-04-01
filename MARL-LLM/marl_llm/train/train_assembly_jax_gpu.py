@@ -189,7 +189,7 @@ def run(cfg):
 
     torch_agent_actions = []
 
-    # Set all networks to train mode and ensure they are on GPU
+    # Initialize all networks on GPU in training mode
     maddpg.prep_training(device="gpu")
 
     ## ======================================= Training Loop =======================================
@@ -201,7 +201,8 @@ def run(cfg):
         obs_gpu = env.reset()  # torch.cuda.FloatTensor (obs_dim, N*n_a)
         start_stop_num = [slice(0, env.n_a)]
         
-        # Keep networks on GPU for rollout (no prep_rollouts CPU switch)
+        # Set networks to eval mode for rollout (keep on GPU)
+        maddpg.prep_rollouts(device="gpu")
         maddpg.scale_noise(maddpg.noise, maddpg.epsilon)
         maddpg.reset_noise()
 
@@ -275,7 +276,8 @@ def run(cfg):
 
         ########################### Training Phase ###########################
         start_time_2 = time.time()
-        # Networks already on GPU, no prep_training needed
+        # Switch networks to training mode (keep on GPU)
+        maddpg.prep_training(device="gpu")
         
         total_vf_loss = 0.0
         total_pol_loss = 0.0
@@ -350,8 +352,8 @@ def run(cfg):
         if ep_index % (4 * cfg.save_interval) < cfg.n_rollout_threads:
             os.makedirs(run_dir / "incremental", exist_ok=True)
             maddpg.save(run_dir / "incremental" / ("model_ep%i.pt" % (ep_index + 1)))
-            # Restore networks to GPU after save (save moves them to CPU)
-            maddpg.prep_rollouts(device="gpu")
+            # Restore all networks to GPU after save (save moves them to CPU)
+            maddpg.prep_training(device="gpu")
 
         if ep_index > 0 and ep_index % cfg.eval_interval < cfg.n_rollout_threads:
             run_eval(maddpg, env, cfg, ep_index, logger)
