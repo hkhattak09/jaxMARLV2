@@ -191,8 +191,7 @@ def run(cfg):
     ## ======================================= Training Loop =======================================
     print("Training Starts...")
     for ep_index in range(0, cfg.n_episodes, cfg.n_rollout_threads):
-        episode_reward_mean_bar = 0
-        episode_reward_std_bar  = 0
+        rewards_history = []  # Collect all rewards for proper std computation
 
         obs = env.reset()                                  # (obs_dim, N*n_a)
         start_stop_num = [slice(0, env.n_a)]
@@ -228,10 +227,14 @@ def run(cfg):
             )
             obs = next_obs
 
-            episode_reward_mean_bar += np.mean(rewards)
-            episode_reward_std_bar  += np.std(rewards)
+            rewards_history.append(rewards.flatten())
 
         end_time_1 = time.time()
+
+        # Compute reward stats on full episode batch (correct std computation)
+        rewards_batch = np.stack(rewards_history)  # Shape: (T, N*n_a)
+        episode_reward_mean_bar = rewards_batch.mean() * cfg.episode_length
+        episode_reward_std_bar = rewards_batch.std() * cfg.episode_length
 
         ########################### Training Phase ###########################
         start_time_2 = time.time()
