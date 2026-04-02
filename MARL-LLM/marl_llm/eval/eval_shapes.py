@@ -4,16 +4,10 @@ Runs evaluation episodes per shape (no augmentations) and saves the last episode
 of each shape as a GIF.
 
 Usage:
-    python /path/to/eval_shapes.py -p /path/to/model.pt
+    python /path/to/eval_shapes.py
 
-Options:
-    -p, --weights-path  Path to trained model weights (required)
-    -e, --episodes      Number of episodes per shape (default: 10)
-    -o, --output-dir    Output directory for GIFs and results (default: ./eval_results)
-    -s, --seed          Random seed (default: 42)
-
-Example:
-    python eval/eval_shapes.py -p /content/cpp_model.pt -e 10 -o ./my_eval
+Configuration:
+    Edit WEIGHTS_PATH below to point to your model weights.
 """
 
 # Configure JAX GPU memory BEFORE any imports
@@ -21,59 +15,16 @@ import os
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.15'
 
 import sys
-import argparse
 from pathlib import Path
 
 # ============================================================================
-# CONFIGURATION
+# CONFIGURATION - Edit these values
 # ============================================================================
-DEFAULT_WEIGHTS_PATH = "./models/assembly/YOUR_RUN_NAME/model.pt"
-
-# Evaluation parameters
-EPISODES_PER_SHAPE = 10
-EPISODE_LENGTH = 200
-SEED = 42
+WEIGHTS_PATH = "/content/cpp_model.pt"
+EPISODES_PER_SHAPE = 10  # cfg.eval_episodes is 3, using 10 for thorough eval
 OUTPUT_DIR = "./eval_results"
+# Other values from cfg: cfg.episode_length, cfg.seed
 # ============================================================================
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="Evaluate trained MADDPG model on all shapes",
-        # Prevent conflicts with other argparse in imported modules
-        conflict_handler='resolve'
-    )
-    parser.add_argument(
-        "-p", "--weights-path",
-        type=str,
-        default=DEFAULT_WEIGHTS_PATH,
-        help=f"Path to trained model weights (default: {DEFAULT_WEIGHTS_PATH})"
-    )
-    parser.add_argument(
-        "-o", "--output-dir",
-        type=str,
-        default=OUTPUT_DIR,
-        help=f"Output directory for GIFs and results (default: {OUTPUT_DIR})"
-    )
-    parser.add_argument(
-        "-e", "--episodes",
-        type=int,
-        default=EPISODES_PER_SHAPE,
-        help=f"Number of episodes per shape (default: {EPISODES_PER_SHAPE})"
-    )
-    parser.add_argument(
-        "-s", "--seed",
-        type=int,
-        default=SEED,
-        help=f"Random seed (default: {SEED})"
-    )
-    # Parse only known args to avoid conflicts with cfg module
-    args, _ = parser.parse_known_args()
-    return args
-
-
-# Parse args BEFORE importing cfg (which has its own argparse)
-args = parse_args()
 
 
 # ── sys.path setup (must be before local imports) ─────────────────────────
@@ -97,30 +48,30 @@ from train.eval_render import save_eval_gif
 from cfg.assembly_cfg import gpsargs as cfg
 
 
-def run_eval(args):
-    """Run evaluation: 10 episodes per shape, save last episode GIF for each shape."""
+def run_eval():
+    """Run evaluation: episodes per shape, save last episode GIF for each shape."""
     
     # Validate weights path
-    weights_path = Path(args.weights_path)
+    weights_path = Path(WEIGHTS_PATH)
     if not weights_path.exists():
         print(f"ERROR: Weights file not found at: {weights_path}")
-        print("Please provide a valid path with -p /path/to/model.pt")
+        print("Please update WEIGHTS_PATH at the top of this script.")
         sys.exit(1)
     
     # Set random seeds for reproducibility
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    random.seed(args.seed)
+    torch.manual_seed(cfg.seed)
+    np.random.seed(cfg.seed)
+    random.seed(cfg.seed)
     
     if torch.cuda.is_available():
-        torch.cuda.manual_seed(args.seed)
-        torch.cuda.manual_seed_all(args.seed)
+        torch.cuda.manual_seed(cfg.seed)
+        torch.cuda.manual_seed_all(cfg.seed)
         print(f"Using GPU: {torch.cuda.get_device_name(0)}")
     else:
         print("WARNING: No GPU available, running on CPU")
     
     # Create output directory
-    output_dir = Path(args.output_dir)
+    output_dir = Path(OUTPUT_DIR)
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Output directory: {output_dir.resolve()}")
     
@@ -133,7 +84,7 @@ def run_eval(args):
     env = JaxAssemblyAdapterGPU(
         jax_env,
         n_envs=1,
-        seed=args.seed,
+        seed=cfg.seed,
         alpha=0.1,
     )
     
@@ -154,7 +105,7 @@ def run_eval(args):
     print("\n" + "="*100)
     print("EVALUATION PHASE STARTING")
     print("="*100)
-    print(f"Running {args.episodes} evaluation episodes per shape (no offsets, no rotation)")
+    print(f"Running {EPISODES_PER_SHAPE} evaluation episodes per shape (no offsets, no rotation)")
     print(f"Number of shapes to evaluate: {num_shapes}")
     print("="*100 + "\n")
     
@@ -169,8 +120,8 @@ def run_eval(args):
         shape_dist_uniformities = []
         shape_voronoi_uniformities = []
         
-        for ep_idx in range(args.episodes):
-            is_last_episode = (ep_idx == args.episodes - 1)
+        for ep_idx in range(EPISODES_PER_SHAPE):
+            is_last_episode = (ep_idx == EPISODES_PER_SHAPE - 1)
             state_history = [] if is_last_episode else None
             
             # Reset with specific shape (no augmentation)
@@ -178,7 +129,7 @@ def run_eval(args):
             ep_reward = 0.0
             
             with torch.no_grad():
-                for step in range(EPISODE_LENGTH):
+                for step in range(cfg.episode_length):
                     # Get deterministic action from policy
                     torch_obs = obs.cpu() if obs.is_cuda else obs
                     torch_obs = torch_obs.requires_grad_(False)
@@ -197,7 +148,7 @@ def run_eval(args):
                         state_history.append(env._states)
             
             # Record metrics
-            avg_reward = ep_reward / EPISODE_LENGTH
+            avg_reward = ep_reward / cfg.episode_length
             coverage = env.coverage_rate()
             dist_uniformity = env.distribution_uniformity()
             voronoi_uniformity = env.voronoi_based_uniformity()
@@ -207,7 +158,7 @@ def run_eval(args):
             shape_dist_uniformities.append(dist_uniformity)
             shape_voronoi_uniformities.append(voronoi_uniformity)
             
-            print(f"  Episode {ep_idx + 1}/{args.episodes}: "
+            print(f"  Episode {ep_idx + 1}/{EPISODES_PER_SHAPE}: "
                   f"Reward={avg_reward:.4f}, Coverage={coverage:.3f}, "
                   f"Dist Uniformity={dist_uniformity:.3f}, Voronoi={voronoi_uniformity:.3f}")
             
@@ -235,7 +186,7 @@ def run_eval(args):
         }
         all_results.append(shape_result)
         
-        print(f"\n  --- Shape {shape_idx} Average (over {args.episodes} episodes) ---")
+        print(f"\n  --- Shape {shape_idx} Average (over {EPISODES_PER_SHAPE} episodes) ---")
         print(f"  Reward:            {mean_reward:.4f}")
         print(f"  Coverage:          {mean_coverage:.3f}")
         print(f"  Dist Uniformity:   {mean_dist_uniformity:.3f}")
@@ -267,9 +218,9 @@ def run_eval(args):
     with open(results_path, 'wb') as f:
         pickle.dump({
             'weights_path': str(weights_path),
-            'episodes_per_shape': args.episodes,
-            'episode_length': EPISODE_LENGTH,
-            'seed': args.seed,
+            'episodes_per_shape': EPISODES_PER_SHAPE,
+            'episode_length': cfg.episode_length,
+            'seed': cfg.seed,
             'num_shapes': num_shapes,
             'results': all_results,
         }, f)
@@ -277,4 +228,4 @@ def run_eval(args):
 
 
 if __name__ == '__main__':
-    run_eval(args)
+    run_eval()
