@@ -21,28 +21,8 @@ import os
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.15'
 
 import sys
-from pathlib import Path
-
-# ── sys.path setup (must be before local imports) ─────────────────────────
-_REPO_ROOT = str(Path(__file__).resolve().parents[3])
-_MARL_LLM_PATH = os.path.join(_REPO_ROOT, "MARL-LLM", "marl_llm")
-_JAXMARL_PATH = os.path.join(_REPO_ROOT, "JaxMARL")
-_CUS_GYM_PATH = os.path.join(_REPO_ROOT, "MARL-LLM", "cus_gym")
-for p in [_MARL_LLM_PATH, _JAXMARL_PATH, _CUS_GYM_PATH]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
-# ───────────────────────────────────────────────────────────────────────────
-
-import torch
-import numpy as np
-import random
 import argparse
-
-from jaxmarl.environments.mpe.assembly import AssemblyEnv
-from gym.wrappers.customized_envs.jax_assembly_wrapper_gpu import JaxAssemblyAdapterGPU
-from algorithm.algorithms import MADDPG
-from train.eval_render import save_eval_gif
-from cfg.assembly_cfg import gpsargs as cfg
+from pathlib import Path
 
 # ============================================================================
 # CONFIGURATION
@@ -58,7 +38,11 @@ OUTPUT_DIR = "./eval_results"
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate trained MADDPG model on all shapes")
+    parser = argparse.ArgumentParser(
+        description="Evaluate trained MADDPG model on all shapes",
+        # Prevent conflicts with other argparse in imported modules
+        conflict_handler='resolve'
+    )
     parser.add_argument(
         "-p", "--weights-path",
         type=str,
@@ -83,7 +67,34 @@ def parse_args():
         default=SEED,
         help=f"Random seed (default: {SEED})"
     )
-    return parser.parse_args()
+    # Parse only known args to avoid conflicts with cfg module
+    args, _ = parser.parse_known_args()
+    return args
+
+
+# Parse args BEFORE importing cfg (which has its own argparse)
+args = parse_args()
+
+
+# ── sys.path setup (must be before local imports) ─────────────────────────
+_REPO_ROOT = str(Path(__file__).resolve().parents[3])
+_MARL_LLM_PATH = os.path.join(_REPO_ROOT, "MARL-LLM", "marl_llm")
+_JAXMARL_PATH = os.path.join(_REPO_ROOT, "JaxMARL")
+_CUS_GYM_PATH = os.path.join(_REPO_ROOT, "MARL-LLM", "cus_gym")
+for p in [_MARL_LLM_PATH, _JAXMARL_PATH, _CUS_GYM_PATH]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+# ───────────────────────────────────────────────────────────────────────────
+
+import torch
+import numpy as np
+import random
+
+from jaxmarl.environments.mpe.assembly import AssemblyEnv
+from gym.wrappers.customized_envs.jax_assembly_wrapper_gpu import JaxAssemblyAdapterGPU
+from algorithm.algorithms import MADDPG
+from train.eval_render import save_eval_gif
+from cfg.assembly_cfg import gpsargs as cfg
 
 
 def run_eval(args):
@@ -266,5 +277,4 @@ def run_eval(args):
 
 
 if __name__ == '__main__':
-    args = parse_args()
     run_eval(args)
