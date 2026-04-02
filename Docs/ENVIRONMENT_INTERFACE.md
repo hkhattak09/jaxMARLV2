@@ -254,9 +254,22 @@ def coverage_rate(self) -> float:
 **Distribution Uniformity**:
 ```python
 def distribution_uniformity(self) -> float:
-    # Measure of even distribution (lower variance = more uniform)
-    # Based on distance to nearest neighbor
-    # Range: [0, 1], higher = more uniform
+    # Uniformity of nearest-neighbor distances across agents
+    # Uses coefficient of variation: uniformity = 1 / (1 + std/mean)
+    # Range: [0, 1], higher = more uniform spacing
+    min_dists = [distance_to_nearest_neighbor(agent) for agent in agents]
+    return 1.0 / (1.0 + std(min_dists) / mean(min_dists))
+```
+
+**Voronoi Uniformity**:
+```python
+def voronoi_based_uniformity(self) -> float:
+    # Uniformity of Voronoi cell counts across agents
+    # Each grid cell is assigned to its nearest agent
+    # Uses coefficient of variation: uniformity = 1 / (1 + std/mean)
+    # Range: [0, 1], higher = more balanced cell distribution
+    cell_counts = [count_cells_assigned_to(agent) for agent in agents]
+    return 1.0 / (1.0 + std(cell_counts) / mean(cell_counts))
 ```
 
 ---

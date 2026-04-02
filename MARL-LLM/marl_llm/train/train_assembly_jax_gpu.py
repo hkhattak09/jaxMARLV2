@@ -305,6 +305,13 @@ def run(cfg):
     # Initialize all networks on GPU in training mode
     maddpg.prep_training(device="gpu")
 
+    # Metric history for 10-episode rolling statistics
+    metric_history = {
+        "coverage": [],
+        "uniformity": [],
+        "voronoi": [],
+    }
+
     ## ======================================= Training Loop =======================================
     print("Training Starts (GPU-optimized mode)...")
     for ep_index in range(0, cfg.n_episodes, cfg.n_rollout_threads):
@@ -433,14 +440,28 @@ def run(cfg):
         avg_reward = episode_reward_mean_bar / cfg.episode_length
         reward_uniformity = 1.0 / (1.0 + episode_reward_std_bar / (abs(episode_reward_mean_bar) + 1e-8))
         
+        # Track metrics for rolling statistics
+        metric_history["coverage"].append(coverage)
+        metric_history["uniformity"].append(uniformity)
+        metric_history["voronoi"].append(voronoi_uniformity)
+        # Keep only last 10 episodes
+        for k in metric_history:
+            if len(metric_history[k]) > 10:
+                metric_history[k] = metric_history[k][-10:]
+        
         if ep_index % 10 == 0:
+            # Compute mean and std over last 10 episodes (or fewer if just starting)
+            cov_mean, cov_std = np.mean(metric_history["coverage"]), np.std(metric_history["coverage"])
+            uni_mean, uni_std = np.mean(metric_history["uniformity"]), np.std(metric_history["uniformity"])
+            vor_mean, vor_std = np.mean(metric_history["voronoi"]), np.std(metric_history["voronoi"])
+            
             sep = "=" * 100
             print(f"\n{sep}")
             print(f"Episode {ep_index:5d}/{cfg.n_episodes:5d} | Agents: {env.n_a}")
             print(sep)
             print(f"REWARDS:            Mean: {avg_reward:7.4f} | Std: {episode_reward_std_bar:7.4f} | Uniformity: {reward_uniformity:6.3f}")
-            print(f"ENVIRONMENT METRICS:")
-            print(f"  - Coverage Rate: {coverage:6.3f} | Dist Uniformity (NN): {uniformity:6.3f} | Voronoi Uniformity: {voronoi_uniformity:7.3f}")
+            print(f"ENVIRONMENT METRICS (last 10 eps):")
+            print(f"  - Coverage: {cov_mean:.3f}(std:{cov_std:.3f}) | Dist Uniformity: {uni_mean:.3f}(std:{uni_std:.3f}) | Voronoi Uniformity: {vor_mean:.3f}(std:{vor_std:.3f})")
             print(f"LOSSES:             VF: {avg_vf_loss:7.4f} | Policy: {avg_pol_loss:7.4f} | Reg: {avg_reg_loss:7.4f}")
             print(f"TIMING (sec):       Rollout: {end_time_1 - start_time_1:6.2f} | Policy Exec: {policy_time:6.2f} | Env Step: {env_time:6.2f} | Training: {end_time_2 - start_time_2:6.2f}")
             print(f"{sep}\n")

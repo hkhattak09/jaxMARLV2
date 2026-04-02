@@ -856,11 +856,12 @@ class AssemblyEnv(MultiAgentEnv):
 
     @partial(jax.jit, static_argnums=[0])
     def distribution_uniformity(self, state: AssemblyState) -> chex.Array:
-        """Normalised variance of minimum inter-agent distances.
+        """Uniformity of minimum inter-agent distances, in [0, 1].
 
         For each agent, finds its nearest neighbour distance; computes
-        variance across all agents and normalises to [0, 1] — matching
-        AssemblySwarmWrapper.distribution_uniformity().
+        uniformity as 1 / (1 + coefficient_of_variation). Returns 1.0 when
+        all nearest-neighbour distances are identical (perfect uniformity),
+        approaching 0.0 as variance increases.
         """
         # Pairwise distances [n_a, n_a]
         delta = state.p_pos[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_a, 2]
@@ -872,19 +873,20 @@ class AssemblyEnv(MultiAgentEnv):
         # Nearest neighbour distance per agent
         min_dists = jnp.min(dists_excl, axis=1)  # [n_a]
 
-        variance = jnp.var(min_dists)
-        min_d    = jnp.min(min_dists)
-        max_d    = jnp.max(min_dists)
-        # Guard against degenerate case where all nearest distances are equal
-        return (variance - min_d) / jnp.maximum(max_d - min_d, 1e-8)
+        mean_d = jnp.mean(min_dists)
+        std_d = jnp.std(min_dists)
+        # Coefficient of variation: std/mean; uniformity = 1/(1+cv)
+        # Higher uniformity (closer to 1) means more uniform spacing
+        return 1.0 / (1.0 + std_d / jnp.maximum(mean_d, 1e-8))
 
     @partial(jax.jit, static_argnums=[0])
     def voronoi_based_uniformity(self, state: AssemblyState) -> chex.Array:
-        """Normalised variance of per-agent Voronoi cell counts.
+        """Uniformity of per-agent Voronoi cell counts, in [0, 1].
 
         Assigns each valid grid cell to its nearest agent (Voronoi partition),
-        counts cells per agent, then normalises the variance — matching
-        AssemblySwarmWrapper.voronoi_based_uniformity().
+        counts cells per agent, then computes uniformity as 1 / (1 + cv).
+        Returns 1.0 when all agents have equal cell counts (perfect uniformity),
+        approaching 0.0 as variance increases.
         """
         # a2g_dist[i, j] = distance from agent i to grid cell j
         a2g = state.grid_center.T[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
@@ -904,10 +906,11 @@ class AssemblyEnv(MultiAgentEnv):
             one_hot * state.valid_mask[:, None].astype(jnp.float32), axis=0
         )  # [n_a]
 
-        variance = jnp.var(voronoi_counts)
-        min_c    = jnp.min(voronoi_counts)
-        max_c    = jnp.max(voronoi_counts)
-        return (variance - min_c) / jnp.maximum(max_c - min_c, 1e-8)
+        mean_c = jnp.mean(voronoi_counts)
+        std_c = jnp.std(voronoi_counts)
+        # Coefficient of variation: std/mean; uniformity = 1/(1+cv)
+        # Higher uniformity (closer to 1) means more balanced cell distribution
+        return 1.0 / (1.0 + std_c / jnp.maximum(mean_c, 1e-8))
 
     @partial(jax.jit, static_argnums=[0])
     def eval_metrics(self, state: AssemblyState) -> Dict[str, chex.Array]:
