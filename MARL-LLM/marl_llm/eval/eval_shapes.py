@@ -19,8 +19,18 @@ import numpy as np
 import random
 from pathlib import Path
 
-# Add parent directory to path for imports
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Add paths for imports
+# eval_shapes.py is in: MARL-LLM/marl_llm/eval/
+# Need to add: MARL-LLM/marl_llm (for algorithm, cfg, train, cus_gym)
+# Need to add: JaxMARL (for jaxmarl)
+script_dir = Path(__file__).resolve().parent  # .../eval/
+marl_llm_dir = script_dir.parent              # .../marl_llm/
+marl_llm_root = marl_llm_dir.parent           # .../MARL-LLM/
+project_root = marl_llm_root.parent           # .../jaxMARLV2/
+jaxmarl_dir = project_root / "JaxMARL"        # .../JaxMARL/
+
+sys.path.insert(0, str(marl_llm_dir))
+sys.path.insert(0, str(jaxmarl_dir))
 
 from jaxmarl.environments.mpe.assembly import AssemblyEnv
 from cus_gym.gym.wrappers.customized_envs.jax_assembly_wrapper_gpu import JaxAssemblyAdapterGPU
