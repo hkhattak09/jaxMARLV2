@@ -8,29 +8,26 @@ Usage:
     python eval/eval_shapes.py
 """
 
+# Configure JAX GPU memory BEFORE any imports
 import os
-import sys
-
-# JAX memory limit must be set before importing JAX
 os.environ['XLA_PYTHON_CLIENT_MEM_FRACTION'] = '0.15'
+
+import sys
+from pathlib import Path
+
+# ── sys.path setup (must be before local imports) ─────────────────────────
+_REPO_ROOT = str(Path(__file__).resolve().parents[3])
+_MARL_LLM_PATH = os.path.join(_REPO_ROOT, "MARL-LLM", "marl_llm")
+_JAXMARL_PATH = os.path.join(_REPO_ROOT, "JaxMARL")
+_CUS_GYM_PATH = os.path.join(_REPO_ROOT, "MARL-LLM", "cus_gym")
+for p in [_MARL_LLM_PATH, _JAXMARL_PATH, _CUS_GYM_PATH]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+# ───────────────────────────────────────────────────────────────────────────
 
 import torch
 import numpy as np
 import random
-from pathlib import Path
-
-# Add paths for imports
-# eval_shapes.py is in: MARL-LLM/marl_llm/eval/
-# Need to add: MARL-LLM/marl_llm (for algorithm, cfg, train, cus_gym)
-# Need to add: JaxMARL (for jaxmarl)
-script_dir = Path(__file__).resolve().parent  # .../eval/
-marl_llm_dir = script_dir.parent              # .../marl_llm/
-marl_llm_root = marl_llm_dir.parent           # .../MARL-LLM/
-project_root = marl_llm_root.parent           # .../jaxMARLV2/
-jaxmarl_dir = project_root / "JaxMARL"        # .../JaxMARL/
-
-sys.path.insert(0, str(marl_llm_dir))
-sys.path.insert(0, str(jaxmarl_dir))
 
 from jaxmarl.environments.mpe.assembly import AssemblyEnv
 from cus_gym.gym.wrappers.customized_envs.jax_assembly_wrapper_gpu import JaxAssemblyAdapterGPU
