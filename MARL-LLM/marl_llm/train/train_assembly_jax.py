@@ -193,6 +193,16 @@ def run(cfg):
         "coverage": [],
         "uniformity": [],
         "voronoi": [],
+        "reward_mean": [],
+        "reward_std": [],
+        "reward_uniformity": [],
+        "vf_loss": [],
+        "pol_loss": [],
+        "reg_loss": [],
+        "rollout_time": [],
+        "policy_time": [],
+        "env_time": [],
+        "training_time": [],
     }
 
     ## ======================================= Training Loop =======================================
@@ -296,6 +306,16 @@ def run(cfg):
         metric_history["coverage"].append(coverage)
         metric_history["uniformity"].append(uniformity)
         metric_history["voronoi"].append(voronoi_uniformity)
+        metric_history["reward_mean"].append(avg_reward)
+        metric_history["reward_std"].append(episode_reward_std_bar)
+        metric_history["reward_uniformity"].append(reward_uniformity)
+        metric_history["vf_loss"].append(avg_vf_loss)
+        metric_history["pol_loss"].append(avg_pol_loss)
+        metric_history["reg_loss"].append(avg_reg_loss)
+        metric_history["rollout_time"].append(end_time_1 - start_time_1)
+        metric_history["policy_time"].append(policy_time)
+        metric_history["env_time"].append(env_time)
+        metric_history["training_time"].append(end_time_2 - start_time_2)
         # Keep only last 10 episodes
         for k in metric_history:
             if len(metric_history[k]) > 10:
@@ -307,15 +327,27 @@ def run(cfg):
             uni_mean, uni_std = np.mean(metric_history["uniformity"]), np.std(metric_history["uniformity"])
             vor_mean, vor_std = np.mean(metric_history["voronoi"]), np.std(metric_history["voronoi"])
             
+            # Compute 10-episode averages for rewards, losses, and timing
+            avg_reward_10 = np.mean(metric_history["reward_mean"])
+            avg_reward_std_10 = np.mean(metric_history["reward_std"])
+            avg_reward_uniformity_10 = np.mean(metric_history["reward_uniformity"])
+            avg_vf_loss_10 = np.mean(metric_history["vf_loss"])
+            avg_pol_loss_10 = np.mean(metric_history["pol_loss"])
+            avg_reg_loss_10 = np.mean(metric_history["reg_loss"])
+            avg_rollout_time_10 = np.mean(metric_history["rollout_time"])
+            avg_policy_time_10 = np.mean(metric_history["policy_time"])
+            avg_env_time_10 = np.mean(metric_history["env_time"])
+            avg_training_time_10 = np.mean(metric_history["training_time"])
+            
             sep = "=" * 100
             print(f"\n{sep}")
             print(f"Episode {ep_index:5d}/{cfg.n_episodes:5d} | Agents: {env.n_a}")
             print(sep)
-            print(f"REWARDS:            Mean: {avg_reward:7.4f} | Std: {episode_reward_std_bar:7.4f} | Uniformity: {reward_uniformity:6.3f}")
+            print(f"REWARDS (last 10 eps):  Mean: {avg_reward_10:7.4f} | Std: {avg_reward_std_10:7.4f} | Uniformity: {avg_reward_uniformity_10:6.3f}")
             print(f"ENVIRONMENT METRICS (last 10 eps):")
             print(f"  - Coverage: {cov_mean:.3f}(std:{cov_std:.3f}) | Dist Uniformity: {uni_mean:.3f}(std:{uni_std:.3f}) | Voronoi Uniformity: {vor_mean:.3f}(std:{vor_std:.3f})")
-            print(f"LOSSES:             VF: {avg_vf_loss:7.4f} | Policy: {avg_pol_loss:7.4f} | Reg: {avg_reg_loss:7.4f}")
-            print(f"TIMING (sec):       Rollout: {end_time_1 - start_time_1:6.2f} | Policy Exec: {policy_time:6.2f} | Env Step: {env_time:6.2f} | Training: {end_time_2 - start_time_2:.2f}")
+            print(f"LOSSES (last 10 eps):   VF: {avg_vf_loss_10:7.4f} | Policy: {avg_pol_loss_10:7.4f} | Reg: {avg_reg_loss_10:7.4f}")
+            print(f"TIMING (last 10 eps):   Rollout: {avg_rollout_time_10:6.2f} | Policy Exec: {avg_policy_time_10:6.2f} | Env Step: {avg_env_time_10:6.2f} | Training: {avg_training_time_10:.2f}")
             print(f"{sep}\n")
 
         if ep_index % cfg.save_interval == 0:
