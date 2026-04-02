@@ -155,7 +155,7 @@ results_file = os.path.join(_repo_root, 'fig', 'results.pkl')
 
 ## ==================== Environment Configuration ====================
 # Multi-agent system parameters
-parser.add_argument("--n_a", type=int, default=30, help='Number of agents in the swarm') 
+parser.add_argument("--n_a", type=int, default=24, help='Number of agents in the swarm') 
 
 # Agent behavior configuration
 parser.add_argument("--agent_strategy", type=str, default='input', help="Agent control strategy: input/random/rule")
