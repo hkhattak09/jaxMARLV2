@@ -326,7 +326,7 @@ def run(cfg):
 
     ## ======================================= Training Loop =======================================
     print("Training Starts (GPU-optimized mode)...")
-    for ep_index in range(0, cfg.n_episodes, cfg.n_rollout_threads):
+    for ep_index in range(0, cfg.n_episodes):
         episode_reward_mean_bar = 0
         episode_reward_std_bar  = 0
 
@@ -354,7 +354,7 @@ def run(cfg):
         env_time = 0.0
         
         for et_index in range(cfg.episode_length):
-            if ep_index % 500 < cfg.n_rollout_threads:
+            if ep_index % 500 == 0:
                 env.render()
 
             # obs_gpu is already a torch.cuda tensor (via DLPack)
@@ -474,8 +474,7 @@ def run(cfg):
             if len(metric_history[k]) > 10:
                 metric_history[k] = metric_history[k][-10:]
         
-        ep_iter = ep_index // cfg.n_rollout_threads  # loop iteration count (0, 1, 2, ...)
-        if ep_iter % 10 == 0:
+        if ep_index % 10 == 0:
             # Compute mean and std over last 10 episodes (or fewer if just starting)
             cov_mean, cov_std = np.mean(metric_history["coverage"]), np.std(metric_history["coverage"])
             uni_mean, uni_std = np.mean(metric_history["uniformity"]), np.std(metric_history["uniformity"])
@@ -506,7 +505,7 @@ def run(cfg):
             print(f"TIMING (last 10 eps):   Rollout: {avg_rollout_time_10:6.2f} | Policy Exec: {avg_policy_time_10:6.2f} | Env Step: {avg_env_time_10:6.2f} | Training: {avg_training_time_10:6.2f}")
             print(f"{sep}\n")
 
-        if ep_index % cfg.save_interval < cfg.n_rollout_threads:
+        if ep_index % cfg.save_interval == 0:
             logger.add_scalars(
                 "agent/data",
                 {
@@ -521,13 +520,13 @@ def run(cfg):
                 ep_index,
             )
 
-        if ep_index % (4 * cfg.save_interval) < cfg.n_rollout_threads:
+        if ep_index % (4 * cfg.save_interval) == 0:
             os.makedirs(run_dir / "incremental", exist_ok=True)
             maddpg.save(run_dir / "incremental" / ("model_ep%i.pt" % (ep_index + 1)))
             # Restore all networks to GPU after save (save moves them to CPU)
             maddpg.prep_training(device="gpu")
 
-        if ep_index > 0 and ep_index % cfg.eval_interval < cfg.n_rollout_threads:
+        if ep_index > 0 and ep_index % cfg.eval_interval == 0:
             run_eval(maddpg, env, cfg, ep_index, logger)
 
     # ========================== Final Evaluation ==========================
