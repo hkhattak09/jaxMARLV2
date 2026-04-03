@@ -358,6 +358,13 @@ coverage = env.coverage_rate()                 # Fraction of target cells occupi
 uniformity = env.distribution_uniformity()     # Spacing uniformity
 voronoi_uniformity = env.voronoi_based_uniformity()  # Voronoi diagram uniformity
 
+# Collision metric (accumulated during rollout, synced once at episode end)
+# episode_collisions = total agent-collision-steps / n_rollout_threads
+# Counts agents involved, not collision pairs. A single 2-agent collision
+# = 2; three agents all within r_avoid of each other = 3. Minimum is 2.
+# Dividing by n_rollout_threads normalises across any number of parallel envs.
+episode_collisions = float(collision_sum) / cfg.n_rollout_threads
+
 # Reward metrics
 avg_reward = episode_reward_mean_bar / cfg.episode_length
 reward_uniformity = 1.0 / (1.0 + episode_reward_std_bar / (abs(episode_reward_mean_bar) + 1e-8))
@@ -367,15 +374,18 @@ reward_uniformity = 1.0 / (1.0 + episode_reward_std_bar / (abs(episode_reward_me
 
 ```
 ====================================================================================================
-Episode   100/ 3000 | Agents: 30
+Episode   100/ 3000 | Agents: 24 | Envs: 1
 ====================================================================================================
-REWARDS:            Mean:  0.8234 | Std:  0.1456 | Uniformity:  0.850
-ENVIRONMENT METRICS:
-  - Coverage Rate:  0.823 | Dist Uniformity (NN):  0.762 | Voronoi Uniformity:   0.701
-LOSSES:             VF:  0.0234 | Policy: -0.8123 | Reg:  0.0145
-TIMING (sec):       Rollout:   5.23 | Policy Exec:   1.24 | Env Step:   3.89 | Training: 12.45
+REWARDS (last 10 eps):  Mean:  0.8234 | Std:  0.1456 | Uniformity:  0.850
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.823(std:0.012) | Dist Uniformity: 0.762(std:0.018) | Voronoi Uniformity: 0.701(std:0.021)
+  - Collisions (agent-steps/ep/env): 1240.5
+LOSSES (last 10 eps):   VF:  0.0234 | Policy: -0.8123 | Reg:  0.0145
+TIMING (last 10 eps):   Rollout:   5.23 | Policy Exec:   1.24 | Env Step:   3.89 | Training: 12.45
 ====================================================================================================
 ```
+
+**Collision metric interpretation**: `agent-steps/ep/env` = total agent-timesteps in collision, summed over 200 steps, averaged over last 10 episodes and N parallel envs. With 24 agents and 200 steps, theoretical maximum is 24×200 = 4800 (all agents in collision every step). Lower is better. Early training values of 1000-4000 are typical as agents explore randomly; expect this to decrease as policy improves.
 
 ### TensorBoard Logging (every save_interval=100)
 
