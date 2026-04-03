@@ -29,6 +29,7 @@ import matplotlib
 matplotlib.use('Agg')  # headless backend — must be set before any other matplotlib import
 import matplotlib.pyplot as plt
 import torch
+import jax.numpy as jnp
 import time
 import os
 import random
@@ -310,6 +311,7 @@ def run(cfg):
         "coverage": [],
         "uniformity": [],
         "voronoi": [],
+        "collisions": [],
         "reward_mean": [],
         "reward_std": [],
         "reward_uniformity": [],
@@ -344,6 +346,8 @@ def run(cfg):
         next_obs_list = []
         dones_list = []
         prior_list = []
+        # Collision accumulator: stays as JAX array to avoid per-step device sync
+        collision_sum = jnp.zeros(())
 
         start_time_1 = time.time()
         policy_time = 0.0
@@ -373,6 +377,7 @@ def run(cfg):
             next_obs_list.append(next_obs_gpu)
             dones_list.append(dones_gpu)
             prior_list.append(agent_actions_prior_gpu)
+            collision_sum = collision_sum + env.collision_count_jax()
             
             obs_gpu = next_obs_gpu  # Stay on GPU for next step
 
@@ -384,6 +389,8 @@ def run(cfg):
         next_obs_batch = torch.stack(next_obs_list).cpu().numpy() # (T, obs_dim, N*n_a)
         dones_batch = torch.stack(dones_list).cpu().numpy()       # (T, N*n_a)
         prior_batch = torch.stack(prior_list).cpu().numpy()       # (T, 2, N*n_a)
+        # Sync collision sum here alongside bulk transfer (one device sync total)
+        episode_collisions = float(collision_sum) / cfg.n_rollout_threads
         transfer_time = time.time() - t0
 
         # Push all transitions to buffer
@@ -451,6 +458,7 @@ def run(cfg):
         metric_history["coverage"].append(coverage)
         metric_history["uniformity"].append(uniformity)
         metric_history["voronoi"].append(voronoi_uniformity)
+        metric_history["collisions"].append(episode_collisions)
         metric_history["reward_mean"].append(avg_reward)
         metric_history["reward_std"].append(episode_reward_std_bar)
         metric_history["reward_uniformity"].append(reward_uniformity)
@@ -471,7 +479,8 @@ def run(cfg):
             cov_mean, cov_std = np.mean(metric_history["coverage"]), np.std(metric_history["coverage"])
             uni_mean, uni_std = np.mean(metric_history["uniformity"]), np.std(metric_history["uniformity"])
             vor_mean, vor_std = np.mean(metric_history["voronoi"]), np.std(metric_history["voronoi"])
-            
+            avg_collisions_10 = np.mean(metric_history["collisions"])
+
             # Compute 10-episode averages for rewards, losses, and timing
             avg_reward_10 = np.mean(metric_history["reward_mean"])
             avg_reward_std_10 = np.mean(metric_history["reward_std"])
@@ -483,14 +492,15 @@ def run(cfg):
             avg_policy_time_10 = np.mean(metric_history["policy_time"])
             avg_env_time_10 = np.mean(metric_history["env_time"])
             avg_training_time_10 = np.mean(metric_history["training_time"])
-            
+
             sep = "=" * 100
             print(f"\n{sep}")
-            print(f"Episode {ep_index:5d}/{cfg.n_episodes:5d} | Agents: {env.n_a}")
+            print(f"Episode {ep_index:5d}/{cfg.n_episodes:5d} | Agents: {env._n_a_per_env} | Envs: {cfg.n_rollout_threads}")
             print(sep)
             print(f"REWARDS (last 10 eps):  Mean: {avg_reward_10:7.4f} | Std: {avg_reward_std_10:7.4f} | Uniformity: {avg_reward_uniformity_10:6.3f}")
             print(f"ENVIRONMENT METRICS (last 10 eps):")
             print(f"  - Coverage: {cov_mean:.3f}(std:{cov_std:.3f}) | Dist Uniformity: {uni_mean:.3f}(std:{uni_std:.3f}) | Voronoi Uniformity: {vor_mean:.3f}(std:{vor_std:.3f})")
+            print(f"  - Collisions (agent-steps/ep/env): {avg_collisions_10:.1f}")
             print(f"LOSSES (last 10 eps):   VF: {avg_vf_loss_10:7.4f} | Policy: {avg_pol_loss_10:7.4f} | Reg: {avg_reg_loss_10:7.4f}")
             print(f"TIMING (last 10 eps):   Rollout: {avg_rollout_time_10:6.2f} | Policy Exec: {avg_policy_time_10:6.2f} | Env Step: {avg_env_time_10:6.2f} | Training: {avg_training_time_10:6.2f}")
             print(f"{sep}\n")

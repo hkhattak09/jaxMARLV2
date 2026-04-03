@@ -913,6 +913,21 @@ class AssemblyEnv(MultiAgentEnv):
         return 1.0 / (1.0 + std_c / jnp.maximum(mean_c, 1e-8))
 
     @partial(jax.jit, static_argnums=[0])
+    def count_collisions(self, state: AssemblyState) -> chex.Array:
+        """Count agents currently involved in a collision (any neighbour within r_avoid).
+
+        This counts agents, not collision pairs. A single two-agent collision
+        contributes 2; if three agents are all within r_avoid of each other,
+        it contributes 3. Minimum possible value for any collision event is 2.
+        """
+        dists = jnp.linalg.norm(
+            state.p_pos[:, None, :] - state.p_pos[None, :, :], axis=-1
+        )  # [n_a, n_a]
+        dists_excl = jnp.where(jnp.eye(self.n_a, dtype=bool), jnp.inf, dists)
+        in_collision = jnp.any(dists_excl < self.r_avoid, axis=1)  # [n_a]
+        return jnp.sum(in_collision.astype(jnp.float32))
+
+    @partial(jax.jit, static_argnums=[0])
     def eval_metrics(self, state: AssemblyState) -> Dict[str, chex.Array]:
         """Return all three evaluation metrics as a dict."""
         return {

@@ -281,3 +281,5 @@ This documentation is optimized for **token efficiency** in AI agent workflows:
 ---
 
 **Ready to start?** → [SYSTEM_ARCHITECTURE.md](SYSTEM_ARCHITECTURE.md)
+
+the directory cfg_files_defaults contains the cfg setups for different things, the convention is the info will be encoded in the name. so i.e 1env_base_assembly_cfg.py, this part of the name will be common across files assembly_cfg.py, while the content before it 1env means only 1 env runs, base means the default everything else.unless you specifically wish to consult something ignore this direcotry.

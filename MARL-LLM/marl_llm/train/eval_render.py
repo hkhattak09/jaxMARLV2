@@ -98,12 +98,21 @@ def save_eval_gif(state_history_jax, gif_path, fps=12, frame_skip=2):
     # ── Single bulk device→CPU transfer ───────────────────────────────────
     state_history_jax = state_history_jax[::frame_skip]
     p_pos_stacked = jnp.stack([s.p_pos for s in state_history_jax], axis=0)
+    # With N>1 envs, p_pos_stacked is (T, N, n_a, 2) — render first env only
+    if p_pos_stacked.ndim == 4:
+        p_pos_stacked = p_pos_stacked[:, 0, :, :]
     p_pos_all = jax.device_get(p_pos_stacked)              # [T, n_a, 2] numpy
 
     s0 = state_history_jax[0]
-    grid_center_np = jax.device_get(s0.grid_center)        # [2, n_g_max] numpy
-    valid_mask_np  = jax.device_get(s0.valid_mask).astype(bool)  # [n_g_max]
-    l_cell         = float(jax.device_get(s0.l_cell))
+    grid_center_np = jax.device_get(s0.grid_center)        # [2, n_g_max] or [N, 2, n_g_max]
+    valid_mask_np  = jax.device_get(s0.valid_mask).astype(bool)  # [n_g_max] or [N, n_g_max]
+    l_cell_raw     = jax.device_get(s0.l_cell)
+    if grid_center_np.ndim == 3:   # batched: take first env
+        grid_center_np = grid_center_np[0]
+        valid_mask_np  = valid_mask_np[0]
+        l_cell         = float(l_cell_raw.flat[0])
+    else:
+        l_cell = float(l_cell_raw)
     # ──────────────────────────────────────────────────────────────────────
 
     frames = [

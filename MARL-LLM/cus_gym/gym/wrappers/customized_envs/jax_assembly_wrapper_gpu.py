@@ -271,6 +271,17 @@ class JaxAssemblyAdapterGPU:
             return float(self.env.voronoi_based_uniformity(self._states))
         return float(jnp.mean(jax.vmap(self.env.voronoi_based_uniformity)(self._states)))
 
+    def collision_count_jax(self):
+        """JAX scalar: total agents in collision across all envs this step.
+
+        Returns a JAX DeviceArray (no Python sync) so callers can accumulate
+        across steps and sync once at episode end. Divide by n_envs to get
+        a per-env figure comparable across different n_rollout_threads values.
+        """
+        if self.n_envs == 1:
+            return self.env.count_collisions(self._states)
+        return jnp.sum(jax.vmap(self.env.count_collisions)(self._states))
+
 
 class _DummyAgent:
     """Minimal agent object for API compatibility."""
