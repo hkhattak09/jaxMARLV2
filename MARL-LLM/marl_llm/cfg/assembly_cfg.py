@@ -177,9 +177,26 @@ parser.add_argument("--episode_length", default=200, type=int,help="Maximum step
 parser.add_argument("--batch_size", default=512, type=int, help="Batch size for neural network updates")
 
 # Network architecture and learning rates
-parser.add_argument("--hidden_dim", default=180, type=int,help="Hidden layer dimension for neural networks")
+parser.add_argument("--hidden_dim", default=180, type=int,help="Hidden layer dimension for MLP actor/critic networks")
 parser.add_argument("--lr_actor", default=1e-4, type=float,help="Learning rate for actor networks")
 parser.add_argument("--lr_critic", default=1e-3, type=float,help="Learning rate for critic networks")
+
+## ==================== CTM Actor Configuration ====================
+# CTM actor is the default. Pass --use_mlp_actor to revert to the original MLP actor.
+parser.add_argument("--use_mlp_actor", dest="use_ctm_actor", action='store_false',
+                    help="Use MLP actor instead of CTM actor (CTM is the default)")
+parser.set_defaults(use_ctm_actor=True)
+
+# CTM architecture hyperparameters
+parser.add_argument("--ctm_d_model", type=int, default=256, help="CTM neuron population size")
+parser.add_argument("--ctm_memory_length", type=int, default=16, help="CTM FIFO memory window length in steps")
+parser.add_argument("--ctm_n_synch_out", type=int, default=16, help="Number of neurons used for synchronisation output (output size = n*(n+1)/2 = 136)")
+parser.add_argument("--ctm_iterations", type=int, default=4, help="CTM inner loop iterations per forward call (overwrites 4/16 = 25pct of memory per step)")
+parser.add_argument("--ctm_synapse_depth", type=int, default=1, help="CTM synapse network depth (1 = 2-block MLP with GLU+LayerNorm)")
+parser.add_argument("--ctm_deep_nlms", action='store_true', help="Use deep NLMs — adds hidden layer per neuron (not recommended, 68x more compute)")
+parser.add_argument("--ctm_do_layernorm_nlm", type=bool, default=True, help="Apply LayerNorm after NLMs for training stability")
+parser.add_argument("--ctm_memory_hidden_dims", type=int, default=64, help="Hidden dim for deep NLMs (only used if ctm_deep_nlms is set)")
+## ==================== End of CTM Actor Configuration ====================
 
 # Exploration and regularization
 parser.add_argument("--epsilon", default=0.1, type=float,help="Epsilon for epsilon-greedy exploration")

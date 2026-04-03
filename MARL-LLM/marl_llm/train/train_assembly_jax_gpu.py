@@ -93,12 +93,14 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
                 is_last_ep = (ep_i == episodes_per_shape - 1)
                 state_history = [] if is_last_ep else None
                 
+                eval_hidden = (maddpg.agents[0].policy.get_initial_hidden_state(env.n_a, torch.device('cuda'))
+                               if maddpg.use_ctm_actor else None)
                 for _ in range(cfg.episode_length):
-                    torch_agent_actions, _ = maddpg.step(obs_gpu, start_stop_num, explore=False)
+                    torch_agent_actions, _, eval_hidden = maddpg.step(obs_gpu, start_stop_num, explore=False, hidden_states=eval_hidden)
                     agent_actions_gpu = torch.column_stack(torch_agent_actions)
                     obs_gpu, rewards_gpu, _, _, _ = env.step(agent_actions_gpu.t().detach())
                     ep_reward += rewards_gpu.cpu().mean().item()
-                    
+
                     if is_last_ep:
                         state_history.append(env._states)
                 
@@ -192,8 +194,10 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
             is_last_ep = (ep_i == cfg.eval_episodes - 1)
             state_history = [] if is_last_ep else None
 
+            eval_hidden = (maddpg.agents[0].policy.get_initial_hidden_state(env.n_a, torch.device('cuda'))
+                           if maddpg.use_ctm_actor else None)
             for _ in range(cfg.episode_length):
-                torch_agent_actions, _ = maddpg.step(obs_gpu, start_stop_num, explore=False)
+                torch_agent_actions, _, eval_hidden = maddpg.step(obs_gpu, start_stop_num, explore=False, hidden_states=eval_hidden)
                 agent_actions_gpu = torch.column_stack(torch_agent_actions)  # (2, N*n_a)
                 # Transpose for env, detach for DLPack
                 obs_gpu, rewards_gpu, _, _, _ = env.step(agent_actions_gpu.t().detach())
@@ -276,6 +280,16 @@ def run(cfg):
 
     # Initialize MADDPG algorithm
     adversary_alg = None
+    ctm_config = {
+        'd_model': cfg.ctm_d_model,
+        'memory_length': cfg.ctm_memory_length,
+        'n_synch_out': cfg.ctm_n_synch_out,
+        'iterations': cfg.ctm_iterations,
+        'synapse_depth': cfg.ctm_synapse_depth,
+        'deep_nlms': cfg.ctm_deep_nlms,
+        'do_layernorm_nlm': cfg.ctm_do_layernorm_nlm,
+        'memory_hidden_dims': cfg.ctm_memory_hidden_dims,
+    } if cfg.use_ctm_actor else None
     maddpg = MADDPG.init_from_env(
         env,
         agent_alg=cfg.agent_alg,
@@ -288,6 +302,8 @@ def run(cfg):
         epsilon=cfg.epsilon,
         noise=cfg.noise_scale,
         name=cfg.env_name,
+        use_ctm_actor=cfg.use_ctm_actor,
+        ctm_config=ctm_config,
     )
 
     # Replay buffer (stores on CPU, samples to GPU for training)
@@ -332,7 +348,12 @@ def run(cfg):
 
         obs_gpu = env.reset()  # torch.cuda.FloatTensor (obs_dim, N*n_a)
         start_stop_num = [slice(0, env.n_a)]
-        
+
+        # Reset CTM hidden states at episode start (all envs reset together)
+        hidden_states = (maddpg.agents[0].policy.get_initial_hidden_state(
+                             cfg.n_rollout_threads * cfg.n_a, torch.device('cuda'))
+                         if cfg.use_ctm_actor else None)
+
         # Set networks to eval mode for rollout (keep on GPU)
         maddpg.prep_rollouts(device="gpu")
         maddpg.scale_noise(maddpg.noise, maddpg.epsilon)
@@ -359,8 +380,11 @@ def run(cfg):
 
             # obs_gpu is already a torch.cuda tensor (via DLPack)
             t0 = time.time()
-            torch_agent_actions, _ = maddpg.step(obs_gpu, start_stop_num, explore=True)
+            torch_agent_actions, _, hidden_states = maddpg.step(obs_gpu, start_stop_num, explore=True, hidden_states=hidden_states)
             agent_actions_gpu = torch.column_stack(torch_agent_actions)  # (2, N*n_a) GPU
+            # Detach hidden states to prevent computation graph accumulation across steps
+            if hidden_states is not None:
+                hidden_states = (hidden_states[0].detach(), hidden_states[1].detach())
             policy_time += time.time() - t0
 
             # DDPGAgent.step returns action.t() so agent_actions_gpu is (2, N*n_a).
@@ -368,6 +392,15 @@ def run(cfg):
             # detach() required for DLPack export (can't export tensors with gradients)
             t0 = time.time()
             next_obs_gpu, rewards_gpu, dones_gpu, _, agent_actions_prior_gpu = env.step(agent_actions_gpu.t().detach())
+
+            # Reset CTM hidden states for agents whose episodes ended
+            if hidden_states is not None:
+                done_mask = dones_gpu.reshape(-1, 1, 1).float()  # (N*n_a, 1, 1)
+                start_act = maddpg.agents[0].policy.ctm.start_activated_trace.detach()
+                state_trace = hidden_states[0] * (1 - done_mask)
+                activated_trace = (hidden_states[1] * (1 - done_mask)
+                                   + start_act.unsqueeze(0) * done_mask)
+                hidden_states = (state_trace, activated_trace)
             env_time += time.time() - t0
 
             # Accumulate on GPU (no CPU transfer yet)

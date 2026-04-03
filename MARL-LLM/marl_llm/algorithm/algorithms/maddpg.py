@@ -8,8 +8,9 @@ class MADDPG(object):
     """
     Wrapper class for DDPG-esque (i.e. also MADDPG) agents in multi-agent task
     """
-    def __init__(self, agent_init_params, alg_types, epsilon, noise, gamma=0.95, tau=0.01, lr_actor=1e-4, lr_critic=1e-3,  
-                 hidden_dim=64, device='cpu', discrete_action=False):
+    def __init__(self, agent_init_params, alg_types, epsilon, noise, gamma=0.95, tau=0.01, lr_actor=1e-4, lr_critic=1e-3,
+                 hidden_dim=64, device='cpu', discrete_action=False,
+                 use_ctm_actor=False, ctm_config=None):
         """
         Initialize the MADDPG object with given parameters.
         """
@@ -17,28 +18,40 @@ class MADDPG(object):
         self.alg_types = alg_types
         self.epsilon = epsilon
         self.noise = noise
-        self.agents = [DDPGAgent(lr_actor=lr_actor, 
-                                 lr_critic=lr_critic, 
-                                 discrete_action=discrete_action, 
-                                 hidden_dim=hidden_dim, 
-                                 epsilon=self.epsilon, 
-                                 noise=self.noise,
-                                 **params) for params in agent_init_params]   
+        self.use_ctm_actor = use_ctm_actor
+
+        if use_ctm_actor:
+            from algorithm.utils.ctm_agent import CTMDDPGAgent
+            self.agents = [CTMDDPGAgent(lr_actor=lr_actor,
+                                        lr_critic=lr_critic,
+                                        hidden_dim=hidden_dim,
+                                        epsilon=self.epsilon,
+                                        noise=self.noise,
+                                        ctm_config=ctm_config,
+                                        **params) for params in agent_init_params]
+        else:
+            self.agents = [DDPGAgent(lr_actor=lr_actor,
+                                     lr_critic=lr_critic,
+                                     discrete_action=discrete_action,
+                                     hidden_dim=hidden_dim,
+                                     epsilon=self.epsilon,
+                                     noise=self.noise,
+                                     **params) for params in agent_init_params]
         self.agent_init_params = agent_init_params
         self.gamma = gamma
         self.tau = tau
         self.lr_actor = lr_actor
         self.lr_critic = lr_critic
         self.discrete_action = discrete_action
-        self.pol_dev = 'cpu'  
-        self.critic_dev = 'cpu' 
-        self.trgt_pol_dev = 'cpu' 
+        self.pol_dev = 'cpu'
+        self.critic_dev = 'cpu'
+        self.trgt_pol_dev = 'cpu'
         self.trgt_critic_dev = 'cpu'
 
         self.spatial_loss = False
-        self.temporal_loss = False 
+        self.temporal_loss = False
         self.niter = 0
-        
+
         if device != 'cpu':
             self.prep_training(device=device)
 
@@ -53,7 +66,12 @@ class MADDPG(object):
     def target_policies(self, agent_i, obs):
         """
         Get the target policies of a specific agent.
+        For CTM: initialises fresh hidden state from target policy's start_activated_trace.
         """
+        if self.use_ctm_actor:
+            hidden = self.agents[agent_i].target_policy.get_initial_hidden_state(obs.shape[0], obs.device)
+            actions, _ = self.agents[agent_i].target_policy(obs, hidden)
+            return actions
         return self.agents[agent_i].target_policy(obs)
 
     def scale_noise(self, scale, new_epsilon):
@@ -73,22 +91,31 @@ class MADDPG(object):
         for a in self.agents:
             a.reset_noise()
 
-    def step(self, observations, start_stop_num, explore=False):
+    def step(self, observations, start_stop_num, explore=False, hidden_states=None):
         """
         Take a step forward in environment with all agents.
         Inputs:
-            observations: List of observations for each agent
+            observations: observations tensor, shape (obs_dim, n_total_agents)
+            start_stop_num: list of slices for agent index ranges
             explore (boolean): Whether or not to add exploration noise
+            hidden_states: (state_trace, activated_state_trace) for CTM actor; None for MLP
         Outputs:
-            actions: List of actions for each agent
-        """  
-        actions = []      
-        log_pis = []          
+            actions: list of action tensors, each (action_dim, n_agents)
+            log_pis: list of log-prob tensors (None entries for CTM)
+            new_hidden_states: updated hidden state tuple (CTM) or None (MLP)
+        """
+        actions = []
+        log_pis = []
+        new_hidden_states = None
         for i in range(len(start_stop_num)):
-            action, log_pi = self.agents[i].step(observations[:, start_stop_num[i]].t(), explore=explore)
+            obs_slice = observations[:, start_stop_num[i]].t()
+            if self.use_ctm_actor:
+                action, log_pi, new_hidden_states = self.agents[i].step(obs_slice, hidden_states, explore=explore)
+            else:
+                action, log_pi = self.agents[i].step(obs_slice, explore=explore)
             actions.append(action)
             log_pis.append(log_pi)
-        return actions, log_pis
+        return actions, log_pis, new_hidden_states
     
     def step_rew(self, observations, start_stop_num):
         """
@@ -145,10 +172,14 @@ class MADDPG(object):
         curr_agent.critic_optimizer.step()
 
         ######################### Update Actor #########################
-        curr_agent.policy_optimizer.zero_grad()  
+        curr_agent.policy_optimizer.zero_grad()
 
-        # Get current policy output
-        if not self.discrete_action:
+        # Get current policy output (stateless for CTM: fresh hidden state each batch)
+        if self.use_ctm_actor:
+            hidden = curr_agent.policy.get_initial_hidden_state(obs.shape[0], obs.device)
+            curr_pol_out, _ = curr_agent.policy(obs, hidden)
+            curr_pol_vf_in = curr_pol_out
+        elif not self.discrete_action:
             curr_pol_out = curr_agent.policy(obs)
             curr_pol_vf_in = curr_pol_out
 
@@ -260,27 +291,30 @@ class MADDPG(object):
                      'agent_params': [a.get_params() for a in self.agents]}
         torch.save(save_dict, filename)
 
-    @classmethod      
-    def init_from_env(cls, env, agent_alg="MADDPG", adversary_alg="MADDPG", gamma=0.95, tau=0.01, lr_actor=1e-4, lr_critic=1e-3,  
-                        hidden_dim=64, name='flocking', device='cpu', epsilon=0.1, noise=0.1):
+    @classmethod
+    def init_from_env(cls, env, agent_alg="MADDPG", adversary_alg="MADDPG", gamma=0.95, tau=0.01, lr_actor=1e-4, lr_critic=1e-3,
+                      hidden_dim=64, name='flocking', device='cpu', epsilon=0.1, noise=0.1,
+                      use_ctm_actor=False, ctm_config=None):
         """
         Instantiate instance of this class from multi-agent environment.
         """
         agent_init_params = []
-        dim_input_policy=env.observation_space.shape[0]
-        dim_output_policy=env.action_space.shape[0]
-        dim_input_critic=env.observation_space.shape[0] + env.action_space.shape[0]
+        dim_input_policy = env.observation_space.shape[0]
+        dim_output_policy = env.action_space.shape[0]
+        dim_input_critic = env.observation_space.shape[0] + env.action_space.shape[0]
 
-        alg_types = [adversary_alg if atype == 'adversary' else agent_alg for atype in env.agent_types]   
-        for algtype in alg_types:  
+        alg_types = [adversary_alg if atype == 'adversary' else agent_alg for atype in env.agent_types]
+        for algtype in alg_types:
             agent_init_params.append({'dim_input_policy': dim_input_policy,
                                       'dim_output_policy': dim_output_policy,
                                       'dim_input_critic': dim_input_critic})
 
         if name == 'assembly':
-            init_dict = {'gamma': gamma, 'tau': tau, 'lr_actor': lr_actor, 'lr_critic': lr_critic, 'epsilon': epsilon, 'noise': noise, 
-                         'hidden_dim': hidden_dim, 'device': device, 'alg_types': alg_types, 'agent_init_params': agent_init_params}
-        instance = cls(**init_dict)    
+            init_dict = {'gamma': gamma, 'tau': tau, 'lr_actor': lr_actor, 'lr_critic': lr_critic,
+                         'epsilon': epsilon, 'noise': noise, 'hidden_dim': hidden_dim, 'device': device,
+                         'alg_types': alg_types, 'agent_init_params': agent_init_params,
+                         'use_ctm_actor': use_ctm_actor, 'ctm_config': ctm_config}
+        instance = cls(**init_dict)
         instance.init_dict = init_dict
         return instance
 

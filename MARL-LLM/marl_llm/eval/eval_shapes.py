@@ -105,7 +105,9 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
     # Load trained model
     print(f"\nLoading model from: {weights_path}")
     maddpg = MADDPG.init_from_save(str(weights_path))
-    maddpg.prep_rollouts(device='cpu')  # Eval mode, deterministic policy
+    device = 'gpu' if torch.cuda.is_available() else 'cpu'
+    torch_device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    maddpg.prep_rollouts(device=device)  # Eval mode, deterministic policy
     print(f"Saving model outputs to: {model_output_dir.resolve()}")
 
     # Results storage
@@ -132,20 +134,20 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
         for ep_idx in range(EPISODES_PER_SHAPE):
             is_last_episode = (ep_idx == EPISODES_PER_SHAPE - 1)
             state_history = [] if is_last_episode else None
-            
+
             # Reset with specific shape (no augmentation)
             obs = env.reset_eval(shape_idx)
             ep_reward = 0.0
-            
+
+            # Initialise per-episode hidden state for CTM actor (None for MLP)
+            eval_hidden = (maddpg.agents[0].policy.get_initial_hidden_state(env.n_a, torch_device)
+                           if maddpg.use_ctm_actor else None)
+
             with torch.no_grad():
                 for step in range(cfg.episode_length):
-                    # Get deterministic action from policy
-                    torch_obs = obs.cpu() if obs.is_cuda else obs
-                    torch_obs = torch_obs.requires_grad_(False)
-                    
-                    actions, _ = maddpg.step(torch_obs, start_stop_num, explore=False)
+                    actions, _, eval_hidden = maddpg.step(obs, start_stop_num, explore=False, hidden_states=eval_hidden)
                     actions_stacked = torch.column_stack(actions)  # (2, n_a)
-                    
+
                     # Step environment
                     obs, rewards, dones, _, _ = env.step(actions_stacked.t().detach())
                     
