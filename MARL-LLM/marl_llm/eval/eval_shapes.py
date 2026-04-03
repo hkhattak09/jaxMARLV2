@@ -1,13 +1,13 @@
 """Evaluation script for trained MADDPG model.
 
-Runs evaluation episodes per shape (no augmentations) and saves the last episode 
-of each shape as a GIF.
+Runs evaluation episodes per shape (no augmentations) for one or more weight files
+and saves the last episode of each shape as a GIF.
 
 Usage:
     python /path/to/eval_shapes.py
 
 Configuration:
-    Edit WEIGHTS_PATH below to point to your model weights.
+    Edit WEIGHTS_PATHS below to point to your model weights.
 """
 
 # Configure JAX GPU memory BEFORE any imports
@@ -20,7 +20,9 @@ from pathlib import Path
 # ============================================================================
 # CONFIGURATION - Edit these values
 # ============================================================================
-WEIGHTS_PATH = "/content/cpp_model.pt"
+WEIGHTS_PATHS = [
+    "/content/cpp_model.pt",
+]
 EPISODES_PER_SHAPE = 10  # cfg.eval_episodes is 3, using 10 for thorough eval
 OUTPUT_DIR = "./eval_results"
 # Other values from cfg: cfg.episode_length, cfg.seed
@@ -48,16 +50,46 @@ from train.eval_render import save_eval_gif
 from cfg.assembly_cfg import gpsargs as cfg
 
 
-def run_eval():
-    """Run evaluation: episodes per shape, save last episode GIF for each shape."""
-    
-    # Validate weights path
-    weights_path = Path(WEIGHTS_PATH)
-    if not weights_path.exists():
-        print(f"ERROR: Weights file not found at: {weights_path}")
-        print("Please update WEIGHTS_PATH at the top of this script.")
-        sys.exit(1)
-    
+def _sanitize_model_name(weights_path: Path) -> str:
+    """Create a folder-safe model name from weight file stem."""
+    sanitized = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in weights_path.stem)
+    return sanitized or "model"
+
+
+def _build_comparison_table(model_summaries):
+    """Build a readable metrics-vs-models text table."""
+    headers = ["Metric"] + [summary["model_name"] for summary in model_summaries]
+    metric_rows = [
+        ("Reward", "overall_reward", ".4f"),
+        ("Coverage", "overall_coverage", ".3f"),
+        ("Dist Uniformity", "overall_dist_uniformity", ".3f"),
+        ("Voronoi Uniformity", "overall_voronoi_uniformity", ".3f"),
+    ]
+
+    rows = []
+    for label, key, fmt in metric_rows:
+        row = [label] + [format(summary[key], fmt) for summary in model_summaries]
+        rows.append(row)
+
+    col_widths = [len(h) for h in headers]
+    for row in rows:
+        col_widths = [max(w, len(cell)) for w, cell in zip(col_widths, row)]
+
+    def format_row(cells):
+        return " | ".join(cell.ljust(width) for cell, width in zip(cells, col_widths))
+
+    separator = "-+-".join("-" * width for width in col_widths)
+    lines = [format_row(headers), separator]
+    lines.extend(format_row(row) for row in rows)
+    return "\n".join(lines)
+
+
+def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, start_stop_num):
+    """Evaluate one weight file and save per-shape GIFs/results in model_output_dir."""
+    print("\n" + "="*100)
+    print(f"EVALUATING MODEL: {weights_path.name}")
+    print("="*100)
+
     # Set random seeds for reproducibility
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
@@ -70,38 +102,15 @@ def run_eval():
     else:
         print("WARNING: No GPU available, running on CPU")
     
-    # Create output directory
-    output_dir = Path(OUTPUT_DIR)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Output directory: {output_dir.resolve()}")
-    
-    # Initialize environment
-    print("\nInitializing environment...")
-    jax_env = AssemblyEnv(
-        results_file=cfg.results_file,
-        n_a=cfg.n_a,
-    )
-    env = JaxAssemblyAdapterGPU(
-        jax_env,
-        n_envs=1,
-        seed=cfg.seed,
-        alpha=0.1,
-    )
-    
-    num_shapes = env.num_shapes
-    print(f"Number of shapes: {num_shapes}")
-    print(f"Number of agents: {env.n_a}")
-    
     # Load trained model
     print(f"\nLoading model from: {weights_path}")
     maddpg = MADDPG.init_from_save(str(weights_path))
     maddpg.prep_rollouts(device='cpu')  # Eval mode, deterministic policy
-    
-    start_stop_num = [slice(0, env.n_a)]
-    
+    print(f"Saving model outputs to: {model_output_dir.resolve()}")
+
     # Results storage
     all_results = []
-    
+
     print("\n" + "="*100)
     print("EVALUATION PHASE STARTING")
     print("="*100)
@@ -164,7 +173,7 @@ def run_eval():
             
             # Save GIF for last episode
             if is_last_episode:
-                gif_path = output_dir / f"shape_{shape_idx:02d}.gif"
+                gif_path = model_output_dir / f"shape_{shape_idx:02d}.gif"
                 save_eval_gif(state_history, gif_path, fps=12, frame_skip=2)
         
         # Compute shape statistics
@@ -203,18 +212,23 @@ def run_eval():
     overall_voronoi = [r['mean_voronoi_uniformity'] for r in all_results]
     
     print(f"\n--- Overall Average (across {num_shapes} shapes) ---")
-    print(f"  Reward:            {np.mean(overall_rewards):.4f}")
-    print(f"  Coverage:          {np.mean(overall_coverages):.3f}")
-    print(f"  Dist Uniformity:   {np.mean(overall_dist_uniformities):.3f}")
-    print(f"  Voronoi:           {np.mean(overall_voronoi):.3f}")
+    overall_reward = float(np.mean(overall_rewards))
+    overall_coverage = float(np.mean(overall_coverages))
+    overall_dist_uniformity = float(np.mean(overall_dist_uniformities))
+    overall_voronoi_uniformity = float(np.mean(overall_voronoi))
+
+    print(f"  Reward:            {overall_reward:.4f}")
+    print(f"  Coverage:          {overall_coverage:.3f}")
+    print(f"  Dist Uniformity:   {overall_dist_uniformity:.3f}")
+    print(f"  Voronoi:           {overall_voronoi_uniformity:.3f}")
     
-    print(f"\nGIFs saved to: {output_dir.resolve()}/")
+    print(f"\nGIFs saved to: {model_output_dir.resolve()}/")
     for shape_idx in range(num_shapes):
         print(f"  - shape_{shape_idx:02d}.gif")
     
     # Save results to file
     import pickle
-    results_path = output_dir / "eval_results.pkl"
+    results_path = model_output_dir / "eval_results.pkl"
     with open(results_path, 'wb') as f:
         pickle.dump({
             'weights_path': str(weights_path),
@@ -222,9 +236,97 @@ def run_eval():
             'episode_length': cfg.episode_length,
             'seed': cfg.seed,
             'num_shapes': num_shapes,
+            'overall_reward': overall_reward,
+            'overall_coverage': overall_coverage,
+            'overall_dist_uniformity': overall_dist_uniformity,
+            'overall_voronoi_uniformity': overall_voronoi_uniformity,
             'results': all_results,
         }, f)
     print(f"\nResults saved to: {results_path}")
+
+    return {
+        'weights_path': str(weights_path),
+        'model_name': model_output_dir.name,
+        'overall_reward': overall_reward,
+        'overall_coverage': overall_coverage,
+        'overall_dist_uniformity': overall_dist_uniformity,
+        'overall_voronoi_uniformity': overall_voronoi_uniformity,
+        'results_path': str(results_path),
+    }
+
+
+def run_eval():
+    """Run evaluation for each weight file and print a cross-model comparison table."""
+    if not WEIGHTS_PATHS:
+        print("ERROR: WEIGHTS_PATHS is empty. Please provide at least one .pt file path.")
+        sys.exit(1)
+
+    # Validate all weights paths before starting long evaluations
+    weights_paths = [Path(p) for p in WEIGHTS_PATHS]
+    missing_paths = [p for p in weights_paths if not p.exists()]
+    if missing_paths:
+        print("ERROR: The following weights files were not found:")
+        for missing in missing_paths:
+            print(f"  - {missing}")
+        print("Please update WEIGHTS_PATHS at the top of this script.")
+        sys.exit(1)
+
+    # Create output directory
+    output_dir = Path(OUTPUT_DIR)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Base output directory: {output_dir.resolve()}")
+
+    # Initialize environment once and reuse for all models
+    print("\nInitializing environment...")
+    jax_env = AssemblyEnv(
+        results_file=cfg.results_file,
+        n_a=cfg.n_a,
+    )
+    env = JaxAssemblyAdapterGPU(
+        jax_env,
+        n_envs=1,
+        seed=cfg.seed,
+        alpha=0.1,
+    )
+
+    num_shapes = env.num_shapes
+    print(f"Number of shapes: {num_shapes}")
+    print(f"Number of agents: {env.n_a}")
+
+    start_stop_num = [slice(0, env.n_a)]
+    used_model_dir_names = set()
+    model_summaries = []
+
+    for weights_path in weights_paths:
+        model_dir_name = _sanitize_model_name(weights_path)
+        if model_dir_name in used_model_dir_names:
+            suffix = 2
+            while f"{model_dir_name}_{suffix}" in used_model_dir_names:
+                suffix += 1
+            model_dir_name = f"{model_dir_name}_{suffix}"
+
+        used_model_dir_names.add(model_dir_name)
+        model_output_dir = output_dir / model_dir_name
+        model_output_dir.mkdir(parents=True, exist_ok=True)
+
+        summary = _evaluate_single_model(
+            weights_path=weights_path,
+            model_output_dir=model_output_dir,
+            env=env,
+            num_shapes=num_shapes,
+            start_stop_num=start_stop_num,
+        )
+        model_summaries.append(summary)
+
+    print("\n" + "="*100)
+    print("FINAL MODEL COMPARISON (AVERAGE ACROSS SHAPES)")
+    print("="*100)
+    comparison_table = _build_comparison_table(model_summaries)
+    print(comparison_table)
+
+    comparison_table_path = output_dir / "comparison_table.txt"
+    comparison_table_path.write_text(comparison_table + "\n", encoding="utf-8")
+    print(f"\nComparison table saved to: {comparison_table_path}")
 
 
 if __name__ == '__main__':
