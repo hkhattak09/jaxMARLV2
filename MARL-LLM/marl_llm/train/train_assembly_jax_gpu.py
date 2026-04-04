@@ -255,6 +255,7 @@ def run(cfg):
         raise RuntimeError("GPU-optimized version requires CUDA-enabled PyTorch")
     
     print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+    print(f"Actor type: {'CTM' if cfg.use_ctm_actor else 'MLP'}")
     
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
