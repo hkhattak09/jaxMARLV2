@@ -1,14 +1,5 @@
-import sys
-import os
 import torch
 import torch.nn as nn
-from pathlib import Path
-
-# Add the continuous-thought-machines repo to sys.path for CTM imports
-_REPO_ROOT = str(Path(__file__).resolve().parents[4])
-_CTM_PATH = os.path.join(_REPO_ROOT, "continuous-thought-machines")
-if _CTM_PATH not in sys.path:
-    sys.path.insert(0, _CTM_PATH)
 
 from models.ctm_rl import ContinuousThoughtMachineRL
 

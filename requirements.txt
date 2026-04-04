@@ -7,3 +7,4 @@ opencv-python
 pillow
 scipy
 tensorboardX
+huggingface_hub

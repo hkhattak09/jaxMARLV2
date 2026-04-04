@@ -4,18 +4,20 @@
 
 MADDPG multi-agent RL system for a 24-agent assembly/flocking task. JAX environment (GPU,
 vmap parallel envs) + PyTorch networks. DLPack zero-copy GPU bridge. Everything stays on
-GPU throughout (rollout and training). Full documentation in `Docs/`.
+GPU throughout (rollout, training, and eval). Full documentation in `Docs/`.
 
 Key files:
 - `MARL-LLM/marl_llm/train/train_assembly_jax_gpu.py` — main training loop
 - `MARL-LLM/marl_llm/algorithm/algorithms/maddpg.py` — MADDPG orchestrator
 - `MARL-LLM/marl_llm/algorithm/utils/agents.py` — DDPGAgent (MLP actor+critic, unchanged)
 - `MARL-LLM/marl_llm/algorithm/utils/networks.py` — MLPNetwork
-- `MARL-LLM/marl_llm/cfg/assembly_cfg.py` — config (CTM params already added)
+- `MARL-LLM/marl_llm/cfg/assembly_cfg.py` — config (CTM default, pass --use_mlp_actor for MLP)
 - `continuous-thought-machines/models/ctm_rl.py` — ContinuousThoughtMachineRL base class
 - `Docs/CTM_ACTOR_DESIGN.md` — full design decisions document
+- `MARL-LLM/marl_llm/eval/eval_shapes.py` — standalone post-training eval script
+- `MARL-LLM/marl_llm/tests/test_ctm_implementation.py` — comprehensive test suite
 
-**CTM actor files (newly created):**
+**CTM actor files:**
 - `MARL-LLM/marl_llm/algorithm/utils/ctm_actor.py` — CTMActor class
 - `MARL-LLM/marl_llm/algorithm/utils/ctm_agent.py` — CTMDDPGAgent class
 
@@ -23,8 +25,8 @@ Key files:
 
 ## CTM Actor — IMPLEMENTATION COMPLETE
 
-All 5 steps done. To use: add `--use_ctm_actor` to the training command.
-Without the flag everything runs the original MLP path unchanged.
+**CTM is the default actor.** To revert to MLP: pass `--use_mlp_actor` to the training command.
+All eval paths (training-loop eval, final eval, standalone eval_shapes.py) work with both.
 
 ### What Was Implemented
 
@@ -64,7 +66,30 @@ Without the flag everything runs the original MLP path unchanged.
   - After env.step(): done mask reset — `dones_gpu.reshape(-1, 1, 1).float()` broadcasts over
     `(N*n_a, d_model, memory_length)`, resets state_trace to zeros and activated_trace to
     `start_activated_trace` for done agents
-- run_eval / run_final_eval: per-episode hidden state init + 3-tuple step unpack
+- `run_eval` / `run_final_eval`: per-episode hidden state init on CUDA + 3-tuple step unpack
+  — both already run on GPU (`prep_rollouts(device="gpu")`, `torch.device('cuda')`)
+
+**`cfg/assembly_cfg.py` — changes:**
+- CTM is now the default. Replaced `--use_ctm_actor` (store_true) with:
+  - `--use_mlp_actor` (store_false, dest="use_ctm_actor") — pass this flag to use MLP
+  - `parser.set_defaults(use_ctm_actor=True)`
+- All downstream code reading `cfg.use_ctm_actor` is unchanged
+
+**`eval/eval_shapes.py` — changes:**
+- Fixed 2-tuple unpack → 3-tuple: `actions, _, eval_hidden = maddpg.step(..., hidden_states=eval_hidden)`
+- Added per-episode hidden state init: `get_initial_hidden_state(env.n_a, torch_device)` guarded by `maddpg.use_ctm_actor`
+- Moved from CPU to GPU: `prep_rollouts(device=device)` where device='gpu' when CUDA available
+- Removed redundant `obs.cpu()` conversion (obs is already a CUDA tensor from JAX adapter)
+- `maddpg.use_ctm_actor` is loaded correctly from saved `init_dict` — auto-detects CTM vs MLP
+
+**`eval/eval_assembly.py`** — deprecated legacy script, not used.
+
+**`tests/test_ctm_implementation.py` — new test suite:**
+- Run with: `python tests/test_ctm_implementation.py` or `python -m pytest tests/test_ctm_implementation.py -v`
+  from `MARL-LLM/marl_llm/`
+- Covers: CTMActor shapes/forward/gradient flow, CTMDDPGAgent init (LazyLinear fix)/step/save-load,
+  MADDPG+CTM full update cycle, MADDPG+MLP backwards compatibility, hidden state done-mask reset,
+  detach graph-cutting, temporal context, end-to-end rollout+update smoke tests for both actor types
 
 ---
 
@@ -110,7 +135,7 @@ Without the flag everything runs the original MLP path unchanged.
 | memory_length | 16 | ~8% of episode (200 steps) |
 | n_synch_out | 16 | Output size = 16×17/2 = 136-dim |
 | iterations | 4 | Overwrites 25% of board per step; tune over [3,4,5,6] empirically |
-| synapse_depth | 1 | 2-block MLP (Linear→GLU→LayerNorm ×2) |
+| synapse_depth | 1 | 2-block MLP (Linear→GLU→LayerNorm ×2) — note: synapse_depth=1 creates TWO LazyLinear blocks |
 | deep_nlms | False | 68× cheaper than deep, sufficient expressiveness |
 | do_layernorm_nlm | True | Training stability |
 | memory_hidden_dims | [64] | Passed to constructor, unused when deep_nlms=False |
@@ -128,4 +153,7 @@ Without the flag everything runs the original MLP path unchanged.
 - `backbone_type='classic-control-backbone'` for flat vector observations
 - Hidden states are NOT saved in checkpoints (transient rollout state);
   `start_activated_trace` IS saved (it's an nn.Parameter in the network weights)
-- `maddpg.step()` now returns a 3-tuple everywhere — all call sites updated
+- `maddpg.step()` returns a 3-tuple everywhere — all call sites updated (training loop,
+  run_eval, run_final_eval, eval_shapes.py)
+- `use_ctm_actor` is stored in `init_dict` and saved/loaded with the model checkpoint —
+  loading a CTM model automatically sets `maddpg.use_ctm_actor=True`
