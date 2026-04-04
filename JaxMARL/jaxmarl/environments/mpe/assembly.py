@@ -928,12 +928,61 @@ class AssemblyEnv(MultiAgentEnv):
         return jnp.sum(in_collision.astype(jnp.float32))
 
     @partial(jax.jit, static_argnums=[0])
+    def mean_neighbor_distance(self, state: AssemblyState) -> chex.Array:
+        """Mean nearest-neighbour distance across all agents.
+
+        Measures the absolute magnitude of agent spacing — unlike
+        distribution_uniformity which only measures the CoV of those distances.
+        Higher values mean agents are more spread out (less clustering).
+        """
+        delta = state.p_pos[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_a, 2]
+        dists = jnp.linalg.norm(delta, axis=-1)                     # [n_a, n_a]
+        dists_excl = jnp.where(jnp.eye(self.n_a, dtype=bool), jnp.inf, dists)
+        min_dists = jnp.min(dists_excl, axis=1)                     # [n_a]
+        return jnp.mean(min_dists)
+
+    @partial(jax.jit, static_argnums=[0])
+    def collision_rate(self, state: AssemblyState) -> chex.Array:
+        """Fraction of agents currently in collision (any neighbour within r_avoid).
+
+        Returns a value in [0, 1]. 0 = no collisions, 1 = all agents colliding.
+        Directly measures how much agents are physically stacking.
+        """
+        dists = jnp.linalg.norm(
+            state.p_pos[:, None, :] - state.p_pos[None, :, :], axis=-1
+        )  # [n_a, n_a]
+        dists_excl = jnp.where(jnp.eye(self.n_a, dtype=bool), jnp.inf, dists)
+        in_collision = jnp.any(dists_excl < self.r_avoid, axis=1)  # [n_a]
+        return jnp.mean(in_collision.astype(jnp.float32))
+
+    @partial(jax.jit, static_argnums=[0])
+    def coverage_efficiency(self, state: AssemblyState) -> chex.Array:
+        """Cells covered per agent — measures whether agents are stacking.
+
+        Perfect spread: each agent covers a unique cell → value = n_cells / n_agents.
+        Normalised to [0, 1] by dividing by n_cells/n_agents (ideal value).
+        Value of 1.0 means no stacking; < 1.0 means agents are sharing cells.
+        """
+        a2g = state.grid_center.T[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
+        a2g_dist = jnp.linalg.norm(a2g, axis=-1)                          # [n_a, n_g_max]
+        cell_occupied = jnp.any(a2g_dist < self.r_avoid / 2.0, axis=0)    # [n_g_max]
+        n_g = jnp.sum(state.valid_mask.astype(jnp.float32))
+        n_occupied = jnp.sum((cell_occupied & state.valid_mask).astype(jnp.float32))
+        # Ideal: all n_a agents spread perfectly → each covers n_g/n_a cells
+        # Efficiency = actual cells covered / n_agents, normalised by ideal (n_g/n_a)
+        ideal = n_g / self.n_a
+        return (n_occupied / self.n_a) / ideal  # = n_occupied / n_g = coverage_rate
+
+    @partial(jax.jit, static_argnums=[0])
     def eval_metrics(self, state: AssemblyState) -> Dict[str, chex.Array]:
-        """Return all three evaluation metrics as a dict."""
+        """Return all evaluation metrics as a dict."""
         return {
             "coverage_rate":           self.coverage_rate(state),
             "distribution_uniformity": self.distribution_uniformity(state),
             "voronoi_uniformity":      self.voronoi_based_uniformity(state),
+            "mean_neighbor_distance":  self.mean_neighbor_distance(state),
+            "collision_rate":          self.collision_rate(state),
+            "coverage_efficiency":     self.coverage_efficiency(state),
         }
 
     # ────────────────────────────────────────────────────────────────────────

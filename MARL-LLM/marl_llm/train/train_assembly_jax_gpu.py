@@ -85,14 +85,17 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
             shape_coverage = 0.0
             shape_uniformity = 0.0
             shape_voronoi = 0.0
-            
+            shape_neighbor_dist = 0.0
+            shape_collision_rate = 0.0
+            shape_coverage_efficiency = 0.0
+
             for ep_i in range(episodes_per_shape):
                 # Reset with specific shape, no rotation/offset
                 obs_gpu = env.reset_eval(shape_idx)
                 ep_reward = 0.0
                 is_last_ep = (ep_i == episodes_per_shape - 1)
                 state_history = [] if is_last_ep else None
-                
+
                 for _ in range(cfg.episode_length):
                     # Stateless rollout: fresh hidden state every step
                     eval_hidden = (maddpg.agents[0].policy.get_initial_hidden_state(env.n_a, torch.device('cuda'))
@@ -104,65 +107,87 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
 
                     if is_last_ep:
                         state_history.append(env._states)
-                
-                shape_reward += ep_reward / cfg.episode_length
-                shape_coverage += env.coverage_rate()
-                shape_uniformity += env.distribution_uniformity()
-                shape_voronoi += env.voronoi_based_uniformity()
-                
+
+                shape_reward             += ep_reward / cfg.episode_length
+                shape_coverage           += env.coverage_rate()
+                shape_uniformity         += env.distribution_uniformity()
+                shape_voronoi            += env.voronoi_based_uniformity()
+                shape_neighbor_dist      += env.mean_neighbor_distance()
+                shape_collision_rate     += env.collision_rate()
+                shape_coverage_efficiency += env.coverage_efficiency()
+
                 # Save GIF of last episode for this shape
                 if is_last_ep:
                     gif_path = run_dir / "final_eval" / f"shape_{shape_idx}.gif"
                     save_eval_gif(state_history, gif_path)
-            
+
             # Average over episodes
-            mean_reward = shape_reward / episodes_per_shape
-            mean_coverage = shape_coverage / episodes_per_shape
-            mean_uniformity = shape_uniformity / episodes_per_shape
-            mean_voronoi = shape_voronoi / episodes_per_shape
-            
+            mean_reward               = shape_reward              / episodes_per_shape
+            mean_coverage             = shape_coverage            / episodes_per_shape
+            mean_uniformity           = shape_uniformity          / episodes_per_shape
+            mean_voronoi              = shape_voronoi             / episodes_per_shape
+            mean_neighbor_dist        = shape_neighbor_dist       / episodes_per_shape
+            mean_collision_rate       = shape_collision_rate      / episodes_per_shape
+            mean_coverage_efficiency  = shape_coverage_efficiency / episodes_per_shape
+
             all_results.append({
-                'shape': shape_idx,
-                'reward': mean_reward,
-                'coverage': mean_coverage,
-                'uniformity': mean_uniformity,
-                'voronoi': mean_voronoi,
+                'shape':               shape_idx,
+                'reward':              mean_reward,
+                'coverage':            mean_coverage,
+                'uniformity':          mean_uniformity,
+                'voronoi':             mean_voronoi,
+                'neighbor_dist':       mean_neighbor_dist,
+                'collision_rate':      mean_collision_rate,
+                'coverage_efficiency': mean_coverage_efficiency,
             })
-            
+
             print(f"Shape {shape_idx}: reward={mean_reward:.4f} | coverage={mean_coverage:.4f} | "
-                  f"uniformity={mean_uniformity:.4f} | voronoi={mean_voronoi:.4f}")
-            
+                  f"uniformity={mean_uniformity:.4f} | voronoi={mean_voronoi:.4f} | "
+                  f"neighbor_dist={mean_neighbor_dist:.4f} | collision_rate={mean_collision_rate:.4f} | "
+                  f"cov_efficiency={mean_coverage_efficiency:.4f}")
+
             # Log to TensorBoard
             logger.add_scalars(
                 f"final_eval/shape_{shape_idx}",
                 {
-                    "reward": mean_reward,
-                    "coverage": mean_coverage,
-                    "uniformity": mean_uniformity,
-                    "voronoi": mean_voronoi,
+                    "reward":              mean_reward,
+                    "coverage":            mean_coverage,
+                    "uniformity":          mean_uniformity,
+                    "voronoi":             mean_voronoi,
+                    "neighbor_dist":       mean_neighbor_dist,
+                    "collision_rate":      mean_collision_rate,
+                    "coverage_efficiency": mean_coverage_efficiency,
                 },
-                0,  # Single data point
+                0,
             )
-    
+
     # Print summary
     print("\n" + "-"*80)
     print("FINAL EVAL SUMMARY (averaged across all shapes):")
-    avg_reward = np.mean([r['reward'] for r in all_results])
-    avg_coverage = np.mean([r['coverage'] for r in all_results])
-    avg_uniformity = np.mean([r['uniformity'] for r in all_results])
-    avg_voronoi = np.mean([r['voronoi'] for r in all_results])
+    avg_reward              = np.mean([r['reward']              for r in all_results])
+    avg_coverage            = np.mean([r['coverage']            for r in all_results])
+    avg_uniformity          = np.mean([r['uniformity']          for r in all_results])
+    avg_voronoi             = np.mean([r['voronoi']             for r in all_results])
+    avg_neighbor_dist       = np.mean([r['neighbor_dist']       for r in all_results])
+    avg_collision_rate      = np.mean([r['collision_rate']      for r in all_results])
+    avg_coverage_efficiency = np.mean([r['coverage_efficiency'] for r in all_results])
     print(f"  Reward: {avg_reward:.4f} | Coverage: {avg_coverage:.4f} | "
           f"Uniformity: {avg_uniformity:.4f} | Voronoi: {avg_voronoi:.4f}")
+    print(f"  Neighbor Dist: {avg_neighbor_dist:.4f} | Collision Rate: {avg_collision_rate:.4f} | "
+          f"Cov Efficiency: {avg_coverage_efficiency:.4f}")
     print("="*80 + "\n")
-    
+
     # Log overall averages
     logger.add_scalars(
         "final_eval/overall",
         {
-            "reward": avg_reward,
-            "coverage": avg_coverage,
-            "uniformity": avg_uniformity,
-            "voronoi": avg_voronoi,
+            "reward":              avg_reward,
+            "coverage":            avg_coverage,
+            "uniformity":          avg_uniformity,
+            "voronoi":             avg_voronoi,
+            "neighbor_dist":       avg_neighbor_dist,
+            "collision_rate":      avg_collision_rate,
+            "coverage_efficiency": avg_coverage_efficiency,
         },
         0,
     )
@@ -187,6 +212,9 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
     total_reward = 0.0
     total_coverage = 0.0
     total_uniformity = 0.0
+    total_neighbor_dist = 0.0
+    total_collision_rate = 0.0
+    total_coverage_efficiency = 0.0
 
     with torch.no_grad():
         for ep_i in range(cfg.eval_episodes):
@@ -209,29 +237,40 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
                 if is_last_ep:
                     state_history.append(env._states)
 
-            total_reward    += ep_reward / cfg.episode_length
-            total_coverage  += env.coverage_rate()
-            total_uniformity += env.distribution_uniformity()
+            total_reward             += ep_reward / cfg.episode_length
+            total_coverage           += env.coverage_rate()
+            total_uniformity         += env.distribution_uniformity()
+            total_neighbor_dist      += env.mean_neighbor_distance()
+            total_collision_rate     += env.collision_rate()
+            total_coverage_efficiency += env.coverage_efficiency()
 
             # Bulk GPU→CPU transfer + GIF rendering after the episode is done
             if is_last_ep:
                 gif_path = Path(cfg.gif_dir) / f"eval_{ep_index}.gif"
                 save_eval_gif(state_history, gif_path)
 
-    mean_reward     = total_reward    / cfg.eval_episodes
-    mean_coverage   = total_coverage  / cfg.eval_episodes
-    mean_uniformity = total_uniformity / cfg.eval_episodes
+    mean_reward              = total_reward              / cfg.eval_episodes
+    mean_coverage            = total_coverage            / cfg.eval_episodes
+    mean_uniformity          = total_uniformity          / cfg.eval_episodes
+    mean_neighbor_dist       = total_neighbor_dist       / cfg.eval_episodes
+    mean_collision_rate      = total_collision_rate      / cfg.eval_episodes
+    mean_coverage_efficiency = total_coverage_efficiency / cfg.eval_episodes
 
     print(
         f"[EVAL] ep {ep_index} | reward: {mean_reward:.4f} | "
-        f"coverage: {mean_coverage:.4f} | uniformity: {mean_uniformity:.4f}"
+        f"coverage: {mean_coverage:.4f} | uniformity: {mean_uniformity:.4f} | "
+        f"neighbor_dist: {mean_neighbor_dist:.4f} | collision_rate: {mean_collision_rate:.4f} | "
+        f"cov_efficiency: {mean_coverage_efficiency:.4f}"
     )
     logger.add_scalars(
         "eval",
         {
-            "reward":      mean_reward,
-            "coverage":    mean_coverage,
-            "uniformity":  mean_uniformity,
+            "reward":              mean_reward,
+            "coverage":            mean_coverage,
+            "uniformity":          mean_uniformity,
+            "neighbor_dist":       mean_neighbor_dist,
+            "collision_rate":      mean_collision_rate,
+            "coverage_efficiency": mean_coverage_efficiency,
         },
         ep_index,
     )

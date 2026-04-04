@@ -111,6 +111,13 @@ the MLP baseline proves cross-timestep memory is not required.
 - Removed redundant `obs.cpu()` conversion (obs is already a CUDA tensor from JAX adapter)
 - `maddpg.use_ctm_actor` is loaded correctly from saved `init_dict` — auto-detects CTM vs MLP
 
+**`eval/eval_shapes.py` — additional changes (new metrics + stateless fix):**
+- Fixed stateful CTM bug: was initialising hidden state once per episode and carrying across
+  steps — now stateless (fresh every step), matching training behaviour
+- Added `mean_neighbor_distance`, `collision_rate` to all eval outputs (periodic, final, summary,
+  pickle, comparison table)
+- Pass `--topo_nei_max N` when evaluating K≠6 models so env obs_dim matches checkpoint
+
 **`eval/eval_assembly.py`** — deprecated legacy script, not used.
 
 **`tests/test_ctm_implementation.py` — new test suite:**
@@ -213,12 +220,45 @@ knowledge not as a behavioral cloning target but as initialization for learned i
 refinement, granting robustness to partial observability that single-pass architectures
 cannot structurally replicate.
 
+### K=3 Results (500 episodes, completed)
+
+CTM and MLP were both run at K=3 for 500 episodes. Final eval summary:
+
+| Metric | CTM | MLP | Notes |
+|---|---|---|---|
+| Coverage | 0.6857 | 0.6953 | MLP +1.4% — negligible |
+| Dist Uniformity | **0.9259** | 0.8800 | CTM +5.2% — consistent |
+| Voronoi | 0.8233 | **0.8516** | MLP +3.4% — contradicts uniformity |
+| Reward | 0.1660 | 0.1590 | CTM +4.4% — noisy |
+
+**Visual observation (final eval GIFs):** CTM agents actively maintain separation — they push
+against each other to avoid clustering. MLP agents cluster in the same corner of the shape
+repeatedly across episodes, particularly in tight-geometry shapes (B shape at ep100, A shape
+at final eval bottom-right leg). The clustering is deterministic, not random — MLP with K=3
+cannot resolve overcrowding from limited neighbor info.
+
+**Why the metrics don't fully capture this:** Coverage doesn't penalise stacking. Voronoi
+uniformity averages globally so a local cluster in one corner is diluted. The existing
+metrics understate the behavioural difference visible in the GIFs.
+
+**Why new metrics were added:**
+- `mean_neighbor_distance`: absolute spacing magnitude — directly measures whether agents
+  are spread out, not just whether spacing is uniform. Should be clearly higher for CTM.
+- `collision_rate`: fraction of agents physically colliding at episode end. CTM's anti-
+  clustering behaviour should show lower collision rate.
+- These were added to `AssemblyEnv`, `JaxAssemblyAdapterGPU`, training script eval, and
+  `eval_shapes.py`. Run eval_shapes.py on existing K=3 checkpoints to get the new numbers.
+
+**Current conclusion:** Mixed numerics, clear visual difference. The gap is real but the old
+metrics couldn't see it cleanly. New metrics should clarify. K=1 still to run.
+
 ### What to do next (ordered)
 
-1. **K-sweep first (free):** Run MLP and CTM-zero-init at K=3 and K=1 to confirm a gap
-   opens up. If it doesn't, the seeding idea needs rethinking before any implementation.
-2. **Implement prior-seeded CTM** only if step 1 shows a meaningful gap.
-3. Full ablation table runs.
+1. **Re-evaluate K=3 checkpoints** with new metrics (neighbor_dist, collision_rate) using
+   eval_shapes.py — this costs nothing, models already trained.
+2. **Run K=1** (500 episodes, CTM and MLP) once K=3 new metrics confirm or deny the gap.
+3. **Implement prior-seeded CTM** only if K-sweep shows a meaningful, metric-confirmed gap.
+4. Full ablation table runs for paper.
 
 ### Intellectual honesty rule
 

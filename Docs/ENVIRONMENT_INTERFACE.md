@@ -272,6 +272,41 @@ def voronoi_based_uniformity(self) -> float:
     return 1.0 / (1.0 + std(cell_counts) / mean(cell_counts))
 ```
 
+**Mean Neighbor Distance** *(new)*:
+```python
+def mean_neighbor_distance(self) -> float:
+    # Mean nearest-neighbour distance across all agents
+    # Measures absolute magnitude of spacing — not just uniformity
+    # Higher = agents more spread out (less clustering)
+    # Unlike distribution_uniformity, sensitive to overall scale of separation
+    min_dists = [distance_to_nearest_neighbor(agent) for agent in agents]
+    return mean(min_dists)
+```
+
+**Collision Rate** *(new)*:
+```python
+def collision_rate(self) -> float:
+    # Fraction of agents currently in collision (any neighbour within r_avoid)
+    # Range: [0, 1]. 0 = no collisions, 1 = all agents colliding
+    # Direct measure of physical stacking — cleaner than collision count
+    in_collision = [any(dist < r_avoid for dist in neighbor_dists(agent)) for agent in agents]
+    return mean(in_collision)
+```
+
+**Coverage Efficiency** *(new)*:
+```python
+def coverage_efficiency(self) -> float:
+    # Cells covered / n_agents, normalised by ideal (n_cells / n_agents)
+    # Algebraically equivalent to coverage_rate — same number, cleaner label
+    # Value of 1.0 = agents spread perfectly with no cell-sharing
+    # Useful label when comparing CTM vs MLP stacking behaviour
+    return n_occupied / n_valid_cells  # = coverage_rate
+```
+
+**Note:** All new metrics are available on both `AssemblyEnv` (JAX, takes `state` arg) and
+`JaxAssemblyAdapterGPU` (wrapper, uses `self._states`). All appear in periodic eval logs,
+final eval per-shape output, final eval summary, and `eval_shapes.py`.
+
 ---
 
 ## 2. JaxAssemblyAdapterGPU (GPU-Optimized PyTorch Bridge)

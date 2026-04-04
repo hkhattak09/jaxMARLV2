@@ -271,6 +271,21 @@ class JaxAssemblyAdapterGPU:
             return float(self.env.voronoi_based_uniformity(self._states))
         return float(jnp.mean(jax.vmap(self.env.voronoi_based_uniformity)(self._states)))
 
+    def mean_neighbor_distance(self) -> float:
+        if self.n_envs == 1:
+            return float(self.env.mean_neighbor_distance(self._states))
+        return float(jnp.mean(jax.vmap(self.env.mean_neighbor_distance)(self._states)))
+
+    def collision_rate(self) -> float:
+        if self.n_envs == 1:
+            return float(self.env.collision_rate(self._states))
+        return float(jnp.mean(jax.vmap(self.env.collision_rate)(self._states)))
+
+    def coverage_efficiency(self) -> float:
+        if self.n_envs == 1:
+            return float(self.env.coverage_efficiency(self._states))
+        return float(jnp.mean(jax.vmap(self.env.coverage_efficiency)(self._states)))
+
     def collision_count_jax(self):
         """JAX scalar: total agents in collision across all envs this step.
 

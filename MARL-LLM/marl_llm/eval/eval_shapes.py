@@ -64,6 +64,8 @@ def _build_comparison_table(model_summaries):
         ("Coverage", "overall_coverage", ".3f"),
         ("Dist Uniformity", "overall_dist_uniformity", ".3f"),
         ("Voronoi Uniformity", "overall_voronoi_uniformity", ".3f"),
+        ("Neighbor Dist", "overall_neighbor_dist", ".4f"),
+        ("Collision Rate", "overall_collision_rate", ".4f"),
     ]
 
     rows = []
@@ -130,7 +132,9 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
         shape_coverages = []
         shape_dist_uniformities = []
         shape_voronoi_uniformities = []
-        
+        shape_neighbor_dists = []
+        shape_collision_rates = []
+
         for ep_idx in range(EPISODES_PER_SHAPE):
             is_last_episode = (ep_idx == EPISODES_PER_SHAPE - 1)
             state_history = [] if is_last_episode else None
@@ -139,69 +143,81 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
             obs = env.reset_eval(shape_idx)
             ep_reward = 0.0
 
-            # Initialise per-episode hidden state for CTM actor (None for MLP)
-            eval_hidden = (maddpg.agents[0].policy.get_initial_hidden_state(env.n_a, torch_device)
-                           if maddpg.use_ctm_actor else None)
-
             with torch.no_grad():
                 for step in range(cfg.episode_length):
-                    actions, _, eval_hidden = maddpg.step(obs, start_stop_num, explore=False, hidden_states=eval_hidden)
+                    # Stateless rollout: fresh hidden state every step (matches training)
+                    eval_hidden = (maddpg.agents[0].policy.get_initial_hidden_state(env.n_a, torch_device)
+                                   if maddpg.use_ctm_actor else None)
+                    actions, _, _ = maddpg.step(obs, start_stop_num, explore=False, hidden_states=eval_hidden)
                     actions_stacked = torch.column_stack(actions)  # (2, n_a)
 
                     # Step environment
                     obs, rewards, dones, _, _ = env.step(actions_stacked.t().detach())
-                    
+
                     # Accumulate reward (rewards is (1, n_a) GPU tensor)
                     ep_reward += rewards.mean().item()
-                    
+
                     # Collect state for GIF (last episode only)
                     if is_last_episode:
                         state_history.append(env._states)
-            
+
             # Record metrics
             avg_reward = ep_reward / cfg.episode_length
             coverage = env.coverage_rate()
             dist_uniformity = env.distribution_uniformity()
             voronoi_uniformity = env.voronoi_based_uniformity()
-            
+            neighbor_dist = env.mean_neighbor_distance()
+            collision_rate = env.collision_rate()
+
             shape_rewards.append(avg_reward)
             shape_coverages.append(coverage)
             shape_dist_uniformities.append(dist_uniformity)
             shape_voronoi_uniformities.append(voronoi_uniformity)
-            
+            shape_neighbor_dists.append(neighbor_dist)
+            shape_collision_rates.append(collision_rate)
+
             print(f"  Episode {ep_idx + 1}/{EPISODES_PER_SHAPE}: "
                   f"Reward={avg_reward:.4f}, Coverage={coverage:.3f}, "
-                  f"Dist Uniformity={dist_uniformity:.3f}, Voronoi={voronoi_uniformity:.3f}")
-            
+                  f"Dist Uniformity={dist_uniformity:.3f}, Voronoi={voronoi_uniformity:.3f}, "
+                  f"Neighbor Dist={neighbor_dist:.4f}, Collision Rate={collision_rate:.4f}")
+
             # Save GIF for last episode
             if is_last_episode:
                 gif_path = model_output_dir / f"shape_{shape_idx:02d}.gif"
                 save_eval_gif(state_history, gif_path, fps=12, frame_skip=2)
-        
+
         # Compute shape statistics
         mean_reward = np.mean(shape_rewards)
         mean_coverage = np.mean(shape_coverages)
         mean_dist_uniformity = np.mean(shape_dist_uniformities)
         mean_voronoi = np.mean(shape_voronoi_uniformities)
-        
+        mean_neighbor_dist = np.mean(shape_neighbor_dists)
+        mean_collision_rate = np.mean(shape_collision_rates)
+
         shape_result = {
             'shape_index': shape_idx,
             'mean_reward': mean_reward,
             'mean_coverage': mean_coverage,
             'mean_dist_uniformity': mean_dist_uniformity,
             'mean_voronoi_uniformity': mean_voronoi,
+            'mean_neighbor_dist': mean_neighbor_dist,
+            'mean_collision_rate': mean_collision_rate,
             'all_rewards': shape_rewards,
             'all_coverages': shape_coverages,
             'all_dist_uniformities': shape_dist_uniformities,
             'all_voronoi_uniformities': shape_voronoi_uniformities,
+            'all_neighbor_dists': shape_neighbor_dists,
+            'all_collision_rates': shape_collision_rates,
         }
         all_results.append(shape_result)
-        
+
         print(f"\n  --- Shape {shape_idx} Average (over {EPISODES_PER_SHAPE} episodes) ---")
         print(f"  Reward:            {mean_reward:.4f}")
         print(f"  Coverage:          {mean_coverage:.3f}")
         print(f"  Dist Uniformity:   {mean_dist_uniformity:.3f}")
         print(f"  Voronoi:           {mean_voronoi:.3f}")
+        print(f"  Neighbor Dist:     {mean_neighbor_dist:.4f}")
+        print(f"  Collision Rate:    {mean_collision_rate:.4f}")
     
     # Print overall summary
     print("\n" + "="*100)
@@ -212,17 +228,23 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
     overall_coverages = [r['mean_coverage'] for r in all_results]
     overall_dist_uniformities = [r['mean_dist_uniformity'] for r in all_results]
     overall_voronoi = [r['mean_voronoi_uniformity'] for r in all_results]
-    
+    overall_neighbor_dists = [r['mean_neighbor_dist'] for r in all_results]
+    overall_collision_rates = [r['mean_collision_rate'] for r in all_results]
+
     print(f"\n--- Overall Average (across {num_shapes} shapes) ---")
     overall_reward = float(np.mean(overall_rewards))
     overall_coverage = float(np.mean(overall_coverages))
     overall_dist_uniformity = float(np.mean(overall_dist_uniformities))
     overall_voronoi_uniformity = float(np.mean(overall_voronoi))
+    overall_neighbor_dist = float(np.mean(overall_neighbor_dists))
+    overall_collision_rate = float(np.mean(overall_collision_rates))
 
     print(f"  Reward:            {overall_reward:.4f}")
     print(f"  Coverage:          {overall_coverage:.3f}")
     print(f"  Dist Uniformity:   {overall_dist_uniformity:.3f}")
     print(f"  Voronoi:           {overall_voronoi_uniformity:.3f}")
+    print(f"  Neighbor Dist:     {overall_neighbor_dist:.4f}")
+    print(f"  Collision Rate:    {overall_collision_rate:.4f}")
     
     print(f"\nGIFs saved to: {model_output_dir.resolve()}/")
     for shape_idx in range(num_shapes):
@@ -242,6 +264,8 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
             'overall_coverage': overall_coverage,
             'overall_dist_uniformity': overall_dist_uniformity,
             'overall_voronoi_uniformity': overall_voronoi_uniformity,
+            'overall_neighbor_dist': overall_neighbor_dist,
+            'overall_collision_rate': overall_collision_rate,
             'results': all_results,
         }, f)
     print(f"\nResults saved to: {results_path}")
@@ -253,6 +277,8 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
         'overall_coverage': overall_coverage,
         'overall_dist_uniformity': overall_dist_uniformity,
         'overall_voronoi_uniformity': overall_voronoi_uniformity,
+        'overall_neighbor_dist': overall_neighbor_dist,
+        'overall_collision_rate': overall_collision_rate,
         'results_path': str(results_path),
     }
 
@@ -283,6 +309,7 @@ def run_eval():
     jax_env = AssemblyEnv(
         results_file=cfg.results_file,
         n_a=cfg.n_a,
+        topo_nei_max=cfg.topo_nei_max,
     )
     env = JaxAssemblyAdapterGPU(
         jax_env,
