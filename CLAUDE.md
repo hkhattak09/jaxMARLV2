@@ -23,10 +23,39 @@ Key files:
 
 ---
 
-## CTM Actor — IMPLEMENTATION COMPLETE
+## CTM Actor — STATELESS ROLLOUT TRANSITION IN PROGRESS
 
 **CTM is the default actor.** To revert to MLP: pass `--use_mlp_actor` to the training command.
 All eval paths (training-loop eval, final eval, standalone eval_shapes.py) work with both.
+
+### Why We Are Changing
+
+The original implementation propagated hidden states across timesteps during rollout (stateful)
+but initialised fresh hidden states during actor updates (stateless). This caused a
+rollout/update mismatch: the critic was trained on actions from warm context-rich hidden states,
+but the policy gradient computed actions from a blank board — causing Q-overestimation and
+policy loss diving to -6 with near-zero task improvement (coverage stuck at 0.06 vs MLP 0.64
+at the same episode count).
+
+Storing hidden states in the replay buffer (the R-MADDPG approach) is the principled fix but
+is impractical: CTM hidden state = 2 × (256 × 16) = 8,192 floats per agent per transition,
+vs LSTM = 128 floats. At buffer_length=20k, 24 agents: ~15.7 GB — infeasible. Staleness of
+complex high-dimensional hidden states under off-policy sampling is also a harder problem than
+for small LSTMs.
+
+### What We Are Doing Instead — Stateless Rollout
+
+Reset hidden states to fresh at every timestep during rollout, exactly as actor updates do.
+Rollout and update become structurally identical — zero mismatch. The CTM still contributes
+via its `iterations=4` inner reasoning passes per observation (iterative computation within a
+single timestep). Cross-timestep memory is removed. The environment is fully observable so
+the MLP baseline proves cross-timestep memory is not required.
+
+**Only file that needs changing:** `train/train_assembly_jax_gpu.py`
+- Remove per-episode hidden state init and carry-forward between steps
+- Remove done-mask reset logic
+- Call `get_initial_hidden_state()` fresh before every `maddpg.step()` in rollout, run_eval, run_final_eval
+- All other files (ctm_actor.py, ctm_agent.py, maddpg.py, buffer, critic) unchanged
 
 ### What Was Implemented
 
@@ -93,40 +122,24 @@ All eval paths (training-loop eval, final eval, standalone eval_shapes.py) work 
 
 ---
 
-## All Design Decisions (Final)
+## All Design Decisions (Current)
 
 ### Architecture
 - Single shared CTM network across all 24 agents (parameter sharing, homogeneous team)
-- Each agent has its own independent hidden state (its own "board")
+- Each agent has its own hidden state — reinitialised fresh every step under stateless rollout
 - Attention and KV projections removed (heads=0) — flat 192-dim obs vector, no sequence
 - Action head: Linear(136, 2) + Tanh on top of synchronisation output
 - Critic: MLP, unchanged
 
-### Stateless Actor Updates
-- During rollout: hidden states propagated correctly across timesteps (full temporal memory)
-- During actor update: fresh hidden states from `start_activated_trace` for every batch
+### Stateless Rollout (NEW — replacing stateful rollout)
+- During rollout: hidden states reinitialised fresh before every step (no cross-timestep carry)
+- During actor update: hidden states also fresh — rollout and update are now identical
 - No hidden states stored in replay buffer — buffer unchanged
-- Gradient is biased in magnitude but correct in direction (Q-weighted)
-- Same `iterations` value for both rollout and update (different values create structural
-  mismatch in synchronisation computation between rollout and update)
-- Mitigations: learnable decay params upweight reliable recent slots naturally;
-  `start_activated_trace` is a learned parameter that optimises to reduce mismatch;
-  Reynolds flocking prior stabilises early training
-
-### Hidden State Management
-- Shape: `(n_rollout_threads × n_agents, d_model, memory_length)` × 2 tensors
-  (state_trace and activated_state_trace)
-- Live on GPU throughout — never move (network stays GPU for both rollout and training)
-- Initialised at episode start from `get_initial_hidden_state()`
-- Done reset in training loop after each env.step():
-  - done signal `(1, n_total_agents)` → `.reshape(-1, 1, 1).float()` for broadcasting
-  - state_trace where done=True → zeros
-  - activated_state_trace where done=True → `start_activated_trace.detach()` expanded
-  - Agents where done=False untouched
+- CTM value-add is iterative computation within each timestep (iterations=4 inner passes)
+- Cross-timestep memory removed — justified because environment is fully observable
 
 ### Target Network
-- Target actor uses its own `start_activated_trace` (gets soft-updated as normal nn.Parameter)
-- Stateless initialisation for target actor forward pass in critic update — consistent
+- Target actor uses stateless initialisation — consistent with rollout and update
 
 ### Hyperparameters
 | Parameter | Value | Note |

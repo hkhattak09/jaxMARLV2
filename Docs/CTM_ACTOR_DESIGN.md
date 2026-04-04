@@ -3,113 +3,153 @@
 ## What We Are Doing
 
 Replacing the MLP actor in MADDPG with a CTM (Continuous Thought Machine) actor.
-The critic remains unchanged as an MLP — the MLP critic has sufficient expressive power
-because it already receives the full global state (all agents' obs + all agents' actions),
-which is a complete Markovian representation. No temporal memory is needed there.
-
-The actor is where temporal memory adds genuine capability. The MLP actor sees only a
-single local observation per timestep with no memory of the past. CTM gives each agent
-a sliding window of recent trajectory history, enabling temporally-aware decision making
-— anticipating neighbor movements, recognising approach/diverge patterns, course-correcting
-based on recent drift. These are things a memoryless MLP simply cannot do regardless of
-how wide it is.
+The critic remains an MLP — it receives the full global state (all agents' obs + all agents'
+actions), a complete Markovian representation, so no temporal memory is needed there.
 
 ---
 
-## Architecture
+## History of Decisions and What We Learned
+
+### Phase 1 — Initial Implementation (Stateful Rollout, Stateless Update)
+
+The first implementation propagated hidden states across timesteps during rollout
+(full temporal memory across 200 steps) but initialised fresh hidden states during
+actor updates. The reasoning was:
+
+- Storing hidden states in the replay buffer was deemed impractical due to memory cost
+- The gradient bias was assumed to be tolerable (correct direction, biased magnitude)
+- `start_activated_trace` as a learned parameter was expected to reduce the rollout/update mismatch
+
+**Training results (4 runs, logs 1-4):**
+
+| Run | Command | ep100 Coverage | ep250 Coverage | Policy loss ep250 |
+|---|---|---|---|---|
+| MLP baseline | `--use_mlp_actor` | 0.644 | ~0.75 | -1.7 |
+| CTM default | default config | 0.061 | 0.061 | -4.77 |
+| CTM + tau=0.005 | `--lr_actor 3e-5 --ctm_iterations 2 --tau 0.005` | 0.084 | 0.162 | -2.45 |
+| CTM smaller | `--ctm_d_model 128 --ctm_memory_length 8 --lr_actor 3e-5` | 0.069 | stopped ep140 | worse |
+
+**What went wrong — confirmed diagnosis:**
+
+Policy loss dove 3-4× faster than MLP while actual task metrics (coverage, Voronoi
+uniformity) stagnated near baseline. This is Q-overestimation caused by the
+rollout/update mismatch:
+
+- During rollout the CTM produces actions from a warm, 200-step context-rich hidden state
+- During actor update the CTM produces actions from a blank fresh board
+- The critic was trained on (obs, action_rollout) pairs and has never seen (obs, action_fresh_board)
+- Q-values assigned to fresh-board actions are unreliable — the policy gradient optimises
+  critic noise rather than task performance
+
+Reducing model size (log 4) made things worse, not better — ruling out overfitting as
+the primary cause. Slowing target network updates (tau=0.005, log 3) reduced the policy
+loss dive rate but could not fix the underlying mismatch.
+
+### Phase 2 — Understanding the Literature (R-MADDPG)
+
+We read *R-MADDPG for Partially Observable Environments and Limited Communication*
+(Wang et al., 2020) and examined their open-source implementation.
+
+**Key findings from the paper:**
+
+1. Under **fully observable** settings, all variants (plain MADDPG, recurrent actor only,
+   recurrent critic only, recurrent actor+critic) perform equivalently well. The recurrent
+   critic is only critical for *partial observability*.
+
+2. Our environment is **fully observable** — the 192-dim obs vector contains all relevant
+   state. The MLP baseline proves this: it learns well with zero temporal memory. Therefore
+   the recurrent critic recommendation does not apply to our task.
+
+3. The paper's recurrent actor uses **stored LSTM hidden states** in the replay buffer
+   (both `c_t` and `h_t` stored per transition, per agent). During actor update, the
+   stored state from rollout is fed back in — not a fresh state. This is what eliminates
+   the rollout/update mismatch in their system.
+
+**Why storing CTM hidden states is impractical for us:**
+
+Their LSTM state per agent = 2 × 64 floats = 128 floats per transition.
+CTM hidden state per agent = 2 × (d_model × memory_length) = 2 × (256 × 16) = 8,192 floats.
+
+| Config | Storage (buffer_length=20k, 24 agents) |
+|---|---|
+| R-MADDPG LSTM | ~246 MB — fine |
+| CTM (d_model=256, mem=16) | ~15.7 GB — infeasible on T4 |
+| CTM (d_model=128, mem=8) | ~3.9 GB — borderline, before other costs |
+
+Even on an H100 with 512 GB host RAM, storage is technically feasible. But a second
+problem remains: **staleness**. For a small LSTM, stored states from older policy versions
+remain approximately valid — the state space is simple. For CTM, the hidden state is a
+rich distributed representation shaped by 200 steps through a specific version of the
+network weights. As weights change, stored states become inconsistent with what the
+current CTM would produce, potentially worse than a fresh state. The off-policy staleness
+problem is more severe for complex high-dimensional hidden states.
+
+**Conclusion from literature review:** The original stateless-update approach is
+architecturally broken for our setup. Storing hidden states is the principled fix but
+is impractical. This motivates a different approach.
+
+### Phase 3 — Stateless Rollout (Current Direction)
+
+**Core insight:** The mismatch between rollout and update exists because rollout is
+stateful and update is stateless. The fix does not have to be making updates stateful —
+it can equally be making rollout stateless too.
+
+**What stateless rollout means:**
+
+During rollout, reset hidden states to fresh at every timestep before each forward pass,
+exactly as the actor update does. Rollout and update are now structurally identical —
+zero mismatch, zero Q-overestimation from this source.
+
+**What the CTM still contributes under stateless rollout:**
+
+The CTM runs `iterations=4` inner loop steps on each observation before producing an
+action. This is iterative/recurrent computation *within* a single timestep — the network
+refines its representation of the current observation through multiple passes. This is
+genuinely different from what an MLP does (single feedforward pass). The CTM can learn
+to reason more deeply about each observation even without cross-timestep memory.
+
+**What the CTM loses:**
+
+Cross-timestep memory — the ability to remember where agents were in previous steps,
+recognise trajectory patterns, anticipate movements. Given that the environment is fully
+observable and the MLP learns without this, cross-timestep memory may not be necessary
+for this task. This is an empirical question the stateless rollout experiment will answer.
+
+**Why this is worth testing before bigger hardware:**
+
+If stateless CTM matches or beats MLP, we have a working CTM with zero infrastructure
+changes — same buffer, same memory, same training loop (just remove the hidden state
+carry-across). If it does not beat MLP, it tells us the CTM's iterative computation
+is not adding value for this specific task and no amount of hardware or complexity will
+fix that.
+
+---
+
+## Architecture (Unchanged from Phase 1)
 
 - **Single shared CTM network** across all 24 agents (parameter sharing, homogeneous team)
-- **Individual hidden states** per agent — one board per agent, evolved independently
-- **Attention and KV projections removed** — input is a flat 192-dim observation vector,
-  no sequence to attend over. The existing `ctm_rl.py` already does this (heads=0).
-- **Action head** — linear layer mapping synchronisation output → action_dim=2, followed
-  by tanh to constrain to [-1, 1]
+- **Individual hidden states** per agent — one board per agent (under stateful rollout);
+  under stateless rollout, these are reinitialised every step
+- **Attention and KV projections removed** — flat 192-dim obs, no sequence (heads=0)
+- **Action head** — Linear(136, 2) + Tanh
 - **Critic** — MLP, unchanged
 
 ---
 
-## Stateless Actor Updates
+## Stateless Rollout Implementation Plan
 
-### What This Means
+**Change required:** In the training loop rollout, instead of carrying hidden states
+forward between steps, call `get_initial_hidden_state()` before every `maddpg.step()`.
+The per-episode initialisation and done-mask reset logic can be removed entirely.
 
-During rollout: hidden states are propagated correctly across timesteps. Each agent's board
-accumulates genuine trajectory history. Full temporal memory, exactly as CTM was designed.
+**Files to change:**
+- `train/train_assembly_jax_gpu.py` — remove hidden state carry-forward in rollout loop;
+  reinitialise fresh hidden state at every step instead. Same change in `run_eval` and
+  `run_final_eval`.
 
-During actor update: hidden states are initialised fresh from `start_activated_trace` for
-every sampled batch. No hidden states stored in the replay buffer. The buffer is unchanged.
-
-### Why Stateless
-
-**Storing hidden states in the buffer does not scale.** With n_rollout_threads up to 7,
-buffer_length=20k, and 24 agents:
-
-| n_rollout_threads | Total buffer rows | Hidden state storage (d_model=64, memory_length=8) |
-|---|---|---|
-| 1 | 480k | ~1.9 GB |
-| 3 | 1.44M | ~5.6 GB |
-| 5 | 2.4M | ~9.4 GB |
-| 7 | 3.36M | ~13.1 GB |
-
-This is on top of existing buffer data, network weights, optimizer state, and JAX environment
-memory. Impractical at scale.
-
-Stored hidden states also suffer from **staleness** — the hidden state saved during rollout
-was computed by older network weights. By update time the weights have changed, making the
-stored state inaccurate anyway.
-
-**Stateless introduces a biased gradient**, not a wrong one. The gradient direction is still
-correct (Q-weighted, still points toward higher-value actions). The bias is in magnitude.
-MADDPG already tolerates multiple approximation sources (off-policy sampling, TD bootstrapping,
-soft target updates) — this is one more bounded noise source.
-
-### Mitigations
-
-**Learnable decay parameters (CTM-specific):** The synchronisation computation uses learnable
-exponential decay weights per neuron pair. The rightmost (most recent) slots in the board
-are overwritten first during the inner loop and are computed identically in both rollout and
-stateless update. The leftmost (oldest) slots are where the mismatch lives. The decay params
-will naturally learn to upweight recent reliable slots and downweight stale ones — a
-self-correcting mechanism that emerges from training without any engineering.
-
-**Same iterations for rollout and update:** Using different iteration counts introduces a
-structural mismatch — the synchronisation is computed over differently-shaped boards in
-each case, meaning the gradient optimises a different computation than what runs during
-rollout. Using the same iterations keeps the computational structure identical; only the
-content of the stale slots differs, which start_activated_trace and decay params handle.
-
-**start_activated_trace is learned:** This parameter receives gradients from every actor
-update and learns to approximate a reasonable neutral context — minimising the damage from
-using a fresh board during updates.
-
-**Reynolds flocking prior:** The existing regularization term `0.3 × alpha × MSE(π(obs), a_prior)`
-anchors policy updates to physically meaningful actions early in training, dampening the
-effect of noisy gradients.
-
----
-
-## Hidden State Management During Rollout
-
-Hidden states live in the training loop, not inside the network.
-
-Shape: `(n_rollout_threads × n_agents, d_model, memory_length)` — two tensors
-(state_trace and activated_state_trace).
-
-- Initialised from `start_activated_trace` at training start
-- Passed into every actor call, updated version returned
-- On `done=True`: that agent's board reset to `start_activated_trace`
-- Other agents' boards unaffected (per-env, per-agent masking)
-- Live on GPU throughout — the training script keeps networks on GPU for both rollout and
-  update (prep_rollouts(device="gpu") and prep_training(device="gpu")). Hidden states
-  are initialised as CUDA tensors at training start and never move. Memory cost is negligible
-  (~2.7 MB even at 7 parallel envs with d_model=128, memory_length=16).
-
----
-
-## Target Network
-
-The target actor (used in the critic update to compute target actions for next_obs) also
-uses stateless initialization — fresh board from target policy's `start_activated_trace`.
-Consistent with the stateless approach and avoids any additional complexity.
+**Files unchanged:**
+- `ctm_actor.py`, `ctm_agent.py`, `maddpg.py` — no changes needed
+- Buffer, critic, reward structure — unchanged
 
 ---
 
@@ -117,58 +157,22 @@ Consistent with the stateless approach and avoids any additional complexity.
 
 | Parameter | Value | Reasoning |
 |---|---|---|
-| d_model | 256 | Increased from initial 128 — GPU rollout makes wider models cheap. Current MLP hidden_dim=180, so 128 would be underpowered. 256 gives richer neuron population and more diverse synchronisation patterns |
-| memory_length | 16 | ~8% of episode (200 steps), captures short trajectory patterns |
-| n_synch_out | 16 | 136-dim synchronisation output (16×17/2), sufficient for action_dim=2 action head |
-| iterations | 4 | Overwrites 25% of board per call, preserves 75% trajectory history. Same value for rollout and update — different values would create structural mismatch in synchronisation computation. Starting point, tune over [3,4,5,6] |
-| synapse_depth | 1 | Flat obs vector, 2-block MLP (Linear→GLU→LayerNorm ×2) sufficient |
-| deep_nlms | False | Shallow NLMs (single linear over memory window per neuron) are 68× cheaper and sufficient — complex inter-neuron interactions are captured by synchronisation not NLMs |
+| d_model | 256 | Richer neuron population; GPU makes this cheap |
+| memory_length | 16 | Less relevant under stateless rollout, but kept for consistency |
+| n_synch_out | 16 | 136-dim synchronisation output (16×17/2) |
+| iterations | 4 | 4 inner reasoning passes per observation — the primary value-add under stateless rollout |
+| synapse_depth | 1 | Flat obs, 2-block MLP sufficient |
+| deep_nlms | False | 68× cheaper, sufficient expressiveness |
 | do_layernorm_nlm | True | Training stability |
-| memory_hidden_dims | [64] | Passed to constructor but unused when deep_nlms=False |
-
----
-
-## Done Reset Mechanism
-
-Hidden states are reset via a mask applied in the training loop after each `env.step()`.
-
-The done signal from the env is `(1, n_total_agents)`. Reshape to `(n_total_agents, 1, 1)` to
-broadcast over the hidden state shape `(n_total_agents, d_model, memory_length)`.
-
-- `state_trace` where done=True → zeros (correct initialisation for state_trace)
-- `activated_state_trace` where done=True → `start_activated_trace` expanded for batch
-
-Agents where done=False are untouched. Per-env, per-agent — env 2 finishing does not reset
-env 1's agents. Cheap in-place GPU operation on a ~2.7 MB tensor.
-
----
-
-## Implementation Plan
-
-**New files:**
-- `algorithm/utils/ctm_actor.py` — `CTMActor` class (wraps ContinuousThoughtMachineRL + action head)
-- `algorithm/utils/ctm_agent.py` — `CTMDDPGAgent` subclass of DDPGAgent
-
-**Modified files:**
-- `algorithm/algorithms/maddpg.py` — `init_from_env()` accepts `use_ctm_actor` flag, instantiates CTMDDPGAgent when set; `update()` creates fresh hidden states for actor and target actor forward passes
-- `train/train_assembly_jax_gpu.py` — initialize hidden states before episode loop, pass to maddpg.step(), apply done mask after each step
-- `cfg/assembly_cfg.py` — CTM switch and hyperparameters (done)
-
-**Unchanged:**
-- `DDPGAgent` (MLP version kept intact)
-- `MLPNetwork`, `ReplayBufferAgent`, critic, buffer interface
-
-**Notes:**
-- `log_pi` returned from CTMDDPGAgent.step() can be None — discarded with `_` in training loop
-- `start_activated_trace` is an nn.Parameter, saved/loaded with network weights automatically
-- Target actor's `start_activated_trace` gets soft-updated correctly as a normal parameter
+| memory_hidden_dims | [64] | Unused when deep_nlms=False |
 
 ---
 
 ## What Does Not Change
 
 - Replay buffer structure and interface
-- Critic and target critic (MLP, unchanged)
+- Critic and target critic (MLP)
 - Reward structure and Reynolds flocking prior
-- MADDPG update logic (except actor forward pass now takes hidden state)
+- MADDPG update logic
 - Environment interface
+- CTM actor/agent/maddpg code
