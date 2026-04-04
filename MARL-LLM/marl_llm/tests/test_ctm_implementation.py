@@ -806,23 +806,5 @@ class TestEndToEnd:
 # Entry point for running without pytest
 # ═══════════════════════════════════════════════════════════════════════════
 if __name__ == '__main__':
-    import unittest
-
-    # Collect all test classes
-    test_classes = [
-        TestCTMActor,
-        TestCTMDDPGAgent,
-        TestMADDPGWithCTM,
-        TestMADDPGWithMLP,
-        TestHiddenStateManagement,
-        TestEndToEnd,
-    ]
-
-    loader = unittest.TestLoader()
-    suite  = unittest.TestSuite()
-    for cls in test_classes:
-        suite.addTests(loader.loadTestsFromTestCase(cls))
-
-    runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(suite)
-    sys.exit(0 if result.wasSuccessful() else 1)
+    import pytest
+    sys.exit(pytest.main([__file__, '-v']))
