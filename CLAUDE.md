@@ -156,6 +156,81 @@ the MLP baseline proves cross-timestep memory is not required.
 
 ---
 
+## Research Direction — Prior-Seeded Iterative Reasoning
+
+**Goal:** Publish a paper combining CTM, MARL, and physics priors in a principled way.
+
+### What the environment actually is
+
+Each agent observes: own state (4) + K=6 nearest neighbors (24) + 80 nearest target cells (160) = 192 dims.
+Agents observe only 6 of 23 teammates — the actor is **genuinely partially observable** at execution.
+The centralised critic sees global state during training (CTDE). This partial observability is already
+present at K=6 and can be stressed further by reducing `topo_nei_max` in the env config.
+
+The Reynolds prior is computed every step from the same local obs — it is a physics-based closed-form
+action (flocking: cohesion, alignment, separation). Currently used only as a 0.03-weight loss
+regularizer in the actor update. This is an underused asset.
+
+### Core Idea — Prior-Seeded CTM
+
+Instead of regularizing the CTM's output toward the prior, use the prior to **initialize** the CTM's
+iterative computation. The CTM then refines from a physics-grounded starting point rather than from zeros.
+
+```
+Current:   zeros + start_activated_trace → CTM iterations 1..K → action
+Proposed:  obs + prior_action → seed MLP → h_0 → CTM iterations 1..K → action
+```
+
+**Why this is structurally different from MLP+prior:**
+- MLP with prior regularization: prior shapes the loss, single feedforward pass
+- CTM with prior seeding: prior shapes the starting computational state, iterative refinement
+  departs from physics as much as learned — the number of iterations controls
+  how far from the prior the policy can move
+- Under partial observability, when an agent can't see most teammates, the prior provides
+  a meaningful starting point that the CTM refines. MLP cannot use the prior this way.
+
+### Ablation Table (planned)
+
+| Model | Prior use | K neighbors | Expected |
+|---|---|---|---|
+| MLP | 0.03 reg | 6 | baseline |
+| CTM zero-init | 0.03 reg | 6 | ~MLP (already validated) |
+| CTM prior-seeded | initialization | 6 | ~MLP (partial obs not stressed) |
+| MLP | 0.03 reg | 3 | degrades |
+| CTM zero-init | 0.03 reg | 3 | degrades somewhat |
+| CTM prior-seeded | initialization | 3 | degrades least |
+| MLP | 0.03 reg | 1 | degrades hard |
+| CTM zero-init | 0.03 reg | 1 | degrades |
+| CTM prior-seeded | initialization | 1 | most robust |
+
+K reduction requires only changing `topo_nei_max` in the env config — cheap first step.
+Prior-seeded CTM requires a new conditioning path in `ctm_actor.py`.
+
+### Framing
+
+*Physics-Prior Seeding for Iterative Reasoning in Cooperative MARL* — agents use domain
+knowledge not as a behavioral cloning target but as initialization for learned iterative
+refinement, granting robustness to partial observability that single-pass architectures
+cannot structurally replicate.
+
+### What to do next (ordered)
+
+1. **K-sweep first (free):** Run MLP and CTM-zero-init at K=3 and K=1 to confirm a gap
+   opens up. If it doesn't, the seeding idea needs rethinking before any implementation.
+2. **Implement prior-seeded CTM** only if step 1 shows a meaningful gap.
+3. Full ablation table runs.
+
+### Intellectual honesty rule
+
+Do not get carried away with ideas. An idea is not a result. Before any implementation:
+- State what the experiment would show if the hypothesis is **wrong**
+- If the experiment cannot falsify the hypothesis, it is not a useful experiment
+- Do not frame incremental or null results as confirmation
+- If K-sweep shows no gap between CTM and MLP under partial obs, say so clearly and
+  reconsider the direction rather than adding complexity to patch it
+
+---
+
 ## Key Constraints (Still Apply)
 
 - Do NOT modify DDPGAgent — subclass only, MLP version must remain intact

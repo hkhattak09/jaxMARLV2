@@ -155,7 +155,8 @@ results_file = os.path.join(_repo_root, 'fig', 'results.pkl')
 
 ## ==================== Environment Configuration ====================
 # Multi-agent system parameters
-parser.add_argument("--n_a", type=int, default=24, help='Number of agents in the swarm') 
+parser.add_argument("--n_a", type=int, default=24, help='Number of agents in the swarm')
+parser.add_argument("--topo_nei_max", type=int, default=6, help='Number of nearest neighbors each agent can observe (K). Default 6. Reduce for partial observability experiments.')
 
 # Agent behavior configuration
 parser.add_argument("--agent_strategy", type=str, default='input', help="Agent control strategy: input/random/rule")

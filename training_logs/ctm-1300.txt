@@ -1,0 +1,1621 @@
+! python jaxMARLV2/MARL-LLM/marl_llm/train/train_assembly_jax_gpu.py --n_episodes 1300
+
+[JAX Memory] Limited to 15% of GPU memory (~2.1GB on T4)
+Load config parameters takes  0.001523733139038086
+Using GPU: Tesla T4
+Actor type: CTM
+Using neuron select type: first-last
+Synch representation size action: 0
+Synch representation size out: 136
+Using neuron select type: first-last
+Synch representation size action: 0
+Synch representation size out: 136
+Training Starts (GPU-optimized mode)...
+
+====================================================================================================
+Episode     0/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0088 | Std:  0.0931 | Uniformity:  0.949
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.047(std:0.000) | Dist Uniformity: 0.717(std:0.000) | Voronoi Uniformity: 0.344(std:0.000)
+  - Collisions (agent-steps/ep/env): 1462.0
+LOSSES (last 10 eps):   VF:  0.0089 | Policy:  0.1712 | Reg:  0.2072
+TIMING (last 10 eps):   Rollout:   5.09 | Policy Exec:   1.49 | Env Step:   3.35 | Training:   1.64
+====================================================================================================
+
+
+====================================================================================================
+Episode    10/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0304 | Std:  0.1702 | Uniformity:  0.972
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.129(std:0.032) | Dist Uniformity: 0.622(std:0.040) | Voronoi Uniformity: 0.389(std:0.033)
+  - Collisions (agent-steps/ep/env): 1506.4
+LOSSES (last 10 eps):   VF:  0.0124 | Policy: -0.0410 | Reg:  0.0174
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.72
+====================================================================================================
+
+
+====================================================================================================
+Episode    20/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0354 | Std:  0.1825 | Uniformity:  0.974
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.246(std:0.083) | Dist Uniformity: 0.592(std:0.077) | Voronoi Uniformity: 0.432(std:0.070)
+  - Collisions (agent-steps/ep/env): 2435.2
+LOSSES (last 10 eps):   VF:  0.0226 | Policy: -0.0897 | Reg:  0.0136
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.73
+====================================================================================================
+
+
+====================================================================================================
+Episode    30/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0599 | Std:  0.2270 | Uniformity:  0.978
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.501(std:0.086) | Dist Uniformity: 0.649(std:0.037) | Voronoi Uniformity: 0.616(std:0.078)
+  - Collisions (agent-steps/ep/env): 3591.5
+LOSSES (last 10 eps):   VF:  0.0448 | Policy: -0.1922 | Reg:  0.0179
+TIMING (last 10 eps):   Rollout:   1.23 | Policy Exec:   0.84 | Env Step:   0.32 | Training:   0.76
+====================================================================================================
+
+
+====================================================================================================
+Episode    40/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1090 | Std:  0.2998 | Uniformity:  0.984
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.576(std:0.043) | Dist Uniformity: 0.664(std:0.042) | Voronoi Uniformity: 0.747(std:0.039)
+  - Collisions (agent-steps/ep/env): 3444.6
+LOSSES (last 10 eps):   VF:  0.0731 | Policy: -0.3798 | Reg:  0.0239
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.77
+====================================================================================================
+
+
+====================================================================================================
+Episode    50/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1329 | Std:  0.3156 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.563(std:0.069) | Dist Uniformity: 0.634(std:0.063) | Voronoi Uniformity: 0.698(std:0.082)
+  - Collisions (agent-steps/ep/env): 3654.3
+LOSSES (last 10 eps):   VF:  0.1074 | Policy: -0.6190 | Reg:  0.0277
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.83 | Env Step:   0.31 | Training:   0.81
+====================================================================================================
+
+
+====================================================================================================
+Episode    60/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1494 | Std:  0.3341 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.570(std:0.048) | Dist Uniformity: 0.641(std:0.056) | Voronoi Uniformity: 0.717(std:0.061)
+  - Collisions (agent-steps/ep/env): 3558.4
+LOSSES (last 10 eps):   VF:  0.1480 | Policy: -0.8771 | Reg:  0.0290
+TIMING (last 10 eps):   Rollout:   1.15 | Policy Exec:   0.78 | Env Step:   0.30 | Training:   0.82
+====================================================================================================
+
+
+====================================================================================================
+Episode    70/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1055 | Std:  0.2852 | Uniformity:  0.982
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.607(std:0.058) | Dist Uniformity: 0.673(std:0.041) | Voronoi Uniformity: 0.736(std:0.061)
+  - Collisions (agent-steps/ep/env): 3820.0
+LOSSES (last 10 eps):   VF:  0.2065 | Policy: -1.1453 | Reg:  0.0307
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.83 | Env Step:   0.31 | Training:   0.86
+====================================================================================================
+
+
+====================================================================================================
+Episode    80/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1663 | Std:  0.3485 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.608(std:0.041) | Dist Uniformity: 0.697(std:0.035) | Voronoi Uniformity: 0.746(std:0.054)
+  - Collisions (agent-steps/ep/env): 3489.3
+LOSSES (last 10 eps):   VF:  0.2842 | Policy: -1.4324 | Reg:  0.0310
+TIMING (last 10 eps):   Rollout:   1.15 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.86
+====================================================================================================
+
+
+====================================================================================================
+Episode    90/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1226 | Std:  0.3020 | Uniformity:  0.981
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.637(std:0.048) | Dist Uniformity: 0.713(std:0.063) | Voronoi Uniformity: 0.752(std:0.080)
+  - Collisions (agent-steps/ep/env): 3776.6
+LOSSES (last 10 eps):   VF:  0.3520 | Policy: -1.7044 | Reg:  0.0300
+TIMING (last 10 eps):   Rollout:   1.21 | Policy Exec:   0.83 | Env Step:   0.32 | Training:   0.90
+====================================================================================================
+
+
+====================================================================================================
+Episode   100/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0910 | Std:  0.2692 | Uniformity:  0.981
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.646(std:0.059) | Dist Uniformity: 0.703(std:0.056) | Voronoi Uniformity: 0.738(std:0.095)
+  - Collisions (agent-steps/ep/env): 3984.9
+LOSSES (last 10 eps):   VF:  0.4132 | Policy: -1.9095 | Reg:  0.0296
+TIMING (last 10 eps):   Rollout:   1.13 | Policy Exec:   0.77 | Env Step:   0.30 | Training:   0.90
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_100.gif  (100 frames @ 12fps)
+[EVAL] ep 100 | reward: 0.1208 | coverage: 0.6561 | uniformity: 0.7443
+
+====================================================================================================
+Episode   110/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0951 | Std:  0.2660 | Uniformity:  0.979
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.674(std:0.037) | Dist Uniformity: 0.745(std:0.036) | Voronoi Uniformity: 0.794(std:0.041)
+  - Collisions (agent-steps/ep/env): 3978.3
+LOSSES (last 10 eps):   VF:  0.4880 | Policy: -2.1906 | Reg:  0.0295
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.81 | Env Step:   0.31 | Training:   0.95
+====================================================================================================
+
+
+====================================================================================================
+Episode   120/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1467 | Std:  0.3226 | Uniformity:  0.982
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.641(std:0.061) | Dist Uniformity: 0.798(std:0.060) | Voronoi Uniformity: 0.812(std:0.040)
+  - Collisions (agent-steps/ep/env): 3617.0
+LOSSES (last 10 eps):   VF:  0.5599 | Policy: -2.4509 | Reg:  0.0296
+TIMING (last 10 eps):   Rollout:   1.21 | Policy Exec:   0.84 | Env Step:   0.32 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   130/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0682 | Std:  0.2268 | Uniformity:  0.974
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.693(std:0.035) | Dist Uniformity: 0.750(std:0.042) | Voronoi Uniformity: 0.782(std:0.048)
+  - Collisions (agent-steps/ep/env): 4008.3
+LOSSES (last 10 eps):   VF:  0.6005 | Policy: -2.6332 | Reg:  0.0289
+TIMING (last 10 eps):   Rollout:   1.18 | Policy Exec:   0.81 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   140/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1164 | Std:  0.3046 | Uniformity:  0.984
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.650(std:0.042) | Dist Uniformity: 0.791(std:0.065) | Voronoi Uniformity: 0.814(std:0.047)
+  - Collisions (agent-steps/ep/env): 3819.1
+LOSSES (last 10 eps):   VF:  0.6031 | Policy: -2.7774 | Reg:  0.0283
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.89
+====================================================================================================
+
+
+====================================================================================================
+Episode   150/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0971 | Std:  0.2769 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.679(std:0.034) | Dist Uniformity: 0.804(std:0.089) | Voronoi Uniformity: 0.814(std:0.072)
+  - Collisions (agent-steps/ep/env): 3789.8
+LOSSES (last 10 eps):   VF:  0.6172 | Policy: -2.9172 | Reg:  0.0278
+TIMING (last 10 eps):   Rollout:   1.18 | Policy Exec:   0.81 | Env Step:   0.31 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   160/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1016 | Std:  0.2685 | Uniformity:  0.978
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.675(std:0.055) | Dist Uniformity: 0.818(std:0.059) | Voronoi Uniformity: 0.818(std:0.053)
+  - Collisions (agent-steps/ep/env): 3726.1
+LOSSES (last 10 eps):   VF:  0.6664 | Policy: -3.0642 | Reg:  0.0272
+TIMING (last 10 eps):   Rollout:   1.15 | Policy Exec:   0.79 | Env Step:   0.30 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode   170/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0805 | Std:  0.2402 | Uniformity:  0.977
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.706(std:0.058) | Dist Uniformity: 0.809(std:0.045) | Voronoi Uniformity: 0.805(std:0.039)
+  - Collisions (agent-steps/ep/env): 3826.9
+LOSSES (last 10 eps):   VF:  0.6689 | Policy: -3.1479 | Reg:  0.0275
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.94
+====================================================================================================
+
+
+====================================================================================================
+Episode   180/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1053 | Std:  0.2733 | Uniformity:  0.980
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.671(std:0.068) | Dist Uniformity: 0.771(std:0.067) | Voronoi Uniformity: 0.783(std:0.081)
+  - Collisions (agent-steps/ep/env): 3764.8
+LOSSES (last 10 eps):   VF:  0.6785 | Policy: -3.1974 | Reg:  0.0268
+TIMING (last 10 eps):   Rollout:   1.15 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode   190/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1080 | Std:  0.2870 | Uniformity:  0.982
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.681(std:0.052) | Dist Uniformity: 0.834(std:0.048) | Voronoi Uniformity: 0.830(std:0.043)
+  - Collisions (agent-steps/ep/env): 3701.6
+LOSSES (last 10 eps):   VF:  0.6792 | Policy: -3.2239 | Reg:  0.0260
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   200/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1005 | Std:  0.2690 | Uniformity:  0.979
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.667(std:0.061) | Dist Uniformity: 0.813(std:0.065) | Voronoi Uniformity: 0.801(std:0.059)
+  - Collisions (agent-steps/ep/env): 3721.7
+LOSSES (last 10 eps):   VF:  0.7037 | Policy: -3.3157 | Reg:  0.0253
+TIMING (last 10 eps):   Rollout:   1.18 | Policy Exec:   0.81 | Env Step:   0.32 | Training:   0.97
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_200.gif  (100 frames @ 12fps)
+[EVAL] ep 200 | reward: 0.1324 | coverage: 0.6425 | uniformity: 0.7652
+
+====================================================================================================
+Episode   210/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1170 | Std:  0.2938 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.680(std:0.056) | Dist Uniformity: 0.851(std:0.053) | Voronoi Uniformity: 0.817(std:0.057)
+  - Collisions (agent-steps/ep/env): 3600.3
+LOSSES (last 10 eps):   VF:  0.7215 | Policy: -3.3914 | Reg:  0.0259
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.97
+====================================================================================================
+
+
+====================================================================================================
+Episode   220/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1222 | Std:  0.2930 | Uniformity:  0.981
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.665(std:0.046) | Dist Uniformity: 0.830(std:0.087) | Voronoi Uniformity: 0.823(std:0.058)
+  - Collisions (agent-steps/ep/env): 3653.7
+LOSSES (last 10 eps):   VF:  0.7587 | Policy: -3.4212 | Reg:  0.0256
+TIMING (last 10 eps):   Rollout:   1.22 | Policy Exec:   0.83 | Env Step:   0.33 | Training:   0.96
+====================================================================================================
+
+
+====================================================================================================
+Episode   230/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1216 | Std:  0.2922 | Uniformity:  0.981
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.679(std:0.057) | Dist Uniformity: 0.823(std:0.066) | Voronoi Uniformity: 0.833(std:0.038)
+  - Collisions (agent-steps/ep/env): 3566.3
+LOSSES (last 10 eps):   VF:  0.7739 | Policy: -3.4756 | Reg:  0.0254
+TIMING (last 10 eps):   Rollout:   1.21 | Policy Exec:   0.83 | Env Step:   0.33 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   240/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1472 | Std:  0.3389 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.625(std:0.057) | Dist Uniformity: 0.758(std:0.065) | Voronoi Uniformity: 0.746(std:0.075)
+  - Collisions (agent-steps/ep/env): 3501.7
+LOSSES (last 10 eps):   VF:  0.7551 | Policy: -3.5357 | Reg:  0.0256
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.96
+====================================================================================================
+
+
+====================================================================================================
+Episode   250/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0889 | Std:  0.2647 | Uniformity:  0.982
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.688(std:0.049) | Dist Uniformity: 0.835(std:0.063) | Voronoi Uniformity: 0.813(std:0.037)
+  - Collisions (agent-steps/ep/env): 3859.5
+LOSSES (last 10 eps):   VF:  0.7708 | Policy: -3.5084 | Reg:  0.0256
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.89
+====================================================================================================
+
+
+====================================================================================================
+Episode   260/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0797 | Std:  0.2535 | Uniformity:  0.979
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.683(std:0.018) | Dist Uniformity: 0.797(std:0.048) | Voronoi Uniformity: 0.792(std:0.062)
+  - Collisions (agent-steps/ep/env): 3896.5
+LOSSES (last 10 eps):   VF:  0.7490 | Policy: -3.4609 | Reg:  0.0250
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   270/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1458 | Std:  0.3260 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.657(std:0.047) | Dist Uniformity: 0.799(std:0.066) | Voronoi Uniformity: 0.795(std:0.056)
+  - Collisions (agent-steps/ep/env): 3441.0
+LOSSES (last 10 eps):   VF:  0.7750 | Policy: -3.5333 | Reg:  0.0249
+TIMING (last 10 eps):   Rollout:   1.18 | Policy Exec:   0.82 | Env Step:   0.31 | Training:   0.90
+====================================================================================================
+
+
+====================================================================================================
+Episode   280/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1103 | Std:  0.2959 | Uniformity:  0.982
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.672(std:0.030) | Dist Uniformity: 0.814(std:0.048) | Voronoi Uniformity: 0.797(std:0.038)
+  - Collisions (agent-steps/ep/env): 3861.3
+LOSSES (last 10 eps):   VF:  0.8077 | Policy: -3.5662 | Reg:  0.0245
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode   290/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1362 | Std:  0.3044 | Uniformity:  0.980
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.662(std:0.051) | Dist Uniformity: 0.834(std:0.064) | Voronoi Uniformity: 0.792(std:0.054)
+  - Collisions (agent-steps/ep/env): 3584.7
+LOSSES (last 10 eps):   VF:  0.7947 | Policy: -3.6199 | Reg:  0.0233
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   300/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1558 | Std:  0.3413 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.623(std:0.074) | Dist Uniformity: 0.806(std:0.080) | Voronoi Uniformity: 0.744(std:0.121)
+  - Collisions (agent-steps/ep/env): 3538.7
+LOSSES (last 10 eps):   VF:  0.8262 | Policy: -3.6819 | Reg:  0.0223
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.88
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_300.gif  (100 frames @ 12fps)
+[EVAL] ep 300 | reward: 0.0472 | coverage: 0.7311 | uniformity: 0.8592
+
+====================================================================================================
+Episode   310/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1616 | Std:  0.3585 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.634(std:0.040) | Dist Uniformity: 0.855(std:0.042) | Voronoi Uniformity: 0.750(std:0.042)
+  - Collisions (agent-steps/ep/env): 3205.7
+LOSSES (last 10 eps):   VF:  0.8508 | Policy: -3.7976 | Reg:  0.0202
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   320/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1306 | Std:  0.3210 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.649(std:0.039) | Dist Uniformity: 0.824(std:0.078) | Voronoi Uniformity: 0.764(std:0.087)
+  - Collisions (agent-steps/ep/env): 3512.4
+LOSSES (last 10 eps):   VF:  0.9373 | Policy: -3.8456 | Reg:  0.0203
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   330/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1577 | Std:  0.3332 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.621(std:0.056) | Dist Uniformity: 0.825(std:0.044) | Voronoi Uniformity: 0.703(std:0.070)
+  - Collisions (agent-steps/ep/env): 3414.7
+LOSSES (last 10 eps):   VF:  0.9239 | Policy: -3.8445 | Reg:  0.0196
+TIMING (last 10 eps):   Rollout:   1.21 | Policy Exec:   0.83 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   340/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1317 | Std:  0.3202 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.637(std:0.039) | Dist Uniformity: 0.816(std:0.056) | Voronoi Uniformity: 0.730(std:0.077)
+  - Collisions (agent-steps/ep/env): 3605.4
+LOSSES (last 10 eps):   VF:  0.9193 | Policy: -3.9066 | Reg:  0.0199
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.90
+====================================================================================================
+
+
+====================================================================================================
+Episode   350/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1535 | Std:  0.3317 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.653(std:0.039) | Dist Uniformity: 0.886(std:0.040) | Voronoi Uniformity: 0.765(std:0.058)
+  - Collisions (agent-steps/ep/env): 3456.0
+LOSSES (last 10 eps):   VF:  0.9495 | Policy: -3.9887 | Reg:  0.0191
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.83 | Env Step:   0.32 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   360/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1791 | Std:  0.3672 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.647(std:0.041) | Dist Uniformity: 0.869(std:0.037) | Voronoi Uniformity: 0.755(std:0.061)
+  - Collisions (agent-steps/ep/env): 3358.2
+LOSSES (last 10 eps):   VF:  1.0171 | Policy: -4.1706 | Reg:  0.0192
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode   370/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1769 | Std:  0.3445 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.661(std:0.051) | Dist Uniformity: 0.869(std:0.039) | Voronoi Uniformity: 0.790(std:0.052)
+  - Collisions (agent-steps/ep/env): 3260.7
+LOSSES (last 10 eps):   VF:  1.0427 | Policy: -4.2439 | Reg:  0.0196
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   380/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1740 | Std:  0.3680 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.652(std:0.050) | Dist Uniformity: 0.878(std:0.072) | Voronoi Uniformity: 0.756(std:0.076)
+  - Collisions (agent-steps/ep/env): 3385.9
+LOSSES (last 10 eps):   VF:  1.0316 | Policy: -4.3396 | Reg:  0.0199
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.90
+====================================================================================================
+
+
+====================================================================================================
+Episode   390/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1000 | Std:  0.2619 | Uniformity:  0.979
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.701(std:0.050) | Dist Uniformity: 0.897(std:0.026) | Voronoi Uniformity: 0.787(std:0.046)
+  - Collisions (agent-steps/ep/env): 3752.4
+LOSSES (last 10 eps):   VF:  1.0176 | Policy: -4.3647 | Reg:  0.0201
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   400/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1544 | Std:  0.3320 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.669(std:0.049) | Dist Uniformity: 0.889(std:0.044) | Voronoi Uniformity: 0.790(std:0.041)
+  - Collisions (agent-steps/ep/env): 3491.8
+LOSSES (last 10 eps):   VF:  1.0278 | Policy: -4.3824 | Reg:  0.0192
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.81 | Env Step:   0.31 | Training:   0.93
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_400.gif  (100 frames @ 12fps)
+[EVAL] ep 400 | reward: 0.2702 | coverage: 0.6727 | uniformity: 0.9229
+
+====================================================================================================
+Episode   410/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1656 | Std:  0.3502 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.646(std:0.047) | Dist Uniformity: 0.856(std:0.039) | Voronoi Uniformity: 0.782(std:0.063)
+  - Collisions (agent-steps/ep/env): 3365.7
+LOSSES (last 10 eps):   VF:  1.0065 | Policy: -4.3083 | Reg:  0.0193
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.94
+====================================================================================================
+
+
+====================================================================================================
+Episode   420/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1192 | Std:  0.2811 | Uniformity:  0.981
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.695(std:0.055) | Dist Uniformity: 0.895(std:0.028) | Voronoi Uniformity: 0.839(std:0.051)
+  - Collisions (agent-steps/ep/env): 3787.5
+LOSSES (last 10 eps):   VF:  1.0013 | Policy: -4.3792 | Reg:  0.0198
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   430/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1383 | Std:  0.3296 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.679(std:0.034) | Dist Uniformity: 0.882(std:0.030) | Voronoi Uniformity: 0.778(std:0.063)
+  - Collisions (agent-steps/ep/env): 3688.9
+LOSSES (last 10 eps):   VF:  0.9890 | Policy: -4.4015 | Reg:  0.0204
+TIMING (last 10 eps):   Rollout:   1.22 | Policy Exec:   0.83 | Env Step:   0.33 | Training:   0.96
+====================================================================================================
+
+
+====================================================================================================
+Episode   440/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1958 | Std:  0.3555 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.654(std:0.053) | Dist Uniformity: 0.891(std:0.023) | Voronoi Uniformity: 0.840(std:0.044)
+  - Collisions (agent-steps/ep/env): 3262.5
+LOSSES (last 10 eps):   VF:  1.0210 | Policy: -4.4541 | Reg:  0.0209
+TIMING (last 10 eps):   Rollout:   1.22 | Policy Exec:   0.84 | Env Step:   0.33 | Training:   0.94
+====================================================================================================
+
+
+====================================================================================================
+Episode   450/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1800 | Std:  0.3590 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.668(std:0.048) | Dist Uniformity: 0.880(std:0.037) | Voronoi Uniformity: 0.829(std:0.028)
+  - Collisions (agent-steps/ep/env): 3347.0
+LOSSES (last 10 eps):   VF:  1.0290 | Policy: -4.4881 | Reg:  0.0204
+TIMING (last 10 eps):   Rollout:   1.14 | Policy Exec:   0.78 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode   460/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2226 | Std:  0.3672 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.664(std:0.043) | Dist Uniformity: 0.899(std:0.033) | Voronoi Uniformity: 0.844(std:0.043)
+  - Collisions (agent-steps/ep/env): 3181.4
+LOSSES (last 10 eps):   VF:  1.0397 | Policy: -4.5347 | Reg:  0.0200
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.83 | Env Step:   0.32 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   470/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1617 | Std:  0.3307 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.684(std:0.051) | Dist Uniformity: 0.894(std:0.026) | Voronoi Uniformity: 0.799(std:0.041)
+  - Collisions (agent-steps/ep/env): 3541.0
+LOSSES (last 10 eps):   VF:  1.0750 | Policy: -4.6207 | Reg:  0.0196
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.89
+====================================================================================================
+
+
+====================================================================================================
+Episode   480/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1847 | Std:  0.3458 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.654(std:0.056) | Dist Uniformity: 0.906(std:0.025) | Voronoi Uniformity: 0.812(std:0.052)
+  - Collisions (agent-steps/ep/env): 3365.5
+LOSSES (last 10 eps):   VF:  1.0379 | Policy: -4.5592 | Reg:  0.0189
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   490/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1249 | Std:  0.3051 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.673(std:0.051) | Dist Uniformity: 0.892(std:0.040) | Voronoi Uniformity: 0.791(std:0.065)
+  - Collisions (agent-steps/ep/env): 3794.3
+LOSSES (last 10 eps):   VF:  1.0601 | Policy: -4.5996 | Reg:  0.0188
+TIMING (last 10 eps):   Rollout:   1.15 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.90
+====================================================================================================
+
+
+====================================================================================================
+Episode   500/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1818 | Std:  0.3526 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.663(std:0.052) | Dist Uniformity: 0.897(std:0.034) | Voronoi Uniformity: 0.825(std:0.042)
+  - Collisions (agent-steps/ep/env): 3460.3
+LOSSES (last 10 eps):   VF:  1.0746 | Policy: -4.6409 | Reg:  0.0187
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.81 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_500.gif  (100 frames @ 12fps)
+[EVAL] ep 500 | reward: 0.2142 | coverage: 0.6993 | uniformity: 0.9125
+
+====================================================================================================
+Episode   510/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1103 | Std:  0.2829 | Uniformity:  0.979
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.702(std:0.052) | Dist Uniformity: 0.874(std:0.049) | Voronoi Uniformity: 0.783(std:0.030)
+  - Collisions (agent-steps/ep/env): 3760.7
+LOSSES (last 10 eps):   VF:  1.0789 | Policy: -4.6483 | Reg:  0.0192
+TIMING (last 10 eps):   Rollout:   1.18 | Policy Exec:   0.80 | Env Step:   0.32 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   520/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1765 | Std:  0.3421 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.674(std:0.056) | Dist Uniformity: 0.878(std:0.042) | Voronoi Uniformity: 0.805(std:0.046)
+  - Collisions (agent-steps/ep/env): 3422.6
+LOSSES (last 10 eps):   VF:  1.0760 | Policy: -4.5640 | Reg:  0.0192
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.95
+====================================================================================================
+
+
+====================================================================================================
+Episode   530/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1794 | Std:  0.3613 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.666(std:0.068) | Dist Uniformity: 0.881(std:0.039) | Voronoi Uniformity: 0.781(std:0.061)
+  - Collisions (agent-steps/ep/env): 3332.1
+LOSSES (last 10 eps):   VF:  1.0721 | Policy: -4.6560 | Reg:  0.0190
+TIMING (last 10 eps):   Rollout:   1.21 | Policy Exec:   0.84 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   540/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2217 | Std:  0.3889 | Uniformity:  0.989
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.644(std:0.030) | Dist Uniformity: 0.890(std:0.038) | Voronoi Uniformity: 0.816(std:0.062)
+  - Collisions (agent-steps/ep/env): 3230.4
+LOSSES (last 10 eps):   VF:  1.0682 | Policy: -4.6656 | Reg:  0.0182
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode   550/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1768 | Std:  0.3529 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.659(std:0.042) | Dist Uniformity: 0.899(std:0.032) | Voronoi Uniformity: 0.806(std:0.031)
+  - Collisions (agent-steps/ep/env): 3412.0
+LOSSES (last 10 eps):   VF:  1.0723 | Policy: -4.6917 | Reg:  0.0182
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   560/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1198 | Std:  0.3003 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.690(std:0.050) | Dist Uniformity: 0.894(std:0.022) | Voronoi Uniformity: 0.810(std:0.037)
+  - Collisions (agent-steps/ep/env): 3831.1
+LOSSES (last 10 eps):   VF:  1.0353 | Policy: -4.5990 | Reg:  0.0185
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.90
+====================================================================================================
+
+
+====================================================================================================
+Episode   570/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1330 | Std:  0.3012 | Uniformity:  0.982
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.685(std:0.055) | Dist Uniformity: 0.890(std:0.024) | Voronoi Uniformity: 0.778(std:0.044)
+  - Collisions (agent-steps/ep/env): 3808.0
+LOSSES (last 10 eps):   VF:  0.9915 | Policy: -4.4851 | Reg:  0.0188
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.31 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   580/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1437 | Std:  0.3190 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.673(std:0.054) | Dist Uniformity: 0.901(std:0.031) | Voronoi Uniformity: 0.799(std:0.057)
+  - Collisions (agent-steps/ep/env): 3668.9
+LOSSES (last 10 eps):   VF:  0.9896 | Policy: -4.4218 | Reg:  0.0191
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.89
+====================================================================================================
+
+
+====================================================================================================
+Episode   590/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1321 | Std:  0.3163 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.660(std:0.045) | Dist Uniformity: 0.877(std:0.067) | Voronoi Uniformity: 0.747(std:0.077)
+  - Collisions (agent-steps/ep/env): 3823.5
+LOSSES (last 10 eps):   VF:  1.0319 | Policy: -4.4166 | Reg:  0.0192
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.94
+====================================================================================================
+
+
+====================================================================================================
+Episode   600/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1438 | Std:  0.3126 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.679(std:0.052) | Dist Uniformity: 0.877(std:0.048) | Voronoi Uniformity: 0.783(std:0.071)
+  - Collisions (agent-steps/ep/env): 3686.5
+LOSSES (last 10 eps):   VF:  0.9635 | Policy: -4.2640 | Reg:  0.0188
+TIMING (last 10 eps):   Rollout:   1.14 | Policy Exec:   0.78 | Env Step:   0.30 | Training:   0.91
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_600.gif  (100 frames @ 12fps)
+[EVAL] ep 600 | reward: 0.1286 | coverage: 0.6817 | uniformity: 0.8873
+
+====================================================================================================
+Episode   610/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1576 | Std:  0.3180 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.660(std:0.059) | Dist Uniformity: 0.877(std:0.042) | Voronoi Uniformity: 0.783(std:0.061)
+  - Collisions (agent-steps/ep/env): 3566.4
+LOSSES (last 10 eps):   VF:  0.9482 | Policy: -4.2540 | Reg:  0.0186
+TIMING (last 10 eps):   Rollout:   1.21 | Policy Exec:   0.83 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   620/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1921 | Std:  0.3649 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.659(std:0.051) | Dist Uniformity: 0.882(std:0.037) | Voronoi Uniformity: 0.763(std:0.059)
+  - Collisions (agent-steps/ep/env): 3254.2
+LOSSES (last 10 eps):   VF:  0.9557 | Policy: -4.3173 | Reg:  0.0184
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   630/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1904 | Std:  0.3667 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.639(std:0.066) | Dist Uniformity: 0.863(std:0.065) | Voronoi Uniformity: 0.766(std:0.082)
+  - Collisions (agent-steps/ep/env): 3278.1
+LOSSES (last 10 eps):   VF:  0.9397 | Policy: -4.2378 | Reg:  0.0196
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode   640/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1489 | Std:  0.3280 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.659(std:0.053) | Dist Uniformity: 0.886(std:0.035) | Voronoi Uniformity: 0.800(std:0.055)
+  - Collisions (agent-steps/ep/env): 3665.6
+LOSSES (last 10 eps):   VF:  0.9846 | Policy: -4.2242 | Reg:  0.0197
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.83 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   650/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1888 | Std:  0.3708 | Uniformity:  0.989
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.655(std:0.047) | Dist Uniformity: 0.893(std:0.023) | Voronoi Uniformity: 0.785(std:0.055)
+  - Collisions (agent-steps/ep/env): 3127.1
+LOSSES (last 10 eps):   VF:  0.9436 | Policy: -4.1317 | Reg:  0.0189
+TIMING (last 10 eps):   Rollout:   1.13 | Policy Exec:   0.77 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode   660/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1330 | Std:  0.3073 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.690(std:0.048) | Dist Uniformity: 0.871(std:0.054) | Voronoi Uniformity: 0.767(std:0.041)
+  - Collisions (agent-steps/ep/env): 3531.5
+LOSSES (last 10 eps):   VF:  1.0082 | Policy: -4.1132 | Reg:  0.0193
+TIMING (last 10 eps):   Rollout:   1.21 | Policy Exec:   0.83 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   670/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2771 | Std:  0.4335 | Uniformity:  0.991
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.632(std:0.038) | Dist Uniformity: 0.871(std:0.050) | Voronoi Uniformity: 0.781(std:0.063)
+  - Collisions (agent-steps/ep/env): 2781.1
+LOSSES (last 10 eps):   VF:  1.0411 | Policy: -4.1740 | Reg:  0.0198
+TIMING (last 10 eps):   Rollout:   1.15 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode   680/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1386 | Std:  0.3200 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.675(std:0.063) | Dist Uniformity: 0.885(std:0.037) | Voronoi Uniformity: 0.797(std:0.049)
+  - Collisions (agent-steps/ep/env): 3655.4
+LOSSES (last 10 eps):   VF:  1.0702 | Policy: -4.2840 | Reg:  0.0201
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.31 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   690/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2108 | Std:  0.3781 | Uniformity:  0.989
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.641(std:0.044) | Dist Uniformity: 0.889(std:0.024) | Voronoi Uniformity: 0.800(std:0.040)
+  - Collisions (agent-steps/ep/env): 3230.0
+LOSSES (last 10 eps):   VF:  1.0558 | Policy: -4.3534 | Reg:  0.0196
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   700/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1121 | Std:  0.2941 | Uniformity:  0.984
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.696(std:0.052) | Dist Uniformity: 0.879(std:0.043) | Voronoi Uniformity: 0.783(std:0.051)
+  - Collisions (agent-steps/ep/env): 3645.1
+LOSSES (last 10 eps):   VF:  1.0845 | Policy: -4.3989 | Reg:  0.0198
+TIMING (last 10 eps):   Rollout:   1.18 | Policy Exec:   0.80 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_700.gif  (100 frames @ 12fps)
+[EVAL] ep 700 | reward: 0.1576 | coverage: 0.6657 | uniformity: 0.9105
+
+====================================================================================================
+Episode   710/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1896 | Std:  0.3462 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.664(std:0.072) | Dist Uniformity: 0.887(std:0.054) | Voronoi Uniformity: 0.766(std:0.073)
+  - Collisions (agent-steps/ep/env): 3354.5
+LOSSES (last 10 eps):   VF:  1.1211 | Policy: -4.4197 | Reg:  0.0199
+TIMING (last 10 eps):   Rollout:   1.23 | Policy Exec:   0.85 | Env Step:   0.32 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   720/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1547 | Std:  0.3454 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.681(std:0.048) | Dist Uniformity: 0.901(std:0.026) | Voronoi Uniformity: 0.783(std:0.053)
+  - Collisions (agent-steps/ep/env): 3349.8
+LOSSES (last 10 eps):   VF:  1.0799 | Policy: -4.4124 | Reg:  0.0193
+TIMING (last 10 eps):   Rollout:   1.13 | Policy Exec:   0.77 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode   730/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1775 | Std:  0.3483 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.679(std:0.050) | Dist Uniformity: 0.901(std:0.033) | Voronoi Uniformity: 0.795(std:0.055)
+  - Collisions (agent-steps/ep/env): 3335.4
+LOSSES (last 10 eps):   VF:  1.1132 | Policy: -4.3552 | Reg:  0.0198
+TIMING (last 10 eps):   Rollout:   1.18 | Policy Exec:   0.81 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   740/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1236 | Std:  0.2898 | Uniformity:  0.982
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.698(std:0.059) | Dist Uniformity: 0.875(std:0.032) | Voronoi Uniformity: 0.754(std:0.031)
+  - Collisions (agent-steps/ep/env): 3769.0
+LOSSES (last 10 eps):   VF:  1.1183 | Policy: -4.3795 | Reg:  0.0201
+TIMING (last 10 eps):   Rollout:   1.14 | Policy Exec:   0.78 | Env Step:   0.30 | Training:   0.90
+====================================================================================================
+
+
+====================================================================================================
+Episode   750/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1281 | Std:  0.3300 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.679(std:0.043) | Dist Uniformity: 0.893(std:0.035) | Voronoi Uniformity: 0.788(std:0.055)
+  - Collisions (agent-steps/ep/env): 3664.8
+LOSSES (last 10 eps):   VF:  1.0957 | Policy: -4.2884 | Reg:  0.0197
+TIMING (last 10 eps):   Rollout:   1.18 | Policy Exec:   0.81 | Env Step:   0.31 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   760/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1969 | Std:  0.3771 | Uniformity:  0.989
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.652(std:0.037) | Dist Uniformity: 0.880(std:0.042) | Voronoi Uniformity: 0.774(std:0.057)
+  - Collisions (agent-steps/ep/env): 3204.0
+LOSSES (last 10 eps):   VF:  1.1233 | Policy: -4.2874 | Reg:  0.0194
+TIMING (last 10 eps):   Rollout:   1.14 | Policy Exec:   0.78 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode   770/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1501 | Std:  0.3034 | Uniformity:  0.980
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.672(std:0.069) | Dist Uniformity: 0.865(std:0.043) | Voronoi Uniformity: 0.751(std:0.050)
+  - Collisions (agent-steps/ep/env): 3506.6
+LOSSES (last 10 eps):   VF:  1.0549 | Policy: -4.2121 | Reg:  0.0197
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode   780/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2216 | Std:  0.3927 | Uniformity:  0.989
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.632(std:0.054) | Dist Uniformity: 0.853(std:0.045) | Voronoi Uniformity: 0.734(std:0.085)
+  - Collisions (agent-steps/ep/env): 3184.1
+LOSSES (last 10 eps):   VF:  1.0446 | Policy: -4.1691 | Reg:  0.0200
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   790/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1768 | Std:  0.3476 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.648(std:0.053) | Dist Uniformity: 0.870(std:0.053) | Voronoi Uniformity: 0.731(std:0.071)
+  - Collisions (agent-steps/ep/env): 3343.4
+LOSSES (last 10 eps):   VF:  1.0548 | Policy: -4.1677 | Reg:  0.0195
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.90
+====================================================================================================
+
+
+====================================================================================================
+Episode   800/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2183 | Std:  0.3712 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.654(std:0.039) | Dist Uniformity: 0.910(std:0.026) | Voronoi Uniformity: 0.824(std:0.047)
+  - Collisions (agent-steps/ep/env): 3188.6
+LOSSES (last 10 eps):   VF:  1.0916 | Policy: -4.2759 | Reg:  0.0196
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.83 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_800.gif  (100 frames @ 12fps)
+[EVAL] ep 800 | reward: 0.1206 | coverage: 0.6646 | uniformity: 0.9191
+
+====================================================================================================
+Episode   810/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1487 | Std:  0.3281 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.685(std:0.046) | Dist Uniformity: 0.915(std:0.021) | Voronoi Uniformity: 0.820(std:0.044)
+  - Collisions (agent-steps/ep/env): 3464.0
+LOSSES (last 10 eps):   VF:  1.0410 | Policy: -4.3033 | Reg:  0.0195
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.90
+====================================================================================================
+
+
+====================================================================================================
+Episode   820/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2445 | Std:  0.3693 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.661(std:0.054) | Dist Uniformity: 0.896(std:0.027) | Voronoi Uniformity: 0.784(std:0.074)
+  - Collisions (agent-steps/ep/env): 2975.8
+LOSSES (last 10 eps):   VF:  1.0896 | Policy: -4.3929 | Reg:  0.0198
+TIMING (last 10 eps):   Rollout:   1.21 | Policy Exec:   0.84 | Env Step:   0.31 | Training:   0.95
+====================================================================================================
+
+
+====================================================================================================
+Episode   830/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1653 | Std:  0.3318 | Uniformity:  0.984
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.668(std:0.065) | Dist Uniformity: 0.878(std:0.044) | Voronoi Uniformity: 0.781(std:0.064)
+  - Collisions (agent-steps/ep/env): 3420.1
+LOSSES (last 10 eps):   VF:  1.0797 | Policy: -4.4334 | Reg:  0.0197
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode   840/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2208 | Std:  0.3883 | Uniformity:  0.989
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.660(std:0.049) | Dist Uniformity: 0.879(std:0.028) | Voronoi Uniformity: 0.779(std:0.038)
+  - Collisions (agent-steps/ep/env): 3050.1
+LOSSES (last 10 eps):   VF:  1.1186 | Policy: -4.4972 | Reg:  0.0198
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.31 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   850/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1892 | Std:  0.3665 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.647(std:0.055) | Dist Uniformity: 0.846(std:0.059) | Voronoi Uniformity: 0.752(std:0.079)
+  - Collisions (agent-steps/ep/env): 3171.7
+LOSSES (last 10 eps):   VF:  1.1550 | Policy: -4.6403 | Reg:  0.0197
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   860/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1902 | Std:  0.3705 | Uniformity:  0.989
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.657(std:0.040) | Dist Uniformity: 0.860(std:0.037) | Voronoi Uniformity: 0.777(std:0.045)
+  - Collisions (agent-steps/ep/env): 3230.9
+LOSSES (last 10 eps):   VF:  1.1670 | Policy: -4.6666 | Reg:  0.0197
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   870/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1574 | Std:  0.3148 | Uniformity:  0.984
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.675(std:0.065) | Dist Uniformity: 0.867(std:0.032) | Voronoi Uniformity: 0.753(std:0.093)
+  - Collisions (agent-steps/ep/env): 3437.6
+LOSSES (last 10 eps):   VF:  1.2257 | Policy: -4.7444 | Reg:  0.0194
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.94
+====================================================================================================
+
+
+====================================================================================================
+Episode   880/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2479 | Std:  0.4074 | Uniformity:  0.990
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.618(std:0.040) | Dist Uniformity: 0.878(std:0.050) | Voronoi Uniformity: 0.802(std:0.094)
+  - Collisions (agent-steps/ep/env): 2956.0
+LOSSES (last 10 eps):   VF:  1.1623 | Policy: -4.7459 | Reg:  0.0195
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.90
+====================================================================================================
+
+
+====================================================================================================
+Episode   890/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1535 | Std:  0.3449 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.670(std:0.031) | Dist Uniformity: 0.881(std:0.048) | Voronoi Uniformity: 0.781(std:0.089)
+  - Collisions (agent-steps/ep/env): 3562.8
+LOSSES (last 10 eps):   VF:  1.1933 | Policy: -4.7952 | Reg:  0.0195
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.31 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   900/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1924 | Std:  0.3564 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.675(std:0.051) | Dist Uniformity: 0.878(std:0.046) | Voronoi Uniformity: 0.792(std:0.052)
+  - Collisions (agent-steps/ep/env): 3227.6
+LOSSES (last 10 eps):   VF:  1.1847 | Policy: -4.7224 | Reg:  0.0197
+TIMING (last 10 eps):   Rollout:   1.12 | Policy Exec:   0.77 | Env Step:   0.30 | Training:   0.90
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_900.gif  (100 frames @ 12fps)
+[EVAL] ep 900 | reward: 0.0965 | coverage: 0.6773 | uniformity: 0.8920
+
+====================================================================================================
+Episode   910/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1606 | Std:  0.3525 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.681(std:0.029) | Dist Uniformity: 0.896(std:0.026) | Voronoi Uniformity: 0.805(std:0.029)
+  - Collisions (agent-steps/ep/env): 3478.2
+LOSSES (last 10 eps):   VF:  1.1575 | Policy: -4.7729 | Reg:  0.0200
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.81 | Env Step:   0.32 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   920/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2283 | Std:  0.3749 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.668(std:0.052) | Dist Uniformity: 0.906(std:0.031) | Voronoi Uniformity: 0.824(std:0.055)
+  - Collisions (agent-steps/ep/env): 3106.7
+LOSSES (last 10 eps):   VF:  1.1970 | Policy: -4.7531 | Reg:  0.0200
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   930/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1597 | Std:  0.3243 | Uniformity:  0.984
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.665(std:0.061) | Dist Uniformity: 0.873(std:0.064) | Voronoi Uniformity: 0.817(std:0.081)
+  - Collisions (agent-steps/ep/env): 3590.7
+LOSSES (last 10 eps):   VF:  1.2246 | Policy: -4.8213 | Reg:  0.0197
+TIMING (last 10 eps):   Rollout:   1.24 | Policy Exec:   0.85 | Env Step:   0.33 | Training:   0.96
+====================================================================================================
+
+
+====================================================================================================
+Episode   940/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1320 | Std:  0.3049 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.678(std:0.051) | Dist Uniformity: 0.891(std:0.035) | Voronoi Uniformity: 0.793(std:0.041)
+  - Collisions (agent-steps/ep/env): 3755.7
+LOSSES (last 10 eps):   VF:  1.1949 | Policy: -4.7564 | Reg:  0.0202
+TIMING (last 10 eps):   Rollout:   1.23 | Policy Exec:   0.84 | Env Step:   0.33 | Training:   0.95
+====================================================================================================
+
+
+====================================================================================================
+Episode   950/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1912 | Std:  0.3742 | Uniformity:  0.989
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.664(std:0.035) | Dist Uniformity: 0.886(std:0.032) | Voronoi Uniformity: 0.803(std:0.035)
+  - Collisions (agent-steps/ep/env): 3309.6
+LOSSES (last 10 eps):   VF:  1.1643 | Policy: -4.6825 | Reg:  0.0200
+TIMING (last 10 eps):   Rollout:   1.22 | Policy Exec:   0.83 | Env Step:   0.33 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode   960/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2677 | Std:  0.4030 | Uniformity:  0.989
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.639(std:0.043) | Dist Uniformity: 0.872(std:0.038) | Voronoi Uniformity: 0.792(std:0.068)
+  - Collisions (agent-steps/ep/env): 2854.3
+LOSSES (last 10 eps):   VF:  1.1883 | Policy: -4.7996 | Reg:  0.0202
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   970/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2497 | Std:  0.4165 | Uniformity:  0.991
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.654(std:0.035) | Dist Uniformity: 0.895(std:0.041) | Voronoi Uniformity: 0.812(std:0.054)
+  - Collisions (agent-steps/ep/env): 3002.5
+LOSSES (last 10 eps):   VF:  1.1792 | Policy: -4.8597 | Reg:  0.0201
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.90
+====================================================================================================
+
+
+====================================================================================================
+Episode   980/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1094 | Std:  0.3045 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.684(std:0.024) | Dist Uniformity: 0.894(std:0.028) | Voronoi Uniformity: 0.787(std:0.043)
+  - Collisions (agent-steps/ep/env): 3788.8
+LOSSES (last 10 eps):   VF:  1.2011 | Policy: -4.8697 | Reg:  0.0199
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.83 | Env Step:   0.32 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode   990/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1277 | Std:  0.3026 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.688(std:0.045) | Dist Uniformity: 0.888(std:0.052) | Voronoi Uniformity: 0.815(std:0.063)
+  - Collisions (agent-steps/ep/env): 3634.5
+LOSSES (last 10 eps):   VF:  1.1671 | Policy: -4.7076 | Reg:  0.0207
+TIMING (last 10 eps):   Rollout:   1.15 | Policy Exec:   0.78 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode  1000/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2429 | Std:  0.4030 | Uniformity:  0.990
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.647(std:0.045) | Dist Uniformity: 0.885(std:0.037) | Voronoi Uniformity: 0.821(std:0.055)
+  - Collisions (agent-steps/ep/env): 3086.4
+LOSSES (last 10 eps):   VF:  1.1562 | Policy: -4.7764 | Reg:  0.0203
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.91
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_1000.gif  (100 frames @ 12fps)
+[EVAL] ep 1000 | reward: 0.2147 | coverage: 0.6494 | uniformity: 0.8913
+
+====================================================================================================
+Episode  1010/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1848 | Std:  0.3643 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.666(std:0.047) | Dist Uniformity: 0.887(std:0.037) | Voronoi Uniformity: 0.822(std:0.052)
+  - Collisions (agent-steps/ep/env): 3442.9
+LOSSES (last 10 eps):   VF:  1.2028 | Policy: -4.7783 | Reg:  0.0202
+TIMING (last 10 eps):   Rollout:   1.18 | Policy Exec:   0.81 | Env Step:   0.32 | Training:   0.94
+====================================================================================================
+
+
+====================================================================================================
+Episode  1020/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1819 | Std:  0.3601 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.674(std:0.044) | Dist Uniformity: 0.902(std:0.020) | Voronoi Uniformity: 0.816(std:0.036)
+  - Collisions (agent-steps/ep/env): 3361.1
+LOSSES (last 10 eps):   VF:  1.1409 | Policy: -4.7157 | Reg:  0.0202
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode  1030/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1190 | Std:  0.2910 | Uniformity:  0.980
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.681(std:0.050) | Dist Uniformity: 0.890(std:0.042) | Voronoi Uniformity: 0.812(std:0.050)
+  - Collisions (agent-steps/ep/env): 3726.8
+LOSSES (last 10 eps):   VF:  1.1452 | Policy: -4.6893 | Reg:  0.0202
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.83 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode  1040/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2112 | Std:  0.3600 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.655(std:0.050) | Dist Uniformity: 0.873(std:0.040) | Voronoi Uniformity: 0.798(std:0.061)
+  - Collisions (agent-steps/ep/env): 3210.9
+LOSSES (last 10 eps):   VF:  1.1157 | Policy: -4.7014 | Reg:  0.0207
+TIMING (last 10 eps):   Rollout:   1.14 | Policy Exec:   0.78 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode  1050/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2250 | Std:  0.3979 | Uniformity:  0.990
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.641(std:0.028) | Dist Uniformity: 0.889(std:0.050) | Voronoi Uniformity: 0.819(std:0.060)
+  - Collisions (agent-steps/ep/env): 3190.9
+LOSSES (last 10 eps):   VF:  1.1884 | Policy: -4.7954 | Reg:  0.0202
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode  1060/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1538 | Std:  0.3174 | Uniformity:  0.984
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.677(std:0.051) | Dist Uniformity: 0.893(std:0.032) | Voronoi Uniformity: 0.827(std:0.038)
+  - Collisions (agent-steps/ep/env): 3525.0
+LOSSES (last 10 eps):   VF:  1.1617 | Policy: -4.7969 | Reg:  0.0208
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode  1070/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1632 | Std:  0.3416 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.664(std:0.045) | Dist Uniformity: 0.897(std:0.044) | Voronoi Uniformity: 0.792(std:0.051)
+  - Collisions (agent-steps/ep/env): 3518.4
+LOSSES (last 10 eps):   VF:  1.1149 | Policy: -4.6650 | Reg:  0.0205
+TIMING (last 10 eps):   Rollout:   1.25 | Policy Exec:   0.87 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode  1080/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1523 | Std:  0.3222 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.675(std:0.050) | Dist Uniformity: 0.872(std:0.048) | Voronoi Uniformity: 0.819(std:0.046)
+  - Collisions (agent-steps/ep/env): 3655.2
+LOSSES (last 10 eps):   VF:  1.0911 | Policy: -4.5631 | Reg:  0.0202
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode  1090/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2414 | Std:  0.3992 | Uniformity:  0.990
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.637(std:0.035) | Dist Uniformity: 0.878(std:0.037) | Voronoi Uniformity: 0.781(std:0.080)
+  - Collisions (agent-steps/ep/env): 3011.3
+LOSSES (last 10 eps):   VF:  1.1535 | Policy: -4.7031 | Reg:  0.0200
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode  1100/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1766 | Std:  0.3341 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.659(std:0.046) | Dist Uniformity: 0.851(std:0.051) | Voronoi Uniformity: 0.765(std:0.072)
+  - Collisions (agent-steps/ep/env): 3285.5
+LOSSES (last 10 eps):   VF:  1.1597 | Policy: -4.6830 | Reg:  0.0205
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.31 | Training:   0.93
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_1100.gif  (100 frames @ 12fps)
+[EVAL] ep 1100 | reward: 0.1147 | coverage: 0.6775 | uniformity: 0.9149
+
+====================================================================================================
+Episode  1110/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1994 | Std:  0.3704 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.637(std:0.059) | Dist Uniformity: 0.865(std:0.055) | Voronoi Uniformity: 0.766(std:0.061)
+  - Collisions (agent-steps/ep/env): 3220.5
+LOSSES (last 10 eps):   VF:  1.1407 | Policy: -4.6624 | Reg:  0.0204
+TIMING (last 10 eps):   Rollout:   1.18 | Policy Exec:   0.81 | Env Step:   0.31 | Training:   0.94
+====================================================================================================
+
+
+====================================================================================================
+Episode  1120/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1868 | Std:  0.3549 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.652(std:0.047) | Dist Uniformity: 0.856(std:0.046) | Voronoi Uniformity: 0.765(std:0.068)
+  - Collisions (agent-steps/ep/env): 3169.8
+LOSSES (last 10 eps):   VF:  1.1548 | Policy: -4.6495 | Reg:  0.0204
+TIMING (last 10 eps):   Rollout:   1.14 | Policy Exec:   0.78 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode  1130/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1939 | Std:  0.3551 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.653(std:0.030) | Dist Uniformity: 0.859(std:0.048) | Voronoi Uniformity: 0.727(std:0.073)
+  - Collisions (agent-steps/ep/env): 3085.5
+LOSSES (last 10 eps):   VF:  1.1873 | Policy: -4.6966 | Reg:  0.0199
+TIMING (last 10 eps):   Rollout:   1.22 | Policy Exec:   0.84 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode  1140/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1394 | Std:  0.3325 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.641(std:0.028) | Dist Uniformity: 0.817(std:0.061) | Voronoi Uniformity: 0.707(std:0.077)
+  - Collisions (agent-steps/ep/env): 3457.0
+LOSSES (last 10 eps):   VF:  1.2235 | Policy: -4.7258 | Reg:  0.0199
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.93
+====================================================================================================
+
+
+====================================================================================================
+Episode  1150/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1657 | Std:  0.3405 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.642(std:0.048) | Dist Uniformity: 0.866(std:0.036) | Voronoi Uniformity: 0.765(std:0.077)
+  - Collisions (agent-steps/ep/env): 3389.1
+LOSSES (last 10 eps):   VF:  1.2133 | Policy: -4.5761 | Reg:  0.0195
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode  1160/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1529 | Std:  0.3102 | Uniformity:  0.982
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.655(std:0.061) | Dist Uniformity: 0.840(std:0.050) | Voronoi Uniformity: 0.754(std:0.047)
+  - Collisions (agent-steps/ep/env): 3466.6
+LOSSES (last 10 eps):   VF:  1.1598 | Policy: -4.5028 | Reg:  0.0196
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode  1170/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2932 | Std:  0.4240 | Uniformity:  0.990
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.624(std:0.039) | Dist Uniformity: 0.884(std:0.026) | Voronoi Uniformity: 0.800(std:0.068)
+  - Collisions (agent-steps/ep/env): 2664.3
+LOSSES (last 10 eps):   VF:  1.2016 | Policy: -4.6367 | Reg:  0.0197
+TIMING (last 10 eps):   Rollout:   1.14 | Policy Exec:   0.78 | Env Step:   0.30 | Training:   0.90
+====================================================================================================
+
+
+====================================================================================================
+Episode  1180/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1605 | Std:  0.3420 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.661(std:0.036) | Dist Uniformity: 0.862(std:0.037) | Voronoi Uniformity: 0.778(std:0.044)
+  - Collisions (agent-steps/ep/env): 3537.6
+LOSSES (last 10 eps):   VF:  1.1782 | Policy: -4.7117 | Reg:  0.0194
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode  1190/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1422 | Std:  0.2993 | Uniformity:  0.981
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.670(std:0.049) | Dist Uniformity: 0.856(std:0.062) | Voronoi Uniformity: 0.761(std:0.074)
+  - Collisions (agent-steps/ep/env): 3529.9
+LOSSES (last 10 eps):   VF:  1.2016 | Policy: -4.6395 | Reg:  0.0198
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.89
+====================================================================================================
+
+
+====================================================================================================
+Episode  1200/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1830 | Std:  0.3667 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.646(std:0.050) | Dist Uniformity: 0.869(std:0.060) | Voronoi Uniformity: 0.769(std:0.071)
+  - Collisions (agent-steps/ep/env): 3343.4
+LOSSES (last 10 eps):   VF:  1.2198 | Policy: -4.6272 | Reg:  0.0196
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.93
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_1200.gif  (100 frames @ 12fps)
+[EVAL] ep 1200 | reward: 0.0282 | coverage: 0.7423 | uniformity: 0.9262
+
+====================================================================================================
+Episode  1210/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1699 | Std:  0.3212 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.683(std:0.039) | Dist Uniformity: 0.888(std:0.058) | Voronoi Uniformity: 0.798(std:0.052)
+  - Collisions (agent-steps/ep/env): 3334.4
+LOSSES (last 10 eps):   VF:  1.1864 | Policy: -4.5531 | Reg:  0.0198
+TIMING (last 10 eps):   Rollout:   1.17 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode  1220/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2057 | Std:  0.3798 | Uniformity:  0.989
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.655(std:0.036) | Dist Uniformity: 0.888(std:0.044) | Voronoi Uniformity: 0.784(std:0.054)
+  - Collisions (agent-steps/ep/env): 3149.7
+LOSSES (last 10 eps):   VF:  1.2318 | Policy: -4.6262 | Reg:  0.0197
+TIMING (last 10 eps):   Rollout:   1.20 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode  1230/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1951 | Std:  0.3453 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.660(std:0.044) | Dist Uniformity: 0.876(std:0.053) | Voronoi Uniformity: 0.825(std:0.064)
+  - Collisions (agent-steps/ep/env): 3348.5
+LOSSES (last 10 eps):   VF:  1.1783 | Policy: -4.5708 | Reg:  0.0195
+TIMING (last 10 eps):   Rollout:   1.14 | Policy Exec:   0.78 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode  1240/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1479 | Std:  0.2941 | Uniformity:  0.981
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.674(std:0.059) | Dist Uniformity: 0.831(std:0.066) | Voronoi Uniformity: 0.784(std:0.054)
+  - Collisions (agent-steps/ep/env): 3485.7
+LOSSES (last 10 eps):   VF:  1.1649 | Policy: -4.6159 | Reg:  0.0200
+TIMING (last 10 eps):   Rollout:   1.23 | Policy Exec:   0.85 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode  1250/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1581 | Std:  0.3202 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.665(std:0.039) | Dist Uniformity: 0.870(std:0.054) | Voronoi Uniformity: 0.782(std:0.054)
+  - Collisions (agent-steps/ep/env): 3581.1
+LOSSES (last 10 eps):   VF:  1.1846 | Policy: -4.5829 | Reg:  0.0197
+TIMING (last 10 eps):   Rollout:   1.15 | Policy Exec:   0.78 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode  1260/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1439 | Std:  0.3041 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.698(std:0.054) | Dist Uniformity: 0.874(std:0.036) | Voronoi Uniformity: 0.779(std:0.040)
+  - Collisions (agent-steps/ep/env): 3619.8
+LOSSES (last 10 eps):   VF:  1.1754 | Policy: -4.5238 | Reg:  0.0197
+TIMING (last 10 eps):   Rollout:   1.19 | Policy Exec:   0.82 | Env Step:   0.32 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode  1270/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1625 | Std:  0.3238 | Uniformity:  0.982
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.664(std:0.048) | Dist Uniformity: 0.896(std:0.024) | Voronoi Uniformity: 0.799(std:0.057)
+  - Collisions (agent-steps/ep/env): 3542.6
+LOSSES (last 10 eps):   VF:  1.1784 | Policy: -4.5280 | Reg:  0.0196
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.80 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+====================================================================================================
+Episode  1280/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1555 | Std:  0.3336 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.695(std:0.054) | Dist Uniformity: 0.904(std:0.024) | Voronoi Uniformity: 0.811(std:0.040)
+  - Collisions (agent-steps/ep/env): 3634.2
+LOSSES (last 10 eps):   VF:  1.1365 | Policy: -4.4388 | Reg:  0.0195
+TIMING (last 10 eps):   Rollout:   1.16 | Policy Exec:   0.79 | Env Step:   0.31 | Training:   0.91
+====================================================================================================
+
+
+====================================================================================================
+Episode  1290/ 1300 | Agents: 24 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1109 | Std:  0.2945 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Coverage: 0.692(std:0.055) | Dist Uniformity: 0.896(std:0.039) | Voronoi Uniformity: 0.798(std:0.035)
+  - Collisions (agent-steps/ep/env): 3788.3
+LOSSES (last 10 eps):   VF:  1.1372 | Policy: -4.3660 | Reg:  0.0194
+TIMING (last 10 eps):   Rollout:   1.18 | Policy Exec:   0.81 | Env Step:   0.31 | Training:   0.92
+====================================================================================================
+
+
+================================================================================
+FINAL EVALUATION - Testing on each shape
+================================================================================
+[EVAL] GIF saved → models/assembly/2026-04-04-15-34-43/final_eval/shape_0.gif  (100 frames @ 12fps)
+Shape 0: reward=0.1156 | coverage=0.7297 | uniformity=0.9259 | voronoi=0.7735
+[EVAL] GIF saved → models/assembly/2026-04-04-15-34-43/final_eval/shape_1.gif  (100 frames @ 12fps)
+Shape 1: reward=0.0283 | coverage=0.7077 | uniformity=0.8890 | voronoi=0.6543
+[EVAL] GIF saved → models/assembly/2026-04-04-15-34-43/final_eval/shape_2.gif  (100 frames @ 12fps)
+Shape 2: reward=0.2413 | coverage=0.6311 | uniformity=0.9349 | voronoi=0.8134
+[EVAL] GIF saved → models/assembly/2026-04-04-15-34-43/final_eval/shape_3.gif  (100 frames @ 12fps)
+Shape 3: reward=0.0617 | coverage=0.6725 | uniformity=0.9384 | voronoi=0.8423
+[EVAL] GIF saved → models/assembly/2026-04-04-15-34-43/final_eval/shape_4.gif  (100 frames @ 12fps)
+Shape 4: reward=0.1419 | coverage=0.6889 | uniformity=0.8998 | voronoi=0.7517
+[EVAL] GIF saved → models/assembly/2026-04-04-15-34-43/final_eval/shape_5.gif  (100 frames @ 12fps)
+Shape 5: reward=0.5165 | coverage=0.6049 | uniformity=0.9246 | voronoi=0.8492
+[EVAL] GIF saved → models/assembly/2026-04-04-15-34-43/final_eval/shape_6.gif  (100 frames @ 12fps)
+Shape 6: reward=0.2858 | coverage=0.6710 | uniformity=0.9018 | voronoi=0.7775
+
+--------------------------------------------------------------------------------
+FINAL EVAL SUMMARY (averaged across all shapes):
+  Reward: 0.1987 | Coverage: 0.6723 | Uniformity: 0.9163 | Voronoi: 0.7803
+================================================================================
+

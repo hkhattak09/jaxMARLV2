@@ -269,6 +269,7 @@ def run(cfg):
     jax_env = AssemblyEnv(
         results_file=cfg.results_file,
         n_a=cfg.n_a,
+        topo_nei_max=cfg.topo_nei_max,
     )
     # GPU adapter returns PyTorch CUDA tensors via DLPack
     env = JaxAssemblyAdapterGPU(
