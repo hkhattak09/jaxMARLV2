@@ -759,8 +759,8 @@ class TestEndToEnd:
                 new_ast = hs[1] * (1 - done_mask) + start_act.unsqueeze(0) * done_mask
                 hs = (new_st, new_ast)
 
-            obs_buf.append(obs_gpu.t())                # (total, obs_dim)
-            acs_buf.append(action_gpu.t())             # (total, action_dim)
+            obs_buf.append(obs_gpu.t().detach())       # (total, obs_dim) — detach: real buffer stores no graphs
+            acs_buf.append(action_gpu.t().detach())    # (total, action_dim) — detach: avoids double-backward / inplace errors
             rew_buf.append(rewards.unsqueeze(1))       # (total, 1)
             nobs_buf.append(next_obs_gpu.t())
             done_buf.append(dones_raw.unsqueeze(1))
