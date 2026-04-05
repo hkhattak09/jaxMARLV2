@@ -9,9 +9,9 @@ GPU throughout (rollout, training, and eval). Full documentation in `Docs/`.
 Key files:
 - `MARL-LLM/marl_llm/train/train_assembly_jax_gpu.py` — main training loop
 - `MARL-LLM/marl_llm/algorithm/algorithms/maddpg.py` — MADDPG orchestrator
-- `MARL-LLM/marl_llm/algorithm/utils/agents.py` — DDPGAgent (MLP actor+critic; now has `critic_hidden_dim` param)
+- `MARL-LLM/marl_llm/algorithm/utils/agents.py` — DDPGAgent (MLP actor + AggregatingCritic)
 - `MARL-LLM/marl_llm/algorithm/utils/buffer_agent.py` — ReplayBufferAgent (joint rows — one per timestep)
-- `MARL-LLM/marl_llm/algorithm/utils/networks.py` — MLPNetwork
+- `MARL-LLM/marl_llm/algorithm/utils/networks.py` — MLPNetwork, AggregatingCritic
 - `MARL-LLM/marl_llm/cfg/assembly_cfg.py` — config (CTM default, pass --use_mlp_actor for MLP)
 - `continuous-thought-machines/models/ctm_rl.py` — ContinuousThoughtMachineRL base class
 - `Docs/CTM_ACTOR_DESIGN.md` — full design decisions document
@@ -146,10 +146,11 @@ the MLP baseline proves cross-timestep memory is not required.
 - Each agent has its own hidden state — reinitialised fresh every step under stateless rollout
 - Attention and KV projections removed (heads=0) — flat 192-dim obs vector, no sequence
 - Action head: Linear(136, 2) + Tanh on top of synchronisation output
-- Critic: centralised MLP — sees ALL agents' obs + ALL agents' actions during training (true CTDE)
-  - Input dim: `n_agents × (obs_dim + 2)` = 4,656 at K=6 M=80
-  - Hidden dim: 256 (`--critic_hidden_dim`, separate from actor's `--hidden_dim=180`)
-  - Architecture: 4,656 → 256 → 256 → 256 → 1
+- Critic: `AggregatingCritic` — permutation-equivariant centralised critic (true CTDE)
+  - Shared encoder: `(obs_dim + act_dim)` → 128 → 64, applied independently per agent
+  - Mean aggregation over 24 agent embeddings → 64-dim summary
+  - Head MLP: 64 → 128 → 1
+  - Both MLP actor and CTM actor use this same critic
 
 ### Stateless Rollout (NEW — replacing stateful rollout)
 - During rollout: hidden states reinitialised fresh before every step (no cross-timestep carry)
@@ -158,35 +159,43 @@ the MLP baseline proves cross-timestep memory is not required.
 - CTM value-add is iterative computation within each timestep (iterations=4 inner passes)
 - Cross-timestep memory removed — justified because environment is fully observable
 
-### Centralised Critic (CTDE — implemented)
+### Centralised Critic — AggregatingCritic (CTDE — implemented)
 
-The previous implementation was **not true MADDPG**: it used parameter sharing (one network)
-but the critic saw only one agent's obs+action (194 dims). This is independent DDPG with shared
-weights. The centralised critic is now implemented.
+The previous per-agent critic (194-dim input, MLPNetwork) was not true MADDPG. The first
+centralised attempt used a flat MLPNetwork over the 4,656-dim joint input (24 × 194), which
+caused catastrophic regression: the 18× compression in the first layer prevented the critic
+from learning a useful Q-function, producing garbage Q-values and collapsing actor performance
+(coverage 0.41 vs 0.66 with per-agent critic).
 
-**What changed:**
-- `buffer_agent.py`: stores **joint rows** — one row per timestep with all 24 agents' data
-  concatenated. `total_length = max_steps` (not `max_steps × n_agents`). No `index` slicing.
-  - `obs_buffs`: `(max_steps, n_agents × obs_dim)` — e.g. `(20000, 4608)`
-  - `ac_buffs`: `(max_steps, n_agents × 2)` — e.g. `(20000, 48)`
+**Root cause of flat-MLP failure:** The Q-function over 24 homogeneous agents is permutation
+equivariant — Q should not change if agents are reordered. A flat concatenation MLP has no
+way to exploit this structure and must learn it from 4,656-dim inputs, which is intractable
+at practical network sizes.
+
+**Fix — AggregatingCritic (`networks.py`):**
+- Shared encoder processes each agent's `(obs_i, action_i)` independently: 194 → 128 → 64
+- Mean aggregation across 24 embeddings → 64-dim team summary (permutation equivariant by construction)
+- Head MLP: 64 → 128 → 1
+- `forward(X)` accepts `torch.cat([obs_all, act_all], dim=1)` — no changes needed to maddpg.py call sites
+
+**What changed in code:**
+- `networks.py`: replaced `MLPNetworkRew`, `Discriminator`, `MLPUnit`, `ResidualBlock` (unused)
+  with `AggregatingCritic`
+- `agents.py` / `ctm_agent.py`: critic constructed with `AggregatingCritic(n_agents, obs_dim, act_dim)`;
+  `dim_input_critic` and `critic_hidden_dim` params removed; `n_agents` passed instead
+- `maddpg.py`: removed `critic_hidden_dim`; `agent_init_params` now carries `n_agents` instead of
+  `dim_input_critic`; `init_from_env` signature cleaned accordingly
+- `cfg/assembly_cfg.py`: `--critic_hidden_dim` argument removed
+- `train_assembly_jax_gpu.py`: `critic_hidden_dim` removed from `init_from_env` call
+
+**Why Option A for actor update (current):** Extract agent_i's obs, run through shared policy,
+substitute into joint action vector, compute Q. Gradient flows through agent_i's slot only.
+Correct for shared-parameter MADDPG and 24× cheaper than Option B.
+
+**Buffer structure (unchanged from centralised critic introduction):**
+- `buffer_agent.py`: joint rows — one row per timestep, all 24 agents concatenated
+  - `obs_buffs`: `(max_steps, n_agents × obs_dim)`, `ac_buffs`: `(max_steps, n_agents × 2)`
   - Rewards: mean across agents → `(max_steps, 1)`. Dones: max → `(max_steps, 1)`.
-- `agents.py` / `ctm_agent.py`: added `critic_hidden_dim` param (default: falls back to `hidden_dim`).
-  Critic and target_critic constructed with `critic_hidden_dim` instead of `hidden_dim`.
-- `maddpg.py`: `dim_input_critic = n_agents × (obs_dim + 2)`. New `target_policies` reshapes
-  joint `next_obs_all` → runs all agents through target policy → joint target actions.
-  Actor update uses **Option B**: recomputes all 24 agents' actions from joint obs through shared
-  policy — gradient through all 24 action slots simultaneously.
-- `train_assembly_jax_gpu.py`: `push()` call drops `index` arg; buffer constructed without
-  `start_stop_index`; `critic_hidden_dim=cfg.critic_hidden_dim` passed to `init_from_env`.
-
-**Why Option B for actor update:** With a shared policy, recomputing all 24 agents' actions is
-internally consistent (no staleness) and gives 24× stronger gradient signal. Standard MADDPG
-Option A (substitute only agent i's action) is designed for independent policies; Option B is
-correct when parameter sharing means all 24 agents use the same network.
-
-**Why critic_hidden_dim=256:** Input goes from 194 (old) to 4,656 (new). Keeping hidden_dim=180
-would create a 26× compression in the first layer — too aggressive. 256 gives an 18× compression,
-which is reasonable for a 4-layer MLP processing rich joint state.
 
 ### Target Network
 - Target actor uses stateless initialisation — consistent with rollout and update
@@ -223,17 +232,20 @@ The Reynolds prior is computed every step from the same local obs — it is a ph
 action (flocking: cohesion, alignment, separation). Currently used only as a 0.03-weight loss
 regularizer in the actor update. This is an underused asset.
 
-### Critical insight — the task was too easy
+### Critical insight — the task observability (revised)
 
-**The 80 target cells in the observation make the shape almost fully known to every agent.**
-At `num_obs_grid_max=80`, each agent sees the positions of up to 80 target cells — essentially
-the entire shape. This means each agent can trivially navigate to the nearest uncovered cell
-independently, without needing to coordinate with teammates at all. You could hand-code this
-behaviour without any learning. Reducing K (neighbor visibility) barely matters because the
-hard part of the task — "where do I go?" — is already answered by the shape observation.
+**Earlier claim that M=80 makes the shape "almost fully known" was wrong.** The binding
+constraint is `d_sen=0.4` (sensor range), not the M=80 cap. Each agent only observes target
+cells within 0.4 units of itself. The shapes span ~2.0×2.2 units and contain ~500 cells.
+From any position, an agent can observe at most 9–27% of shape cells (measured at shape center,
+which is the densest point). At most positions — especially edges — an agent sees far fewer.
 
-This is why CTM and MLP perform similarly across all K values: the architecture doesn't matter
-when the task reduces to local reactive navigation on a fully visible map.
+The M=80 cap is only hit near dense central regions. Each agent sees at most ~80/500 = 16%
+of the shape at any moment, and typically far less. The task was already genuinely partially
+observable at M=80; reducing M further reduces the cap but `d_sen` remains the true bottleneck.
+
+The centralised critic (during training) aggregates all 24 agents' local observations, which
+collectively cover most of the shape — this is the CTDE advantage, and it works regardless of M.
 
 **The fix — two axes of partial observability:**
 - `topo_nei_max` (K): how many teammates each agent can see (already configurable)
@@ -350,8 +362,8 @@ Do not get carried away with ideas. An idea is not a result. Before any implemen
 ## Key Constraints
 
 - Do NOT modify DDPGAgent actor logic — subclass only for new actor types; MLP version must remain intact
-- `critic_hidden_dim` and `n_agents` are stored in `init_dict` and saved/loaded with checkpoints —
-  old checkpoints (without these keys) will fail to load; retrain from scratch for centralised critic
+- `n_agents` is stored in `init_dict` and saved/loaded with checkpoints —
+  old checkpoints (flat MLPNetwork critic or pre-AggregatingCritic) will fail to load; retrain from scratch
 - CTM import path: `from models.ctm_rl import ContinuousThoughtMachineRL`
   (ctm_actor.py adds `continuous-thought-machines/` to sys.path at import time)
 - `backbone_type='classic-control-backbone'` for flat vector observations

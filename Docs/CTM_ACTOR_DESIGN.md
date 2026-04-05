@@ -56,9 +56,11 @@ We read *R-MADDPG for Partially Observable Environments and Limited Communicatio
    recurrent critic only, recurrent actor+critic) perform equivalently well. The recurrent
    critic is only critical for *partial observability*.
 
-2. Our environment is **fully observable** — the 192-dim obs vector contains all relevant
-   state. The MLP baseline proves this: it learns well with zero temporal memory. Therefore
-   the recurrent critic recommendation does not apply to our task.
+2. Our environment is **locally partially observable** — each agent only observes cells
+   within `d_sen=0.4` of itself. Shapes span ~2.0×2.2 units with ~500 cells; an agent
+   at any position sees at most 9–27% of shape cells. The M=80 cap was not the binding
+   constraint — sensor range is. The centralised critic addresses this by aggregating all
+   24 agents' local views during training (collective near-complete coverage of the shape).
 
 3. The paper's recurrent actor uses **stored LSTM hidden states** in the replay buffer
    (both `c_t` and `h_t` stored per transition, per agent). During actor update, the
@@ -125,14 +127,61 @@ fix that.
 
 ---
 
-## Architecture (Unchanged from Phase 1)
+### Phase 4 — Centralised Critic: Flat MLP Failure and AggregatingCritic Fix
+
+**What was attempted:** Replace the per-agent critic (194-dim MLPNetwork) with a flat
+MLPNetwork over the concatenated joint input (4,656-dim = 24 × (192+2)).
+
+**What happened:** Coverage collapsed from 0.664 to 0.412 after 1000 episodes (−38%).
+The critic was producing garbage Q-values and the actor followed.
+
+**Root cause — two compounding failures:**
+
+1. **Capacity mismatch:** 4,656-dim input compressed to 256-dim hidden in one layer (18×).
+   The critic literally could not represent a meaningful Q-function from this input.
+
+2. **Wrong inductive bias:** A flat MLP over concatenated agent data has no way to exploit
+   the permutation equivariance of the Q-function. For a homogeneous cooperative team,
+   Q(obs_1, act_1, ..., obs_24, act_24) should be invariant to reordering of agents.
+   A flat MLP has to learn this symmetry from data — which requires far more samples and
+   a much larger network than the problem warrants.
+
+**Fix — AggregatingCritic (`networks.py`):**
+
+```
+for each agent i (shared encoder weights):
+    embed_i = MLP(obs_i, act_i)    # 194 → 128 → 64
+
+agg = mean(embed_1, ..., embed_24) # 64-dim — permutation equivariant by construction
+
+Q = MLP_head(agg)                  # 64 → 128 → 1
+```
+
+Each encoder sees 194-dim inputs — the same scale as the old per-agent critic. The
+aggregation is structurally correct (mean is permutation-invariant). The head sees
+a compact 64-dim summary. No inductive bias is wasted; no over-compression occurs.
+
+**Interface:** `forward(X)` accepts `torch.cat([obs_all, act_all], dim=1)` — identical
+to the flat MLP call pattern. No changes needed at call sites in `maddpg.py`.
+
+**Environment observability finding (Phase 4):**
+
+Inspection of `assembly.py` and the shapes pkl confirmed that `d_sen=0.4` is the true
+observability constraint, not M=80. Each shape has ~500 cells across ~2.0×2.2 units;
+from any position an agent sees at most 9–27% of cells. The M=80 cap is only hit near
+dense central areas. The prior claim that M=80 makes the shape "almost fully known" was
+incorrect — each agent has genuinely local partial observability at all M settings.
+
+---
+
+## Architecture (Current)
 
 - **Single shared CTM network** across all 24 agents (parameter sharing, homogeneous team)
 - **Individual hidden states** per agent — one board per agent (under stateful rollout);
   under stateless rollout, these are reinitialised every step
 - **Attention and KV projections removed** — flat 192-dim obs, no sequence (heads=0)
 - **Action head** — Linear(136, 2) + Tanh
-- **Critic** — MLP, unchanged
+- **Critic** — `AggregatingCritic`: shared encoder per agent (194→128→64), mean aggregation, head MLP (64→128→1)
 
 ---
 
@@ -171,8 +220,7 @@ The per-episode initialisation and done-mask reset logic can be removed entirely
 ## What Does Not Change
 
 - Replay buffer structure and interface
-- Critic and target critic (MLP)
 - Reward structure and Reynolds flocking prior
-- MADDPG update logic
+- MADDPG update logic (critic call sites unchanged — AggregatingCritic accepts same input format)
 - Environment interface
-- CTM actor/agent/maddpg code
+- CTM actor/agent code

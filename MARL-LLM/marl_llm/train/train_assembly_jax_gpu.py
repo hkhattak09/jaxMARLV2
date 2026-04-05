@@ -343,7 +343,6 @@ def run(cfg):
         lr_actor=cfg.lr_actor,
         lr_critic=cfg.lr_critic,
         hidden_dim=cfg.hidden_dim,
-        critic_hidden_dim=cfg.critic_hidden_dim,
         device="gpu",  # Force GPU for both rollout and training
         epsilon=cfg.epsilon,
         noise=cfg.noise_scale,

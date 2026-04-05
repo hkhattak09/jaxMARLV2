@@ -4,7 +4,7 @@ from torch import Tensor
 from torch.optim import Adam
 
 from .agents import DDPGAgent
-from .networks import MLPNetwork
+from .networks import AggregatingCritic
 from .misc import hard_update
 from .noise import GaussianNoise
 from .ctm_actor import CTMActor
@@ -13,20 +13,20 @@ from .ctm_actor import CTMActor
 class CTMDDPGAgent(DDPGAgent):
     """
     DDPGAgent subclass that replaces the MLP actor with a CTMActor.
-    Critic and target critic remain MLPNetwork (unchanged).
+    Critic and target critic use AggregatingCritic (permutation-equivariant
+    centralised critic shared across MLP and CTM actor types).
 
     Does not call DDPGAgent.__init__ to avoid creating unwanted MLP policy networks.
     All attributes expected by DDPGAgent's inherited methods (scale_noise, reset_noise)
     are set explicitly here.
     """
 
-    def __init__(self, dim_input_policy, dim_output_policy, dim_input_critic,
-                 lr_actor, lr_critic, hidden_dim=64, critic_hidden_dim=None,
+    def __init__(self, dim_input_policy, dim_output_policy, n_agents,
+                 lr_actor, lr_critic, hidden_dim=64,
                  discrete_action=False, device='cpu', epsilon=0.1, noise=0.1,
                  ctm_config=None):
         # Intentionally skip DDPGAgent.__init__ — it would create MLP policy networks
         ctm_config = ctm_config or {}
-        _critic_hidden_dim = critic_hidden_dim if critic_hidden_dim is not None else hidden_dim
 
         # CTM actor (single shared network, same weights for all agents)
         self.policy = CTMActor(
@@ -40,9 +40,8 @@ class CTMDDPGAgent(DDPGAgent):
             **ctm_config,
         )
 
-        # Critic stays as MLP; larger hidden dim to handle joint obs+action input
-        self.critic = MLPNetwork(dim_input_critic, 1, hidden_dim=_critic_hidden_dim, constrain_out=False)
-        self.target_critic = MLPNetwork(dim_input_critic, 1, hidden_dim=_critic_hidden_dim, constrain_out=False)
+        self.critic = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180)
+        self.target_critic = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180)
 
         # Materialize nn.LazyLinear layers in CTMActor before hard_update.
         # LazyLinear weights don't exist until the first forward pass — copying

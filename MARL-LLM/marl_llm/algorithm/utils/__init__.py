@@ -4,7 +4,7 @@ from .buffer_agent import ReplayBufferAgent
 from .buffer_episode import ReplayBufferEpisode
 from .buffer_expert import ReplayBufferExpert
 from .misc import soft_update, hard_update, average_gradients, init_processes, onehot_from_logits
-from .networks import MLPNetwork, MLPUnit, ResidualBlock, Discriminator
+from .networks import MLPNetwork, AggregatingCritic
 from .noise import OUNoise, GaussianNoise
 
 __all__ = [
@@ -18,9 +18,7 @@ __all__ = [
     'init_processes',
     'onehot_from_logits',
     'MLPNetwork',
-    'MLPUnit',
-    'ResidualBlock',
-    'Discriminator',
+    'AggregatingCritic',
     'OUNoise',
     'GaussianNoise'
 ]

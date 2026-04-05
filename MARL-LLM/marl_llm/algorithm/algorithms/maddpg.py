@@ -9,7 +9,7 @@ class MADDPG(object):
     Wrapper class for DDPG-esque (i.e. also MADDPG) agents in multi-agent task
     """
     def __init__(self, agent_init_params, alg_types, epsilon, noise, gamma=0.95, tau=0.01, lr_actor=1e-4, lr_critic=1e-3,
-                 hidden_dim=64, critic_hidden_dim=None, n_agents=None, device='cpu', discrete_action=False,
+                 hidden_dim=64, n_agents=None, device='cpu', discrete_action=False,
                  use_ctm_actor=False, ctm_config=None):
         """
         Initialize the MADDPG object with given parameters.
@@ -27,7 +27,6 @@ class MADDPG(object):
             self.agents = [CTMDDPGAgent(lr_actor=lr_actor,
                                         lr_critic=lr_critic,
                                         hidden_dim=hidden_dim,
-                                        critic_hidden_dim=critic_hidden_dim,
                                         epsilon=self.epsilon,
                                         noise=self.noise,
                                         ctm_config=ctm_config,
@@ -37,7 +36,6 @@ class MADDPG(object):
                                      lr_critic=lr_critic,
                                      discrete_action=discrete_action,
                                      hidden_dim=hidden_dim,
-                                     critic_hidden_dim=critic_hidden_dim,
                                      epsilon=self.epsilon,
                                      noise=self.noise,
                                      **params) for params in agent_init_params]
@@ -324,7 +322,7 @@ class MADDPG(object):
 
     @classmethod
     def init_from_env(cls, env, agent_alg="MADDPG", adversary_alg="MADDPG", gamma=0.95, tau=0.01, lr_actor=1e-4, lr_critic=1e-3,
-                      hidden_dim=64, critic_hidden_dim=None, name='flocking', device='cpu', epsilon=0.1, noise=0.1,
+                      hidden_dim=64, name='flocking', device='cpu', epsilon=0.1, noise=0.1,
                       use_ctm_actor=False, ctm_config=None):
         """
         Instantiate instance of this class from multi-agent environment.
@@ -333,20 +331,18 @@ class MADDPG(object):
         n_agents = env.num_agents  # total physical agents (e.g. 24)
         dim_input_policy = env.observation_space.shape[0]    # per-agent obs dim
         dim_output_policy = env.action_space.shape[0]        # per-agent action dim
-        # Centralised critic sees ALL agents' obs + ALL agents' actions
-        dim_input_critic = n_agents * (dim_input_policy + dim_output_policy)
 
         alg_types = [adversary_alg if atype == 'adversary' else agent_alg for atype in env.agent_types]
         for algtype in alg_types:
             agent_init_params.append({'dim_input_policy': dim_input_policy,
                                       'dim_output_policy': dim_output_policy,
-                                      'dim_input_critic': dim_input_critic})
+                                      'n_agents': n_agents})
 
         if name == 'assembly':
             init_dict = {'gamma': gamma, 'tau': tau, 'lr_actor': lr_actor, 'lr_critic': lr_critic,
                          'epsilon': epsilon, 'noise': noise, 'hidden_dim': hidden_dim,
-                         'critic_hidden_dim': critic_hidden_dim, 'n_agents': n_agents,
-                         'device': device, 'alg_types': alg_types, 'agent_init_params': agent_init_params,
+                         'n_agents': n_agents, 'device': device, 'alg_types': alg_types,
+                         'agent_init_params': agent_init_params,
                          'use_ctm_actor': use_ctm_actor, 'ctm_config': ctm_config}
         instance = cls(**init_dict)
         instance.init_dict = init_dict
