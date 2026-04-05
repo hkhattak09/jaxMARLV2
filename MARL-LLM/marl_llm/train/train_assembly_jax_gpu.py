@@ -34,6 +34,54 @@ import time
 import os
 import random
 import numpy as np
+
+# ── DIAGNOSTIC: RAM tracking — REMOVE AFTER USE ──────────────────────────────
+import gc
+import psutil as _psutil
+import tracemalloc as _tracemalloc
+_tracemalloc.start(10)
+_diag_proc = _psutil.Process()
+_diag_prev_rss = 0.0
+
+def _mem_report(ep_index, agent_buffer):
+    global _diag_prev_rss
+    rss_gb = _diag_proc.memory_info().rss / 1e9
+    delta = rss_gb - _diag_prev_rss
+    _diag_prev_rss = rss_gb
+
+    gpu_alloc  = torch.cuda.memory_allocated() / 1e9
+    gpu_reserv = torch.cuda.memory_reserved()  / 1e9
+
+    buf = agent_buffer[0]
+    buf_bytes = (buf.obs_buffs.nbytes + buf.next_obs_buffs.nbytes +
+                 buf.ac_buffs.nbytes + buf.ac_prior_buffs.nbytes +
+                 buf.rew_buffs.nbytes + buf.done_buffs.nbytes)
+    buf_gb = buf_bytes / 1e9
+
+    # Count live CPU & GPU PyTorch tensors
+    n_cpu = n_gpu = 0
+    for obj in gc.get_objects():
+        try:
+            if torch.is_tensor(obj):
+                if obj.is_cuda: n_gpu += 1
+                else:           n_cpu += 1
+        except Exception:
+            pass
+
+    # tracemalloc: top 5 biggest RAM allocations since last snapshot
+    snap = _tracemalloc.take_snapshot()
+    top = snap.statistics("lineno")[:5]
+    top_str = "\n".join(f"    {s}" for s in top)
+
+    print(f"\n{'─'*60}")
+    print(f"[DIAG ep {ep_index}] Process RSS: {rss_gb:.2f} GB  (Δ {delta:+.3f} GB)")
+    print(f"  Buffer (numpy):  {buf_gb:.2f} GB   filled={buf.filled_i}/{buf.max_steps}")
+    print(f"  GPU allocated:   {gpu_alloc:.2f} GB  reserved: {gpu_reserv:.2f} GB")
+    print(f"  Live tensors:    CPU={n_cpu}  GPU={n_gpu}")
+    print(f"  Top tracemalloc allocations:")
+    print(top_str)
+    print(f"{'─'*60}\n")
+# ── END DIAGNOSTIC ────────────────────────────────────────────────────────────
 from tensorboardX import SummaryWriter
 from datetime import datetime
 from pathlib import Path
@@ -568,6 +616,8 @@ def run(cfg):
             print(f"LOSSES (last 10 eps):   VF: {avg_vf_loss_10:7.4f} | Policy: {avg_pol_loss_10:7.4f} | Reg: {avg_reg_loss_10:7.4f}")
             print(f"TIMING (last 10 eps):   Rollout: {avg_rollout_time_10:6.2f} | Policy Exec: {avg_policy_time_10:6.2f} | Env Step: {avg_env_time_10:6.2f} | Training: {avg_training_time_10:6.2f}")
             print(f"{sep}\n")
+            # DIAGNOSTIC — REMOVE AFTER USE
+            _mem_report(ep_index, agent_buffer)
 
         if ep_index % cfg.save_interval == 0:
             logger.add_scalars(
