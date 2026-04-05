@@ -42,13 +42,13 @@ class ReplayBufferAgent(object):
         self.num_agents = num_agents
         self.total_length = max_steps  # one joint row per timestep
 
-        self.obs_buffs      = np.zeros((max_steps, num_agents * state_dim))
-        self.ac_buffs       = np.zeros((max_steps, num_agents * action_dim))
-        self.ac_prior_buffs = np.zeros((max_steps, num_agents * action_dim))
-        self.log_pi_buffs   = np.zeros((max_steps, 1))
-        self.rew_buffs      = np.zeros((max_steps, 1))
-        self.next_obs_buffs = np.zeros((max_steps, num_agents * state_dim))
-        self.done_buffs     = np.zeros((max_steps, 1))
+        self.obs_buffs      = np.zeros((max_steps, num_agents * state_dim),  dtype=np.float32)
+        self.ac_buffs       = np.zeros((max_steps, num_agents * action_dim), dtype=np.float32)
+        self.ac_prior_buffs = np.zeros((max_steps, num_agents * action_dim), dtype=np.float32)
+        self.log_pi_buffs   = np.zeros((max_steps, 1),                       dtype=np.float32)
+        self.rew_buffs      = np.zeros((max_steps, 1),                       dtype=np.float32)
+        self.next_obs_buffs = np.zeros((max_steps, num_agents * state_dim),  dtype=np.float32)
+        self.done_buffs     = np.zeros((max_steps, 1),                       dtype=np.float32)
 
         self.filled_i = 0  # total filled (capped at max_steps)
         self.curr_i   = 0  # current write index

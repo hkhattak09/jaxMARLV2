@@ -130,13 +130,12 @@ class AssemblyEnv(MultiAgentEnv):
         self.r_avoid = round(np.sqrt(4.0 * min_n_g / (n_a * np.pi)) * min_l_cell, 2)
 
         # ── Resolve num_obs_grid_max from fraction if provided ───────────────
-        # grid_obs_fraction in (0, 1]: fraction of a shape's cells visible per agent.
-        # num_obs_grid_max becomes floor(fraction * n_g_max) — the fixed obs vector
-        # upper bound. Per episode, effective_M = floor(fraction * n_cells_this_shape)
-        # is applied as a dynamic mask inside _get_obs_vectorized.
+        # grid_obs_fraction in (0, 1]: fraction of baseline M=80 visible per agent.
+        # e.g. 0.1 → M=8, 0.5 → M=40, 1.0 → M=80.
+        # Each value produces a different obs_dim and is trained from scratch.
         self.grid_obs_fraction = grid_obs_fraction
         if grid_obs_fraction is not None:
-            num_obs_grid_max = max(1, int(grid_obs_fraction * self.n_g_max))
+            num_obs_grid_max = max(1, int(grid_obs_fraction * 80))
         self.num_obs_grid_max = num_obs_grid_max  # set after fraction override
 
         # ── Spaces ──────────────────────────────────────────────────────────
