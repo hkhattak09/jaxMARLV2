@@ -81,7 +81,6 @@ class AssemblyEnv(MultiAgentEnv):
 
         self.n_a = n_a
         self.topo_nei_max = topo_nei_max
-        self.num_obs_grid_max = num_obs_grid_max
         self.dt = dt
         self.vel_max = vel_max
         self.k_ball = k_ball
@@ -138,6 +137,7 @@ class AssemblyEnv(MultiAgentEnv):
         self.grid_obs_fraction = grid_obs_fraction
         if grid_obs_fraction is not None:
             num_obs_grid_max = max(1, int(grid_obs_fraction * self.n_g_max))
+        self.num_obs_grid_max = num_obs_grid_max  # set after fraction override
 
         # ── Spaces ──────────────────────────────────────────────────────────
         self.agents     = [f"agent_{i}" for i in range(n_a)]
