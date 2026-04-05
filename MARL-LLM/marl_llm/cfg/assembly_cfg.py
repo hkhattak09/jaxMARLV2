@@ -157,6 +157,7 @@ results_file = os.path.join(_repo_root, 'fig', 'results.pkl')
 # Multi-agent system parameters
 parser.add_argument("--n_a", type=int, default=24, help='Number of agents in the swarm')
 parser.add_argument("--topo_nei_max", type=int, default=6, help='Number of nearest neighbors each agent can observe (K). Default 6. Reduce for partial observability experiments.')
+parser.add_argument("--grid_obs_fraction", type=float, default=None, help='Fraction of shape cells visible to each agent, in (0, 1]. None = use legacy num_obs_grid_max=80. Example: 0.3 means each agent sees floor(0.3 * n_cells) nearest unoccupied cells.')
 
 # Agent behavior configuration
 parser.add_argument("--agent_strategy", type=str, default='input', help="Agent control strategy: input/random/rule")

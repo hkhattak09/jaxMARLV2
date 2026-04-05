@@ -66,6 +66,7 @@ class AssemblyEnv(MultiAgentEnv):
         n_a: int = 30,
         topo_nei_max: int = 6,
         num_obs_grid_max: int = 80,
+        grid_obs_fraction: float = None,
         dt: float = 0.1,
         vel_max: float = 0.8,
         k_ball: float = 30.0,
@@ -128,6 +129,15 @@ class AssemblyEnv(MultiAgentEnv):
         min_n_g   = float(min(n_gs))
         min_l_cell = float(np.min(l_cells_np))
         self.r_avoid = round(np.sqrt(4.0 * min_n_g / (n_a * np.pi)) * min_l_cell, 2)
+
+        # ── Resolve num_obs_grid_max from fraction if provided ───────────────
+        # grid_obs_fraction in (0, 1]: fraction of a shape's cells visible per agent.
+        # num_obs_grid_max becomes floor(fraction * n_g_max) — the fixed obs vector
+        # upper bound. Per episode, effective_M = floor(fraction * n_cells_this_shape)
+        # is applied as a dynamic mask inside _get_obs_vectorized.
+        self.grid_obs_fraction = grid_obs_fraction
+        if grid_obs_fraction is not None:
+            num_obs_grid_max = max(1, int(grid_obs_fraction * self.n_g_max))
 
         # ── Spaces ──────────────────────────────────────────────────────────
         self.agents     = [f"agent_{i}" for i in range(n_a)]
@@ -589,6 +599,18 @@ class AssemblyEnv(MultiAgentEnv):
             sensed_pos_abs - state.p_pos[:, None, :],
             jnp.zeros((n_a, M, 2))
         )  # [n_a, M, 2]
+
+        # Per-shape cell visibility cap: zero out cells ranked >= effective_M.
+        # effective_M = floor(grid_obs_fraction * n_cells_this_episode).
+        # This branch is resolved at trace time (self is static_argnums).
+        if self.grid_obs_fraction is not None:
+            n_cells = jnp.sum(state.valid_mask).astype(jnp.float32)
+            effective_M = jnp.maximum(
+                1, jnp.floor(self.grid_obs_fraction * n_cells).astype(jnp.int32)
+            )
+            rank_mask = (jnp.arange(M) < effective_M)[None, :, None]  # [1, M, 1]
+            sensed_rel = sensed_rel * rank_mask
+
         sensed_flat = sensed_rel.reshape(n_a, -1)  # [n_a, M*2]
         
         # ══════════════════════════════════════════════════════════════════════

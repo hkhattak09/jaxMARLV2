@@ -310,6 +310,7 @@ def run_eval():
         results_file=cfg.results_file,
         n_a=cfg.n_a,
         topo_nei_max=cfg.topo_nei_max,
+        grid_obs_fraction=cfg.grid_obs_fraction,
     )
     env = JaxAssemblyAdapterGPU(
         jax_env,
