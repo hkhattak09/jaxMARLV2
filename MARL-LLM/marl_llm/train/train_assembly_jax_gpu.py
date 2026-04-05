@@ -36,7 +36,6 @@ import random
 import numpy as np
 
 # ── DIAGNOSTIC: RAM tracking — REMOVE AFTER USE ──────────────────────────────
-import gc
 import psutil as _psutil
 import tracemalloc as _tracemalloc
 _tracemalloc.start(10)
@@ -58,16 +57,6 @@ def _mem_report(ep_index, agent_buffer):
                  buf.rew_buffs.nbytes + buf.done_buffs.nbytes)
     buf_gb = buf_bytes / 1e9
 
-    # Count live CPU & GPU PyTorch tensors
-    n_cpu = n_gpu = 0
-    for obj in gc.get_objects():
-        try:
-            if torch.is_tensor(obj):
-                if obj.is_cuda: n_gpu += 1
-                else:           n_cpu += 1
-        except Exception:
-            pass
-
     # tracemalloc: top 5 biggest RAM allocations since last snapshot
     snap = _tracemalloc.take_snapshot()
     top = snap.statistics("lineno")[:5]
@@ -77,7 +66,6 @@ def _mem_report(ep_index, agent_buffer):
     print(f"[DIAG ep {ep_index}] Process RSS: {rss_gb:.2f} GB  (Δ {delta:+.3f} GB)")
     print(f"  Buffer (numpy):  {buf_gb:.2f} GB   filled={buf.filled_i}/{buf.max_steps}")
     print(f"  GPU allocated:   {gpu_alloc:.2f} GB  reserved: {gpu_reserv:.2f} GB")
-    print(f"  Live tensors:    CPU={n_cpu}  GPU={n_gpu}")
     print(f"  Top tracemalloc allocations:")
     print(top_str)
     print(f"{'─'*60}\n")
