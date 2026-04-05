@@ -21,10 +21,12 @@ class CTMDDPGAgent(DDPGAgent):
     """
 
     def __init__(self, dim_input_policy, dim_output_policy, dim_input_critic,
-                 lr_actor, lr_critic, hidden_dim=64, discrete_action=False,
-                 device='cpu', epsilon=0.1, noise=0.1, ctm_config=None):
+                 lr_actor, lr_critic, hidden_dim=64, critic_hidden_dim=None,
+                 discrete_action=False, device='cpu', epsilon=0.1, noise=0.1,
+                 ctm_config=None):
         # Intentionally skip DDPGAgent.__init__ — it would create MLP policy networks
         ctm_config = ctm_config or {}
+        _critic_hidden_dim = critic_hidden_dim if critic_hidden_dim is not None else hidden_dim
 
         # CTM actor (single shared network, same weights for all agents)
         self.policy = CTMActor(
@@ -38,9 +40,9 @@ class CTMDDPGAgent(DDPGAgent):
             **ctm_config,
         )
 
-        # Critic stays as MLP (unchanged from DDPGAgent)
-        self.critic = MLPNetwork(dim_input_critic, 1, hidden_dim=hidden_dim, constrain_out=False)
-        self.target_critic = MLPNetwork(dim_input_critic, 1, hidden_dim=hidden_dim, constrain_out=False)
+        # Critic stays as MLP; larger hidden dim to handle joint obs+action input
+        self.critic = MLPNetwork(dim_input_critic, 1, hidden_dim=_critic_hidden_dim, constrain_out=False)
+        self.target_critic = MLPNetwork(dim_input_critic, 1, hidden_dim=_critic_hidden_dim, constrain_out=False)
 
         # Materialize nn.LazyLinear layers in CTMActor before hard_update.
         # LazyLinear weights don't exist until the first forward pass — copying

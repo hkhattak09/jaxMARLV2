@@ -80,15 +80,17 @@ maddpg = MADDPG.init_from_env(
     env: JaxAssemblyAdapterGPU,
     agent_alg: str = 'MADDPG',
     adversary_alg: str = None,
-    tau: float = 0.01,        # Target network update rate
+    tau: float = 0.01,              # Target network update rate
     lr_actor: float = 1e-4,
     lr_critic: float = 1e-3,
-    hidden_dim: int = 180,
+    hidden_dim: int = 180,          # Actor hidden dim
+    critic_hidden_dim: int = 256,   # Centralised critic hidden dim (larger — joint input)
     device: str = 'gpu',
-    epsilon: float = 0.1,     # Random action probability
-    noise: float = 0.9,       # Gaussian noise scale
+    epsilon: float = 0.1,           # Random action probability
+    noise: float = 0.9,             # Gaussian noise scale
     name: str = 'assembly',
 )
+# Sets dim_input_critic = env.num_agents * (obs_dim + action_dim) automatically
 
 # Action selection
 actions, log_pis = maddpg.step(
@@ -98,15 +100,15 @@ actions, log_pis = maddpg.step(
 )
 # Returns: actions: List[Tensor(action_dim, n_agents)], log_pis: List[Tensor(1, n_agents)]
 
-# Update networks
+# Update networks (centralised critic — joint tensor inputs)
 vf_loss, pol_loss, reg_loss = maddpg.update(
-    obs: Tensor,              # (batch_size, obs_dim)
-    acs: Tensor,              # (batch_size, action_dim)
-    rews: Tensor,             # (batch_size, 1)
-    next_obs: Tensor,         # (batch_size, obs_dim)
-    dones: Tensor,            # (batch_size, 1)
+    obs: Tensor,              # (batch_size, n_agents*obs_dim)    — joint observations
+    acs: Tensor,              # (batch_size, n_agents*action_dim) — joint actions
+    rews: Tensor,             # (batch_size, 1)                   — mean reward
+    next_obs: Tensor,         # (batch_size, n_agents*obs_dim)
+    dones: Tensor,            # (batch_size, 1)                   — max done flag
     agent_i: int,             # Agent index (0 for homogeneous)
-    acs_prior: Tensor = None, # (batch_size, action_dim)
+    acs_prior: Tensor = None, # (batch_size, n_agents*action_dim)
     alpha: float = 0.5,       # Regularization weight
     parallel: bool = False,
     logger = None,
@@ -132,36 +134,37 @@ maddpg = MADDPG.load(filename: str)
 ### Replay Buffer
 
 ```python
-# Initialization
+# Initialization (centralised critic — joint rows)
 buffer = ReplayBufferAgent(
-    max_steps: int,           # Buffer capacity
-    num_agents: int,          # n_envs * n_a
-    start_stop_index: slice,  # slice(0, num_agents)
-    state_dim: int,           # obs_dim
-    action_dim: int,          # action_dim
+    max_steps: int,     # Buffer capacity in timesteps (= total rows)
+    num_agents: int,    # Physical agents (e.g., 24) — sets joint row width
+    state_dim: int,     # Per-agent obs_dim
+    action_dim: int,    # Per-agent action_dim (2)
+    # start_stop_index: ignored, removed from call sites
 )
 
-# Push experience
+# Push experience (no index argument)
 buffer.push(
-    observations: np.ndarray,      # (obs_dim, num_agents) column-major
-    actions: np.ndarray,           # (action_dim, num_agents) column-major
-    rewards: np.ndarray,           # (1, num_agents)
-    next_observations: np.ndarray, # (obs_dim, num_agents)
-    dones: np.ndarray,             # (1, num_agents)
-    index: slice,                  # slice(0, num_agents)
-    actions_prior: np.ndarray = None,  # (action_dim, num_agents)
-    log_pi: np.ndarray = None,
+    observations: np.ndarray,           # (obs_dim, n_agents) column-major
+    actions: np.ndarray,                # (action_dim, n_agents) column-major
+    rewards: np.ndarray,                # (1, n_agents)
+    next_observations: np.ndarray,      # (obs_dim, n_agents)
+    dones: np.ndarray,                  # (1, n_agents)
+    # index: removed
+    actions_prior_orig: np.ndarray = None,  # (action_dim, n_agents)
 )
+# Stores 1 joint row: obs flattened to (1, n_agents*obs_dim), rew meaned to (1,1), etc.
 
 # Sample batch
-sample = buffer.sample(
+obs, acs, rews, next_obs, dones, acs_prior, _ = buffer.sample(
     N: int,              # Batch size
     to_gpu: bool = False,
-    norm_rews: bool = True,
     is_prior: bool = False,
 )
-# Returns: (obs, acs, rews, next_obs, dones, acs_prior, log_pis)
-#          All Tensors shape (N, feature_dim), row-major
+# Returns joint tensors:
+#   obs/next_obs: (N, n_agents*obs_dim)    e.g. (512, 4608) at K=6,M=80
+#   acs/acs_prior:(N, n_agents*action_dim) e.g. (512, 48)
+#   rews/dones:   (N, 1)
 
 # Query
 length = len(buffer)  # Number of experiences stored
@@ -339,16 +342,17 @@ gif_dir = './eval_gifs'     # GIF output directory
 ### Memory Calculation
 
 ```python
-# Buffer memory
+# Buffer memory (centralised critic — joint rows)
+# total_length = buffer_length (one joint row per timestep)
 buffer_mem_MB = (
-    buffer_length * 
-    n_rollout_threads * 
-    n_a * 
-    (obs_dim * 2 + action_dim * 2 + 2) * 
+    buffer_length *
+    n_a *
+    (obs_dim * 2 + action_dim * 2) *
     4  # bytes per float32
 ) / (1024**2)
 
-# Example: 20000 * 1 * 30 * (192*2 + 2*2 + 2) * 4 / 1024^2 ≈ 934 MB
+# K=6, M=80 (n_a=24, obs_dim=192): 20000 * 24 * (192*2 + 2*2) * 4 / 1024^2 ≈ 745 MB
+# K=3, M=10 (n_a=24, obs_dim=40):  20000 * 24 * (40*2 + 2*2)  * 4 / 1024^2 ≈ 157 MB
 ```
 
 ---

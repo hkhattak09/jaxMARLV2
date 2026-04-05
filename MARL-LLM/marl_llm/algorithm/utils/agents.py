@@ -12,7 +12,8 @@ class DDPGAgent(object):
     critic, exploration noise)
     """
     def __init__(self, dim_input_policy, dim_output_policy, dim_input_critic,
-                 lr_actor, lr_critic, hidden_dim=64, discrete_action=False, device='cpu', epsilon=0.1, noise=0.1):
+                 lr_actor, lr_critic, hidden_dim=64, critic_hidden_dim=None,
+                 discrete_action=False, device='cpu', epsilon=0.1, noise=0.1):
         """
         Initialize the DDPGAgent object with given parameters.
         Inputs:
@@ -20,20 +21,22 @@ class DDPGAgent(object):
             dim_output_policy (int): number of dimensions for policy output
             dim_input_critic (int): number of dimensions for critic input
         """
-        self.policy = MLPNetwork(dim_input_policy, dim_output_policy, 
-                                 hidden_dim=hidden_dim, 
+        _critic_hidden_dim = critic_hidden_dim if critic_hidden_dim is not None else hidden_dim
+
+        self.policy = MLPNetwork(dim_input_policy, dim_output_policy,
+                                 hidden_dim=hidden_dim,
                                  constrain_out=True,
                                  discrete_action=discrete_action)
         self.target_policy = MLPNetwork(dim_input_policy, dim_output_policy,
                                         hidden_dim=hidden_dim,
                                         constrain_out=True,
                                         discrete_action=discrete_action)
-        
+
         self.critic = MLPNetwork(dim_input_critic, 1,
-                                 hidden_dim=hidden_dim,
+                                 hidden_dim=_critic_hidden_dim,
                                  constrain_out=False)
         self.target_critic = MLPNetwork(dim_input_critic, 1,
-                                        hidden_dim=hidden_dim,
+                                        hidden_dim=_critic_hidden_dim,
                                         constrain_out=False)
     
         hard_update(self.target_policy, self.policy)

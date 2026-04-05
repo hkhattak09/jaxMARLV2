@@ -46,6 +46,51 @@ AssemblyEnv(
 **Key Attributes**:
 - `obs_dim`: Observation dimension = `4*(topo_nei_max+1) + 4 + 2*num_obs_grid_max`
   - Default: `4*7 + 4 + 2*80 = 192`
+
+---
+
+## Observability Design — Original Setup and Why It's Being Changed
+
+### Original setup (num_obs_grid_max=80)
+
+In the original configuration each agent observes up to **80 nearest target cells**
+(160 of its 192 observation dimensions). The total number of target cells per shape is
+typically 80-120, meaning each agent could see essentially the **entire shape** at all times.
+
+This made the task structurally easy: each agent independently knew where all target cells
+were and could navigate to the nearest uncovered one without coordinating with teammates.
+The problem reduces to *local reactive navigation on a fully visible map* — a task that
+can almost be hand-coded without learning. Under this setup varying the number of visible
+neighbors (K) had little effect because the hard question ("where do I go?") was already
+answered by the shape observation. This is why CTM and MLP performed similarly across all
+K values despite the visual difference in agent spacing.
+
+### New direction — shape partial observability
+
+We are reducing `num_obs_grid_max` (M) to make the shape **genuinely unknown** to each agent.
+At M=10-15, an agent sees only the nearest 10-15 target cells — a small local patch.
+It no longer knows where most of the shape is.
+
+Now the coordination problem is real:
+- Agents must spread across unknown territory without a global map
+- Flocking-like behaviour (spread out, maintain separation) becomes the correct inductive bias
+- The Reynolds prior (cohesion, alignment, separation) is now genuinely useful — it encodes
+  exactly the behaviour needed when you can't see the shape
+- A prior-seeded CTM that starts iterative computation from the Reynolds prior has a
+  structural advantage over a single-pass MLP that has no access to physics knowledge at
+  execution time
+
+### Two axes of partial observability
+
+| Parameter | Controls | Current default | Experiment target |
+|---|---|---|---|
+| `topo_nei_max` (K) | Teammate visibility | 6 | 3 |
+| `num_obs_grid_max` (M) | Shape visibility | 80 | 10-15 |
+
+Reducing both creates the regime where architecture differences actually matter.
+`topo_nei_max` is already a CLI parameter. `num_obs_grid_max` needs to be wired to cfg.
+
+---
 - `agents`: List of agent IDs `["agent_0", "agent_1", ..., "agent_{n_a-1}"]`
 - `num_shapes`: Number of target shapes loaded from `results.pkl`
 

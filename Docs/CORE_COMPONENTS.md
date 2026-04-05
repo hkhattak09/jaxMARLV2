@@ -26,29 +26,33 @@ Coordinates multiple DDPG agents for multi-agent learning. In this codebase, typ
 ### Initialization
 
 ```python
-MADDPG(agent_init_params, alg_types, epsilon, noise, 
+MADDPG(agent_init_params, alg_types, epsilon, noise,
        gamma=0.95, tau=0.01, lr_actor=1e-4, lr_critic=1e-3,
-       hidden_dim=64, device='cpu', discrete_action=False)
+       hidden_dim=64, critic_hidden_dim=None, n_agents=None,
+       device='cpu', discrete_action=False,
+       use_ctm_actor=False, ctm_config=None)
 ```
 
 **Key Parameters**:
-- `agent_init_params`: List of dicts with `num_in_pol`, `num_out_pol`, `num_in_critic` for each agent type
+- `agent_init_params`: List of dicts with `dim_input_policy`, `dim_output_policy`, `dim_input_critic` for each agent type
 - `alg_types`: List of agent types (e.g., `["agent"]`)
+- `n_agents`: Total physical agents (e.g., 24). Needed for joint reshape in update/target_policies.
 - `epsilon`: Probability of random action (exploration)
 - `noise`: Scale of Gaussian noise for exploration
 - `gamma`: Discount factor for rewards
 - `tau`: Soft update rate for target networks (θ_target ← τ*θ + (1-τ)*θ_target)
-- `hidden_dim`: Hidden layer size for actor/critic networks
+- `hidden_dim`: Hidden layer size for actor networks (default 180)
+- `critic_hidden_dim`: Hidden layer size for centralised critic (default 256 — larger than actor because critic input is `n_agents×(obs_dim+2)`)
 
 **Factory Method** (Recommended):
 ```python
-maddpg = MADDPG.init_from_env(env, agent_alg='MADDPG', tau=0.01, 
-                              lr_actor=1e-4, lr_critic=1e-3, 
-                              hidden_dim=180, device='gpu', 
-                              epsilon=0.1, noise=0.9)
+maddpg = MADDPG.init_from_env(env, agent_alg='MADDPG', tau=0.01,
+                              lr_actor=1e-4, lr_critic=1e-3,
+                              hidden_dim=180, critic_hidden_dim=256,
+                              device='gpu', epsilon=0.1, noise=0.9)
 ```
-- Automatically extracts observation/action dimensions from `env`
-- Simplifies initialization
+- Automatically extracts observation/action dimensions and `n_agents` from `env`
+- Sets `dim_input_critic = n_agents * (obs_dim + action_dim)` (centralised critic)
 
 ### Key Methods
 
@@ -85,13 +89,13 @@ actions, log_pis = maddpg.step(obs, [slice(0, 30)], explore=True)
    - If `acs_prior` provided, add regularization: `L_actor += 0.3 * alpha * MSE(π(s), a_prior)`
    - Update policy to maximize Q-values while staying close to prior
 
-**Inputs**:
-- `obs`, `next_obs`: Tensors of shape `(batch_size, obs_dim)`
-- `acs`: Actions taken, shape `(batch_size, action_dim)`
-- `rews`: Rewards, shape `(batch_size, 1)`
-- `dones`: Episode termination flags, shape `(batch_size, 1)`
+**Inputs** (centralised critic — joint tensors from buffer):
+- `obs`, `next_obs`: Tensors of shape `(batch_size, n_agents * obs_dim)` — joint observations
+- `acs`: Actions taken, shape `(batch_size, n_agents * action_dim)` — joint actions
+- `rews`: Mean reward, shape `(batch_size, 1)`
+- `dones`: Max done flag, shape `(batch_size, 1)`
 - `agent_i`: Index of agent to update (0 for homogeneous team)
-- `acs_prior`: Prior/expert actions for regularization, shape `(batch_size, action_dim)`
+- `acs_prior`: Prior/expert actions for regularization, shape `(batch_size, n_agents * action_dim)`
 - `alpha`: Regularization coefficient (typically read from `env.alpha`)
 
 **Outputs**:
@@ -211,80 +215,84 @@ Get/set network parameters for checkpointing.
 **Location**: `algorithm/utils/buffer_agent.py`
 
 ### Purpose
-Stores experience tuples for off-policy learning. Supports parallel environments.
+Stores joint experience rows for centralised-critic MADDPG. One row per timestep
+concatenates all agents' data. The centralised critic can consume sampled batches
+directly without any reshaping.
 
 ### Initialization
 
 ```python
-ReplayBufferAgent(max_steps, num_agents, start_stop_index, 
-                  state_dim, action_dim)
+ReplayBufferAgent(max_steps, num_agents, state_dim, action_dim,
+                  start_stop_index=None)  # start_stop_index ignored, kept for API compat
 ```
 
 **Key Parameters**:
-- `max_steps`: Buffer capacity in timesteps
-- `num_agents`: Total agents (n_rollout_threads × n_a)
-- `start_stop_index`: Slice for agent selection (e.g., `slice(0, 30)`)
-- `state_dim`: Observation dimension
-- `action_dim`: Action dimension
+- `max_steps`: Buffer capacity in timesteps (= total rows stored)
+- `num_agents`: Total physical agents (e.g., 24) — determines joint row width
+- `state_dim`: Per-agent observation dimension
+- `action_dim`: Per-agent action dimension
+- `start_stop_index`: Ignored (legacy parameter, kept for backward compatibility)
 
-**Memory Allocation**:
+**Memory Allocation** (joint rows):
 ```python
-total_length = max_steps * num_agents
-obs_buffs:       (total_length, state_dim)
-ac_buffs:        (total_length, action_dim)
-ac_prior_buffs:  (total_length, action_dim)
-rew_buffs:       (total_length, 1)
-next_obs_buffs:  (total_length, state_dim)
-done_buffs:      (total_length, 1)
+total_length = max_steps  # one row per timestep (not per-agent)
+obs_buffs:       (max_steps, num_agents * state_dim)   # joint obs
+ac_buffs:        (max_steps, num_agents * action_dim)  # joint actions
+ac_prior_buffs:  (max_steps, num_agents * action_dim)
+rew_buffs:       (max_steps, 1)   # mean reward across agents
+next_obs_buffs:  (max_steps, num_agents * state_dim)
+done_buffs:      (max_steps, 1)   # max done flag across agents
 ```
 
 ### Key Methods
 
-#### `push(observations, actions, rewards, next_observations, dones, index, actions_prior=None, log_pi=None)`
-**Purpose**: Add experience to buffer.
+#### `push(observations, actions, rewards, next_observations, dones, index=None, actions_prior_orig=None, log_pi_orig=None)`
+**Purpose**: Add one joint-row transition to buffer.
 
-**Inputs**:
-- `observations`: Shape `(obs_dim, n_agents)` — features in rows
-- `actions`: Shape `(action_dim, n_agents)` — will be transposed to `(n_agents, action_dim)` internally
-- `rewards`: Shape `(1, n_agents)`
-- `next_observations`: Shape `(obs_dim, n_agents)`
-- `dones`: Shape `(1, n_agents)`
-- `index`: Slice to select agents (e.g., `slice(0, 30)`)
-- `actions_prior`: Prior actions for regularization
+**Inputs** (column-major GPU→CPU tensors from rollout):
+- `observations`: Shape `(obs_dim, N*n_agents)` — all agents column-major
+- `actions`: Shape `(action_dim, N*n_agents)`
+- `rewards`: Shape `(1, N*n_agents)`
+- `next_observations`: Shape `(obs_dim, N*n_agents)`
+- `dones`: Shape `(1, N*n_agents)`
+- `index`: Ignored (removed from call site)
+- `actions_prior_orig`: Shape `(action_dim, N*n_agents)` optional
 
 **Process**:
-1. Transpose to `(n_agents, feature_dim)` via `[:, index].T`
-2. Flatten to `(n_agents, feature_dim)` and write sequentially
-3. Circular buffer: wraps around when full
+1. Flatten: `obs.T.reshape(N, n_a*obs_dim)` → N joint rows
+2. Mean rewards: `rewards.reshape(N, n_a).mean(axis=1)` → `(N, 1)`
+3. Max done: `dones.reshape(N, n_a).max(axis=1)` → `(N, 1)`
+4. Write N rows to circular buffer (N=1 in standard setup)
 
 **Example**:
 ```python
-buffer.push(obs, actions, rewards, next_obs, dones, 
-            slice(0, 30), actions_prior)
-# obs: (192, 30), actions: (2, 30), etc.
-# Internally stored as 30 separate experiences
+# No index argument — pass all agents, buffer handles concatenation
+buffer.push(obs, actions, rewards, next_obs, dones,
+            actions_prior_orig=prior)
+# obs: (192, 24), actions: (2, 24) → stored as 1 row of width 4608/48
 ```
 
-#### `sample(N, to_gpu=False, norm_rews=True)`
+#### `sample(N, to_gpu=False, is_prior=False, is_log_pi=False)`
 **Purpose**: Sample random batch for training.
 
 **Inputs**:
 - `N`: Batch size (e.g., 512)
 - `to_gpu`: If True, convert to CUDA tensors
-- `norm_rews`: If True, normalize rewards to mean=0, std=1
+- `is_prior`: If True, include prior actions
 
-**Outputs**:
-- `obs`: (N, obs_dim)
-- `acs`: (N, action_dim)
-- `rews`: (N, 1) — normalized if `norm_rews=True`
-- `next_obs`: (N, obs_dim)
-- `dones`: (N, 1)
-- `acs_prior`: (N, action_dim) or None
+**Outputs** (joint shapes, K=6 M=80 example):
+- `obs`: `(N, n_agents*obs_dim)` = `(512, 4608)`
+- `acs`: `(N, n_agents*action_dim)` = `(512, 48)`
+- `rews`: `(N, 1)`
+- `next_obs`: `(N, n_agents*obs_dim)` = `(512, 4608)`
+- `dones`: `(N, 1)`
+- `acs_prior`: `(N, n_agents*action_dim)` = `(512, 48)` or None
+- `log_pis`: always None
 
 **Example**:
 ```python
-batch = buffer.sample(512, to_gpu=True)
-obs, acs, rews, next_obs, dones, acs_prior = batch
+obs, acs, rews, next_obs, dones, acs_prior, _ = buffer.sample(512, to_gpu=True, is_prior=True)
+# All joint tensors — ready for centralised critic directly
 ```
 
 #### `get_average_rewards(N)`
@@ -437,26 +445,29 @@ ReplayBufferAgent.push(obs, actions, rewards, ...)
 ### Pattern 1: Initialize and Train
 
 ```python
-# 1. Create MADDPG
-maddpg = MADDPG.init_from_env(env, hidden_dim=180, lr_actor=1e-4, 
-                              lr_critic=1e-3, device='gpu')
+# 1. Create MADDPG (centralised critic: critic_hidden_dim=256)
+maddpg = MADDPG.init_from_env(env, hidden_dim=180, critic_hidden_dim=256,
+                              lr_actor=1e-4, lr_critic=1e-3, device='gpu')
+# dim_input_critic = n_agents * (obs_dim + 2) set automatically
 
-# 2. Create buffer
-buffer = ReplayBufferAgent(buffer_length, env.num_agents, 
+# 2. Create buffer (joint rows — no start_stop_index)
+buffer = ReplayBufferAgent(buffer_length, env.num_agents,
                            state_dim=env.observation_space.shape[0],
-                           action_dim=env.action_space.shape[0],
-                           start_stop_index=slice(0, env.num_agents))
+                           action_dim=env.action_space.shape[0])
 
 # 3. Rollout
-maddpg.prep_rollouts(device='cpu')
-actions, _ = maddpg.step(torch.Tensor(obs), [slice(0, env.n_a)], explore=True)
-next_obs, rewards, dones, _, prior = env.step(actions_np)
-buffer.push(obs, actions_np, rewards, next_obs, dones, slice(0, env.n_a), prior)
+maddpg.prep_rollouts(device='gpu')
+actions, _, _ = maddpg.step(obs_gpu, [slice(0, env.n_a)], explore=True)
+next_obs, rewards, dones, _, prior = env.step(actions_gpu.t().detach())
+# No index argument — push full joint data
+buffer.push(obs_np, actions_np, rewards_np, next_obs_np, dones_np,
+            actions_prior_orig=prior_np)
 
 # 4. Train
 maddpg.prep_training(device='gpu')
-batch = buffer.sample(512, to_gpu=True)
-vf_loss, pol_loss, reg_loss = maddpg.update(*batch, agent_i=0, alpha=env.alpha)
+obs, acs, rews, next_obs, dones, acs_prior, _ = buffer.sample(512, to_gpu=True, is_prior=True)
+vf_loss, pol_loss, reg_loss = maddpg.update(obs, acs, rews, next_obs, dones,
+                                            agent_i=0, acs_prior=acs_prior, alpha=env.alpha)
 maddpg.update_all_targets()
 ```
 

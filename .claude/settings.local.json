@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(unzip -p mlp_500ep_kis3.zip)",
+      "Bash(unzip -p ctm_500ep_kis3.zip)",
+      "Bash(unzip -l mlp_500ep_kis3.zip)",
+      "Bash(unzip -l ctm_500ep_kis3.zip)",
+      "Bash(unzip -p mlp_500ep_kis3.zip \"*/summary.json\")",
+      "Bash(unzip -p ctm_500ep_kis3.zip \"*/summary.json\")"
+    ]
+  }
+}

@@ -28,9 +28,10 @@ Data flows through two main frameworks with GPU-optimized zero-copy transfers:
 - Rewards: `(1, n_agents)` — `torch.cuda.FloatTensor`
 - Dones: `(1, n_agents)` — `torch.cuda.BoolTensor`
 
-**Replay Buffer Storage**:
-- Internally transposes to row-major: `(n_agents, feature_dim)` on CPU
-- Samples as row-major: `(batch_size, feature_dim)`
+**Replay Buffer Storage** (centralised critic — joint rows):
+- One row per environment timestep, not per agent
+- Each row concatenates ALL agents: `(1, n_agents * feature_dim)` on CPU
+- Samples as row-major: `(batch_size, n_agents * feature_dim)`
 - **Critical**: Buffer stores on CPU (bulk transfer from GPU at episode end)
 
 **PyTorch Networks**:
@@ -290,129 +291,143 @@ OUTPUT:
 
 ## 4. Replay Buffer Storage
 
-### Push to Buffer
+### Push to Buffer (Centralised Critic — Joint Rows)
+
+One joint row is stored per timestep. All 24 agents' data is concatenated into a
+single wide row so the centralised critic can consume the full joint state directly.
 
 ```
-INPUT:
-  obs: (192, 30)
-  actions: (2, 30)  # As prepared above (agent_actions before transpose)
-  rewards: (1, 30)
-  next_obs: (192, 30)
-  dones: (1, 30)
-  prior: (2, 30)
-  index: slice(0, 30)
+INPUT (per timestep t, n_envs=1):
+  obs:      (obs_dim, n_a)   = (192, 24)  numpy CPU
+  actions:  (2, n_a)         = (2,   24)
+  rewards:  (1, n_a)         = (1,   24)
+  next_obs: (obs_dim, n_a)   = (192, 24)
+  dones:    (1, n_a)         = (1,   24)
+  prior:    (2, n_a)         = (2,   24)
     ↓
-ReplayBufferAgent.push(obs, actions, rewards, next_obs, dones, index, prior)
+ReplayBufferAgent.push(obs, actions, rewards, next_obs, dones,
+                       actions_prior_orig=prior)
     ↓
-Select and transpose:
-  observations = observations_orig[:, index].T    # (192, 30)[:, 0:30].T → (30, 192)
-  actions = actions_orig[:, index].T              # (2, 30)[:, 0:30].T → (30, 2)
-  rewards = rewards_orig[:, index].T              # (1, 30)[:, 0:30].T → (30, 1)
-  next_observations = next_observations_orig[:, index].T  # (30, 192)
-  dones = dones_orig[:, index].T                  # (30, 1)
-  actions_prior = actions_prior_orig[:, index].T  # (30, 2)
+Flatten to joint row:
+  obs_joint      = obs.T.reshape(1, n_a*obs_dim)    # (1, 4608) — 24×192
+  acs_joint      = actions.T.reshape(1, n_a*2)       # (1, 48)   — 24×2
+  next_obs_joint = next_obs.T.reshape(1, n_a*obs_dim)# (1, 4608)
+  rews_joint     = rewards.reshape(1, n_a).mean(keepdims=True)  # (1, 1) — agent mean
+  dones_joint    = dones.reshape(1, n_a).max(keepdims=True)     # (1, 1) — any done
+  prior_joint    = prior.T.reshape(1, n_a*2)         # (1, 48)
     ↓
-Write to buffer arrays:
-  obs_buffs[curr_i:curr_i+30] = observations      # (30, 192)
-  ac_buffs[curr_i:curr_i+30] = actions            # (30, 2)
-  rew_buffs[curr_i:curr_i+30] = rewards           # (30, 1)
-  ...
+Write one row to buffer:
+  obs_buffs[curr_i]      = obs_joint       # (4608,)
+  ac_buffs[curr_i]       = acs_joint       # (48,)
+  rew_buffs[curr_i]      = rews_joint      # (1,)
+  next_obs_buffs[curr_i] = next_obs_joint  # (4608,)
+  done_buffs[curr_i]     = dones_joint     # (1,)
+  ac_prior_buffs[curr_i] = prior_joint     # (48,)
     ↓
 Increment indices:
-  curr_i += 30
-  filled_i = min(filled_i + 30, max_steps * num_agents)
+  curr_i += 1
+  filled_i = min(filled_i + 1, max_steps)
 ```
 
-**Key**: Buffer stores data in row-major format `(n_samples, feature_dim)`.
+**Key**: Buffer stores one joint row per timestep. `total_length = max_steps` (not `max_steps × n_agents`).
+Row ordering: agent 0 dims first, then agent 1, ..., agent 23 — consistent across obs/acs/prior.
 
 ---
 
 ## 5. Sampling from Buffer
 
-### Sample Batch for Training
+### Sample Batch for Training (Centralised Critic — Joint Rows)
 
 ```
-ReplayBufferAgent.sample(N=512, to_gpu=True, norm_rews=True)
+ReplayBufferAgent.sample(N=512, to_gpu=True, is_prior=True)
     ↓
 Random sampling:
-  inds = np.random.choice(filled_i, size=N, replace=True)  # [512]
+  inds = np.random.choice(filled_i, size=N, replace=False)  # [512]
     ↓
-Gather samples:
-  obs = obs_buffs[inds]            # (512, 192)
-  acs = ac_buffs[inds]             # (512, 2)
-  rews = rew_buffs[inds]           # (512, 1)
-  next_obs = next_obs_buffs[inds]  # (512, 192)
-  dones = done_buffs[inds]         # (512, 1)
-  acs_prior = ac_prior_buffs[inds] # (512, 2)
+Gather joint-row samples (K=6, M=80 example with n_a=24, obs_dim=192):
+  obs      = obs_buffs[inds]            # (512, 4608)  — 24×192
+  acs      = ac_buffs[inds]             # (512, 48)    — 24×2
+  rews     = rew_buffs[inds]            # (512, 1)
+  next_obs = next_obs_buffs[inds]       # (512, 4608)
+  dones    = done_buffs[inds]           # (512, 1)
+  acs_prior= ac_prior_buffs[inds]       # (512, 48)
     ↓
-Normalize rewards (if norm_rews=True):
-  rews_mean = rews.mean()
-  rews_std = rews.std() + 1e-6
-  rews = (rews - rews_mean) / rews_std
+Convert to PyTorch CUDA tensors:
+  cast = lambda x: Tensor(x).requires_grad_(False).cuda()
     ↓
-Convert to PyTorch:
-  if to_gpu:
-    obs = torch.Tensor(obs).cuda()
-    acs = torch.Tensor(acs).cuda()
-    rews = torch.Tensor(rews).cuda()
-    ...
-  else:
-    obs = torch.Tensor(obs)
-    ...
-    ↓
-OUTPUT: (obs, acs, rews, next_obs, dones, acs_prior)
-  All shapes: (512, feature_dim) for respective features
-  All types: torch.Tensor (on GPU if to_gpu=True)
+OUTPUT: (obs, acs, rews, next_obs, dones, acs_prior, None)
+  obs/next_obs: (512, n_agents*obs_dim)  — joint observations
+  acs/acs_prior:(512, n_agents*2)        — joint actions
+  rews/dones:   (512, 1)
+  All: torch.cuda.FloatTensor
 ```
+
+**Key change from per-agent buffer**: Samples are joint rows, not individual agent rows.
+The critic consumes them directly without any additional reshaping.
 
 ---
 
-## 6. MADDPG Update
+## 6. MADDPG Update (Centralised Critic + Option B Actor)
 
 ### Critic Update
 
 ```
-INPUT: (obs, acs, rews, next_obs, dones, acs_prior) all shape (512, ...)
+INPUT (K=6, M=80 example, n_a=24, obs_dim=192):
+  obs:      (512, 4608)  — joint obs  (24×192)
+  acs:      (512, 48)    — joint acs  (24×2)
+  rews:     (512, 1)
+  next_obs: (512, 4608)  — joint next obs
+  dones:    (512, 1)
     ↓
-Target actions:
-  all_trgt_acs = target_policy(next_obs)  # (512, 2)
+Target actions for all agents (target_policies):
+  # Reshape next_obs for shared policy forward pass
+  next_obs_flat = next_obs.view(512*24, 192)        # (12288, 192)
+  target_actions = target_policy(next_obs_flat)      # (12288, 2)
+  all_trgt_acs = target_actions.view(512, 24*2)      # (512, 48)
     ↓
 Target Q-value:
-  trgt_vf_in = torch.cat([next_obs, all_trgt_acs], dim=1)  # (512, 192+2) = (512, 194)
-  target_value = target_critic(trgt_vf_in)  # (512, 1)
+  trgt_vf_in = cat([next_obs, all_trgt_acs], dim=1) # (512, 4608+48) = (512, 4656)
+  target_value = target_critic(trgt_vf_in)           # (512, 1)
   target_value = rews + gamma * target_value * (1 - dones)  # (512, 1)
     ↓
 Current Q-value:
-  vf_in = torch.cat([obs, acs], dim=1)  # (512, 194)
-  actual_value = critic(vf_in)  # (512, 1)
+  vf_in = cat([obs, acs], dim=1)                    # (512, 4656)
+  actual_value = critic(vf_in)                       # (512, 1)
     ↓
 Loss:
-  vf_loss = MSE(actual_value, target_value.detach())  # scalar
+  vf_loss = MSE(actual_value, target_value.detach()) # scalar
     ↓
+Critic architecture: 4656 → 256 → 256 → 256 → 1  (critic_hidden_dim=256)
 Backward and update critic
 ```
 
-### Actor Update
+### Actor Update (Option B — recompute ALL agents' actions)
+
+With parameter sharing, we recompute all 24 agents' actions through the shared policy.
+Gradient flows through all 24 action slots simultaneously — 24× stronger signal than
+substituting only one agent's action.
 
 ```
-Current policy:
-  curr_pol_out = policy(obs)  # (512, 2)
+obs: (512, 4608) — joint obs
+    ↓
+Reshape for shared policy:
+  obs_flat = obs.view(512*24, 192)           # (12288, 192)
+  all_curr_acs = policy(obs_flat)            # (12288, 2)
+  all_curr_acs = all_curr_acs.view(512, 48)  # (512, 48)
     ↓
 Q-value with current policy:
-  vf_in = torch.cat([obs, curr_pol_out], dim=1)  # (512, 194)
-  q_val = critic(vf_in)  # (512, 1)
+  vf_in = cat([obs, all_curr_acs], dim=1)   # (512, 4656)
+  q_val = critic(vf_in)                      # (512, 1)
     ↓
 Policy loss (maximize Q):
-  pol_loss = -q_val.mean()  # scalar
+  pol_loss = -q_val.mean()                   # scalar
     ↓
 Regularization (if acs_prior provided):
-  # Filter out near-zero prior actions (likely invalid)
-  mask = (acs_prior.abs() < 1e-2).all(dim=1)  # (512,)
-  valid_mask = ~mask
-  filtered_pol = curr_pol_out[valid_mask]     # (N_valid, 2)
-  filtered_prior = acs_prior[valid_mask]       # (N_valid, 2)
-  
-  reg_loss = MSE(filtered_pol, filtered_prior)  # scalar
+  # acs_prior is (512, 48) — all agents' Reynolds prior actions
+  mask = (acs_prior.abs() < 1e-2).all(dim=1)     # (512,) — only if ALL 48 dims ≈ 0
+  filtered_pol   = all_curr_acs[~mask]             # (N_valid, 48)
+  filtered_prior = acs_prior[~mask]                # (N_valid, 48)
+  reg_loss = MSE(filtered_pol, filtered_prior)     # scalar (over all 48 action dims)
   pol_loss = pol_loss + 0.3 * alpha * reg_loss
     ↓
 Backward and update actor
@@ -474,31 +489,34 @@ Backward and update actor
 
 ## 8. Memory Consumption
 
-### Buffer Memory (n_rollout_threads=1, n_a=30, buffer_length=20000)
+### Buffer Memory (n_rollout_threads=1, n_a=24, buffer_length=20000, K=6 M=80)
+
+Joint-row buffer: `total_length = buffer_length` (one row per timestep, not per agent).
 
 ```
-total_length = buffer_length × n_rollout_threads × n_a
-             = 20000 × 1 × 30 = 600,000 experiences
+total_length = buffer_length = 20000 joint rows
 
-obs_buffs:       (600000, 192) × 4 bytes = 460.8 MB
-ac_buffs:        (600000, 2) × 4 bytes   = 4.8 MB
-ac_prior_buffs:  (600000, 2) × 4 bytes   = 4.8 MB
-rew_buffs:       (600000, 1) × 4 bytes   = 2.4 MB
-next_obs_buffs:  (600000, 192) × 4 bytes = 460.8 MB
-done_buffs:      (600000, 1) × 1 byte    = 0.6 MB
+obs_buffs:       (20000, 24×192=4608) × 4 bytes = 368.6 MB
+ac_buffs:        (20000, 24×2=48)     × 4 bytes = 3.8 MB
+ac_prior_buffs:  (20000, 48)          × 4 bytes = 3.8 MB
+rew_buffs:       (20000, 1)           × 4 bytes = 0.08 MB
+next_obs_buffs:  (20000, 4608)        × 4 bytes = 368.6 MB
+done_buffs:      (20000, 1)           × 4 bytes = 0.08 MB
 
-Total ≈ 934 MB
+Total ≈ 745 MB
 ```
 
-### With Parallel Environments (n_rollout_threads=4)
+**Previously** (per-agent rows): `(20000×24, 192)` → same total data volume but split across 480k rows.
+The joint-row layout is ~20% more compact because reward/done are stored once per timestep rather than 24 times.
+
+### Low-M regime (K=3, M=10, obs_dim=40)
 
 ```
-total_length = 20000 × 4 × 30 = 2,400,000
-
-Total ≈ 3.7 GB
+obs_buffs: (20000, 24×40=960) × 4 bytes = 76.8 MB
+Total ≈ 157 MB  — much smaller, suitable for Colab
 ```
 
-**Recommendation**: For GPU training with 16GB RAM, keep `buffer_length × n_rollout_threads ≤ 40000`.
+**Recommendation**: For GPU training with 16GB RAM, keep `buffer_length ≤ 40000` at K=6 M=80.
 
 ---
 
@@ -584,15 +602,18 @@ obs_np, rew_np, done_np, prior_np = map(np.asarray, [obs_jax, rew_jax, done_jax,
 
 ## 11. Quick Reference
 
+Shapes shown for K=6, M=80 (obs_dim=192, n_a=24). For other configs substitute obs_dim and n_a.
+
 | Operation | Input Shape | Output Shape | Notes |
 |-----------|-------------|--------------|-------|
-| `env.reset()` | — | `(192, 30)` | Column-major obs |
-| `env.step(actions)` | `(30, 2)` | obs `(192, 30)`, rew `(1, 30)`, prior `(2, 30)` | Row-major in, column-major out |
-| `maddpg.step(obs, ...)` | `(192, 30)` | `List[(2, 30)]` | Column-major in, column-major out |
-| `buffer.push(obs, acs, ...)` | obs `(192, 30)`, acs `(2, 30)` | — | Column-major inputs, stores row-major |
-| `buffer.sample(N)` | — | All `(512, *)` | Row-major outputs |
-| `policy(obs)` | `(batch, 192)` | `(batch, 2)` | Standard PyTorch row-major |
-| `critic(obs_acs)` | `(batch, 194)` | `(batch, 1)` | Concatenated input |
+| `env.reset()` | — | `(192, 24)` | Column-major obs |
+| `env.step(actions)` | `(24, 2)` | obs `(192, 24)`, rew `(1, 24)`, prior `(2, 24)` | Row-major in, column-major out |
+| `maddpg.step(obs, ...)` | `(192, 24)` | `List[(2, 24)]` | Column-major in, column-major out |
+| `buffer.push(obs, acs, ...)` | obs `(192, 24)`, acs `(2, 24)` | — | Flattens to 1 joint row per timestep |
+| `buffer.sample(N)` | — | obs `(512, 4608)`, acs `(512, 48)` | Joint row-major outputs |
+| `policy(obs)` | `(batch, 192)` | `(batch, 2)` | Per-agent; batch=512×24 during actor update |
+| `critic(obs_acs)` | `(batch, 4656)` | `(batch, 1)` | Joint: 24×(192+2)=4656; hidden_dim=256 |
+| `target_policies(next_obs_all)` | `(512, 4608)` | `(512, 48)` | Reshapes internally to run all agents |
 
 ---
 

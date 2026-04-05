@@ -178,7 +178,8 @@ parser.add_argument("--episode_length", default=200, type=int,help="Maximum step
 parser.add_argument("--batch_size", default=512, type=int, help="Batch size for neural network updates")
 
 # Network architecture and learning rates
-parser.add_argument("--hidden_dim", default=180, type=int,help="Hidden layer dimension for MLP actor/critic networks")
+parser.add_argument("--hidden_dim", default=180, type=int, help="Hidden layer dimension for MLP actor/critic networks")
+parser.add_argument("--critic_hidden_dim", default=256, type=int, help="Hidden layer dimension for centralised critic (larger than actor due to joint obs+action input)")
 parser.add_argument("--lr_actor", default=1e-4, type=float,help="Learning rate for actor networks")
 parser.add_argument("--lr_critic", default=1e-3, type=float,help="Learning rate for critic networks")
 

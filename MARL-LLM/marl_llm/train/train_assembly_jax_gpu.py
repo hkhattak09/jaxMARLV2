@@ -341,6 +341,7 @@ def run(cfg):
         lr_actor=cfg.lr_actor,
         lr_critic=cfg.lr_critic,
         hidden_dim=cfg.hidden_dim,
+        critic_hidden_dim=cfg.critic_hidden_dim,
         device="gpu",  # Force GPU for both rollout and training
         epsilon=cfg.epsilon,
         noise=cfg.noise_scale,
@@ -356,7 +357,6 @@ def run(cfg):
             env.num_agents,
             state_dim=env.observation_space.shape[0],
             action_dim=env.action_space.shape[0],
-            start_stop_index=start_stop_num[0],
         )
     ]
 
@@ -459,9 +459,9 @@ def run(cfg):
         # Push all transitions to buffer
         for t in range(cfg.episode_length):
             agent_buffer[0].push(
-                obs_batch[t], actions_batch[t], rewards_batch[t], 
+                obs_batch[t], actions_batch[t], rewards_batch[t],
                 next_obs_batch[t], dones_batch[t],
-                start_stop_num[0], prior_batch[t],
+                actions_prior_orig=prior_batch[t],
             )
 
         episode_reward_mean_bar = rewards_batch.mean() * cfg.episode_length

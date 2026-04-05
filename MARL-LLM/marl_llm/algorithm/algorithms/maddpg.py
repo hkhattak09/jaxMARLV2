@@ -9,7 +9,7 @@ class MADDPG(object):
     Wrapper class for DDPG-esque (i.e. also MADDPG) agents in multi-agent task
     """
     def __init__(self, agent_init_params, alg_types, epsilon, noise, gamma=0.95, tau=0.01, lr_actor=1e-4, lr_critic=1e-3,
-                 hidden_dim=64, device='cpu', discrete_action=False,
+                 hidden_dim=64, critic_hidden_dim=None, n_agents=None, device='cpu', discrete_action=False,
                  use_ctm_actor=False, ctm_config=None):
         """
         Initialize the MADDPG object with given parameters.
@@ -19,12 +19,15 @@ class MADDPG(object):
         self.epsilon = epsilon
         self.noise = noise
         self.use_ctm_actor = use_ctm_actor
+        # n_agents: number of physical agents (≥ nagents when parameter sharing is used)
+        self.n_agents = n_agents if n_agents is not None else self.nagents
 
         if use_ctm_actor:
             from algorithm.utils.ctm_agent import CTMDDPGAgent
             self.agents = [CTMDDPGAgent(lr_actor=lr_actor,
                                         lr_critic=lr_critic,
                                         hidden_dim=hidden_dim,
+                                        critic_hidden_dim=critic_hidden_dim,
                                         epsilon=self.epsilon,
                                         noise=self.noise,
                                         ctm_config=ctm_config,
@@ -34,6 +37,7 @@ class MADDPG(object):
                                      lr_critic=lr_critic,
                                      discrete_action=discrete_action,
                                      hidden_dim=hidden_dim,
+                                     critic_hidden_dim=critic_hidden_dim,
                                      epsilon=self.epsilon,
                                      noise=self.noise,
                                      **params) for params in agent_init_params]
@@ -63,16 +67,29 @@ class MADDPG(object):
         """
         return [a.policy for a in self.agents]
 
-    def target_policies(self, agent_i, obs):
+    def target_policies(self, agent_i, next_obs_all):
         """
-        Get the target policies of a specific agent.
-        For CTM: initialises fresh hidden state from target policy's start_activated_trace.
+        Compute target actions for ALL agents from joint next observations.
+
+        Args:
+            next_obs_all: (batch, n_agents * obs_dim) — joint next observations
+        Returns:
+            (batch, n_agents * action_dim) — all agents' target actions concatenated
         """
+        batch = next_obs_all.shape[0]
+        obs_dim = next_obs_all.shape[1] // self.n_agents
+        # (batch, n_agents*obs_dim) → (batch*n_agents, obs_dim)
+        obs_flat = next_obs_all.view(batch * self.n_agents, obs_dim)
+
         if self.use_ctm_actor:
-            hidden = self.agents[agent_i].target_policy.get_initial_hidden_state(obs.shape[0], obs.device)
-            actions, _ = self.agents[agent_i].target_policy(obs, hidden)
-            return actions
-        return self.agents[agent_i].target_policy(obs)
+            hidden = self.agents[agent_i].target_policy.get_initial_hidden_state(
+                batch * self.n_agents, next_obs_all.device)
+            actions, _ = self.agents[agent_i].target_policy(obs_flat, hidden)
+        else:
+            actions = self.agents[agent_i].target_policy(obs_flat)
+
+        # (batch*n_agents, action_dim) → (batch, n_agents*action_dim)
+        return actions.view(batch, self.n_agents * actions.shape[1])
 
     def scale_noise(self, scale, new_epsilon):
         """
@@ -171,20 +188,27 @@ class MADDPG(object):
         # torch.nn.utils.clip_grad_norm_(curr_agent.critic.parameters(), 0.5)
         curr_agent.critic_optimizer.step()
 
-        ######################### Update Actor #########################
+        ######################### Update Actor (Option B) #########################
+        # Recompute ALL agents' actions through the shared policy.
+        # obs is (batch, n_agents*obs_dim); reshape to (batch*n_agents, obs_dim),
+        # run through shared policy, reshape back to (batch, n_agents*action_dim).
         curr_agent.policy_optimizer.zero_grad()
 
-        # Get current policy output (stateless for CTM: fresh hidden state each batch)
+        batch_size = obs.shape[0]
+        obs_dim = obs.shape[1] // self.n_agents
+        obs_flat = obs.view(batch_size * self.n_agents, obs_dim)
+
         if self.use_ctm_actor:
-            hidden = curr_agent.policy.get_initial_hidden_state(obs.shape[0], obs.device)
-            curr_pol_out, _ = curr_agent.policy(obs, hidden)
-            curr_pol_vf_in = curr_pol_out
-        elif not self.discrete_action:
-            curr_pol_out = curr_agent.policy(obs)
-            curr_pol_vf_in = curr_pol_out
+            hidden = curr_agent.policy.get_initial_hidden_state(
+                batch_size * self.n_agents, obs.device)
+            curr_pol_out, _ = curr_agent.policy(obs_flat, hidden)
+        else:
+            curr_pol_out = curr_agent.policy(obs_flat)
+
+        # (batch*n_agents, action_dim) → (batch, n_agents*action_dim)
+        all_pol_acs = curr_pol_out.view(batch_size, self.n_agents * curr_pol_out.shape[1])
 
         # Actor loss: maximize Q-value (negative for gradient ascent)
-        all_pol_acs = curr_pol_vf_in  
         vf_in = torch.cat((obs, all_pol_acs), dim=1)
         pol_loss = -curr_agent.critic(vf_in).mean()
 
@@ -293,15 +317,17 @@ class MADDPG(object):
 
     @classmethod
     def init_from_env(cls, env, agent_alg="MADDPG", adversary_alg="MADDPG", gamma=0.95, tau=0.01, lr_actor=1e-4, lr_critic=1e-3,
-                      hidden_dim=64, name='flocking', device='cpu', epsilon=0.1, noise=0.1,
+                      hidden_dim=64, critic_hidden_dim=None, name='flocking', device='cpu', epsilon=0.1, noise=0.1,
                       use_ctm_actor=False, ctm_config=None):
         """
         Instantiate instance of this class from multi-agent environment.
         """
         agent_init_params = []
-        dim_input_policy = env.observation_space.shape[0]
-        dim_output_policy = env.action_space.shape[0]
-        dim_input_critic = env.observation_space.shape[0] + env.action_space.shape[0]
+        n_agents = env.num_agents  # total physical agents (e.g. 24)
+        dim_input_policy = env.observation_space.shape[0]    # per-agent obs dim
+        dim_output_policy = env.action_space.shape[0]        # per-agent action dim
+        # Centralised critic sees ALL agents' obs + ALL agents' actions
+        dim_input_critic = n_agents * (dim_input_policy + dim_output_policy)
 
         alg_types = [adversary_alg if atype == 'adversary' else agent_alg for atype in env.agent_types]
         for algtype in alg_types:
@@ -311,8 +337,9 @@ class MADDPG(object):
 
         if name == 'assembly':
             init_dict = {'gamma': gamma, 'tau': tau, 'lr_actor': lr_actor, 'lr_critic': lr_critic,
-                         'epsilon': epsilon, 'noise': noise, 'hidden_dim': hidden_dim, 'device': device,
-                         'alg_types': alg_types, 'agent_init_params': agent_init_params,
+                         'epsilon': epsilon, 'noise': noise, 'hidden_dim': hidden_dim,
+                         'critic_hidden_dim': critic_hidden_dim, 'n_agents': n_agents,
+                         'device': device, 'alg_types': alg_types, 'agent_init_params': agent_init_params,
                          'use_ctm_actor': use_ctm_actor, 'ctm_config': ctm_config}
         instance = cls(**init_dict)
         instance.init_dict = init_dict

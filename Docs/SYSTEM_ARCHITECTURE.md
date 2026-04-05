@@ -123,11 +123,12 @@ JAX Environment (GPU)  →  DLPack zero-copy  →  PyTorch CUDA Tensors (GPU)  �
 **Location**: `MARL-LLM/marl_llm/cfg/assembly_cfg.py`
 
 Key parameters:
-- `n_a`: Number of agents per environment (default: 30)
+- `n_a`: Number of agents per environment (default: 24)
 - `n_rollout_threads`: Parallel environments (default: 1)
-- `buffer_length`: Replay buffer capacity (default: 20000)
+- `buffer_length`: Replay buffer capacity in timesteps (default: 20000)
 - `episode_length`: Steps per episode (default: 200)
-- `hidden_dim`: Network hidden layer size (default: 180)
+- `hidden_dim`: Actor hidden layer size (default: 180)
+- `critic_hidden_dim`: Centralised critic hidden layer size (default: 256 — larger than actor because critic input is `n_agents×(obs_dim+2)`)
 - `lr_actor`, `lr_critic`: Learning rates
 - `results_file`: Preprocessed target shapes (`fig/results.pkl`)
 
