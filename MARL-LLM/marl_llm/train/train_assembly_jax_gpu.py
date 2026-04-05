@@ -481,7 +481,7 @@ def run(cfg):
         total_reg_loss = 0.0
         update_count = 0
 
-        for _ in range(20):
+        for _ in range(10):
             for a_i in range(maddpg.nagents):
                 if len(agent_buffer[a_i]) >= cfg.batch_size:
                     sample = agent_buffer[a_i].sample(

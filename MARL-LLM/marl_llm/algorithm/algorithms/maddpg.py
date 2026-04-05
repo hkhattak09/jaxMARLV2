@@ -188,25 +188,32 @@ class MADDPG(object):
         # torch.nn.utils.clip_grad_norm_(curr_agent.critic.parameters(), 0.5)
         curr_agent.critic_optimizer.step()
 
-        ######################### Update Actor (Option B) #########################
-        # Recompute ALL agents' actions through the shared policy.
-        # obs is (batch, n_agents*obs_dim); reshape to (batch*n_agents, obs_dim),
-        # run through shared policy, reshape back to (batch, n_agents*action_dim).
+        ######################### Update Actor (Option A) #########################
+        # Recompute only agent_i's actions through the shared policy; use stored
+        # buffer actions for all other slots. This is 24× cheaper than Option B
+        # while still being correct: gradient flows only through agent_i's slot,
+        # which is sufficient since all 24 agents share the same policy weights.
         curr_agent.policy_optimizer.zero_grad()
 
         batch_size = obs.shape[0]
         obs_dim = obs.shape[1] // self.n_agents
-        obs_flat = obs.view(batch_size * self.n_agents, obs_dim)
+        action_dim = acs.shape[1] // self.n_agents
+
+        # Extract agent_i's obs slice: (batch, obs_dim)
+        agent_obs = obs[:, agent_i * obs_dim : (agent_i + 1) * obs_dim]
 
         if self.use_ctm_actor:
-            hidden = curr_agent.policy.get_initial_hidden_state(
-                batch_size * self.n_agents, obs.device)
-            curr_pol_out, _ = curr_agent.policy(obs_flat, hidden)
+            hidden = curr_agent.policy.get_initial_hidden_state(batch_size, obs.device)
+            curr_pol_out, _ = curr_agent.policy(agent_obs, hidden)
         else:
-            curr_pol_out = curr_agent.policy(obs_flat)
+            curr_pol_out = curr_agent.policy(agent_obs)  # (batch, action_dim)
 
-        # (batch*n_agents, action_dim) → (batch, n_agents*action_dim)
-        all_pol_acs = curr_pol_out.view(batch_size, self.n_agents * curr_pol_out.shape[1])
+        # Substitute agent_i's slot; use stored actions for all other agents
+        all_pol_acs = torch.cat([
+            acs[:, :agent_i * action_dim].detach(),
+            curr_pol_out,
+            acs[:, (agent_i + 1) * action_dim:].detach(),
+        ], dim=1)  # (batch, n_agents * action_dim)
 
         # Actor loss: maximize Q-value (negative for gradient ascent)
         vf_in = torch.cat((obs, all_pol_acs), dim=1)
