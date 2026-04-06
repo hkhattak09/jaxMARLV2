@@ -81,6 +81,11 @@ class JaxAssemblyAdapterGPU:
 
         self.alpha = alpha
 
+        # Physical geometry pass-throughs
+        self.size_a  = jax_env.size_a
+        self.d_sen   = jax_env.d_sen
+        self.r_avoid = jax_env.r_avoid
+
         self.observation_space = _DummySpace((jax_env.obs_dim, self.num_agents))
         self.action_space = _DummySpace((2, self.num_agents))
 
