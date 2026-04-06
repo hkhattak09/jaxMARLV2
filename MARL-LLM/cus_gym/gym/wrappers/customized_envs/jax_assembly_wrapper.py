@@ -85,6 +85,11 @@ class JaxAssemblyAdapter:
         self.observation_space = _DummySpace((jax_env.obs_dim, self.num_agents))
         self.action_space = _DummySpace((2, self.num_agents))
 
+        # Physical geometry — pass-through from underlying AssemblyEnv
+        self.size_a  = jax_env.size_a
+        self.d_sen   = jax_env.d_sen
+        self.r_avoid = jax_env.r_avoid
+
         # PRNG key (owned by adapter, advanced each call)
         self._key = jax.random.PRNGKey(seed)
         self._states: AssemblyState = None  # set by reset()
@@ -223,6 +228,16 @@ class JaxAssemblyAdapter:
         if self.n_envs == 1:
             return float(self.env.voronoi_based_uniformity(self._states))
         return float(jnp.mean(jax.vmap(self.env.voronoi_based_uniformity)(self._states)))
+
+    def springboard_collision_count(self) -> float:
+        """Number of unique agent pairs in physical body contact this step (averaged over envs).
+
+        Springboard collision = dist < 2 * size_a (0.07). Accumulate per step over an
+        episode to get the total springboard collisions per episode.
+        """
+        if self.n_envs == 1:
+            return float(self.env.springboard_collision_count(self._states))
+        return float(jnp.mean(jax.vmap(self.env.springboard_collision_count)(self._states)))
 
 
 class _DummyAgent:

@@ -286,6 +286,28 @@ class JaxAssemblyAdapterGPU:
             return float(self.env.coverage_efficiency(self._states))
         return float(jnp.mean(jax.vmap(self.env.coverage_efficiency)(self._states)))
 
+    def springboard_collision_count(self) -> float:
+        """Number of unique agent pairs in physical body contact this step (averaged over envs).
+
+        Springboard collision = dist < 2 * size_a (0.07). This is when the k_ball spring
+        repulsion force activates. Returns unique pair count averaged across parallel envs.
+        Accumulate per step over an episode to get the total springboard collisions per episode.
+        """
+        if self.n_envs == 1:
+            return float(self.env.springboard_collision_count(self._states))
+        return float(jnp.mean(jax.vmap(self.env.springboard_collision_count)(self._states)))
+
+    def springboard_collision_count_jax(self):
+        """Same as springboard_collision_count() but returns a raw JAX scalar (no CPU sync).
+
+        Use this during the training rollout loop to accumulate per-step without a device
+        sync on every step. Sync once at episode end with float().
+        Dividing by n_envs gives a per-env figure.
+        """
+        if self.n_envs == 1:
+            return self.env.springboard_collision_count(self._states)
+        return jnp.sum(jax.vmap(self.env.springboard_collision_count)(self._states))
+
     def collision_count_jax(self):
         """JAX scalar: total agents in collision across all envs this step.
 

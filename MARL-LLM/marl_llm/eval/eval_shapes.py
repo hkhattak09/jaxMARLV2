@@ -66,6 +66,7 @@ def _build_comparison_table(model_summaries):
         ("Voronoi Uniformity", "overall_voronoi_uniformity", ".3f"),
         ("Neighbor Dist", "overall_neighbor_dist", ".4f"),
         ("Collision Rate", "overall_collision_rate", ".4f"),
+        ("Spring Collisions", "overall_spring_collisions", ".1f"),
     ]
 
     rows = []
@@ -134,6 +135,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
         shape_voronoi_uniformities = []
         shape_neighbor_dists = []
         shape_collision_rates = []
+        shape_spring_collisions = []
 
         for ep_idx in range(EPISODES_PER_SHAPE):
             is_last_episode = (ep_idx == EPISODES_PER_SHAPE - 1)
@@ -142,6 +144,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
             # Reset with specific shape (no augmentation)
             obs = env.reset_eval(shape_idx)
             ep_reward = 0.0
+            ep_spring_collisions = 0.0
 
             with torch.no_grad():
                 for step in range(cfg.episode_length):
@@ -156,6 +159,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
 
                     # Accumulate reward (rewards is (1, n_a) GPU tensor)
                     ep_reward += rewards.mean().item()
+                    ep_spring_collisions += env.springboard_collision_count()
 
                     # Collect state for GIF (last episode only)
                     if is_last_episode:
@@ -175,11 +179,13 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
             shape_voronoi_uniformities.append(voronoi_uniformity)
             shape_neighbor_dists.append(neighbor_dist)
             shape_collision_rates.append(collision_rate)
+            shape_spring_collisions.append(ep_spring_collisions)
 
             print(f"  Episode {ep_idx + 1}/{EPISODES_PER_SHAPE}: "
                   f"Reward={avg_reward:.4f}, Coverage={coverage:.3f}, "
                   f"Dist Uniformity={dist_uniformity:.3f}, Voronoi={voronoi_uniformity:.3f}, "
-                  f"Neighbor Dist={neighbor_dist:.4f}, Collision Rate={collision_rate:.4f}")
+                  f"Neighbor Dist={neighbor_dist:.4f}, Collision Rate={collision_rate:.4f}, "
+                  f"Spring Collisions={ep_spring_collisions:.0f}")
 
             # Save GIF for last episode
             if is_last_episode:
@@ -194,6 +200,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
         mean_voronoi = np.mean(shape_voronoi_uniformities)
         mean_neighbor_dist = np.mean(shape_neighbor_dists)
         mean_collision_rate = np.mean(shape_collision_rates)
+        mean_spring_collisions = np.mean(shape_spring_collisions)
 
         shape_result = {
             'shape_index': shape_idx,
@@ -203,22 +210,25 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
             'mean_voronoi_uniformity': mean_voronoi,
             'mean_neighbor_dist': mean_neighbor_dist,
             'mean_collision_rate': mean_collision_rate,
+            'mean_spring_collisions': mean_spring_collisions,
             'all_rewards': shape_rewards,
             'all_coverages': shape_coverages,
             'all_dist_uniformities': shape_dist_uniformities,
             'all_voronoi_uniformities': shape_voronoi_uniformities,
             'all_neighbor_dists': shape_neighbor_dists,
             'all_collision_rates': shape_collision_rates,
+            'all_spring_collisions': shape_spring_collisions,
         }
         all_results.append(shape_result)
 
         print(f"\n  --- Shape {shape_idx} Average (over {EPISODES_PER_SHAPE} episodes) ---")
-        print(f"  Reward:            {mean_reward:.4f}")
-        print(f"  Coverage:          {mean_coverage:.3f}")
-        print(f"  Dist Uniformity:   {mean_dist_uniformity:.3f}")
-        print(f"  Voronoi:           {mean_voronoi:.3f}")
-        print(f"  Neighbor Dist:     {mean_neighbor_dist:.4f}")
-        print(f"  Collision Rate:    {mean_collision_rate:.4f}")
+        print(f"  Reward:              {mean_reward:.4f}")
+        print(f"  Coverage:            {mean_coverage:.3f}")
+        print(f"  Dist Uniformity:     {mean_dist_uniformity:.3f}")
+        print(f"  Voronoi:             {mean_voronoi:.3f}")
+        print(f"  Neighbor Dist:       {mean_neighbor_dist:.4f}")
+        print(f"  Collision Rate:      {mean_collision_rate:.4f}")
+        print(f"  Spring Collisions:   {mean_spring_collisions:.1f}")
     
     # Print overall summary
     print("\n" + "="*100)
@@ -231,6 +241,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
     overall_voronoi = [r['mean_voronoi_uniformity'] for r in all_results]
     overall_neighbor_dists = [r['mean_neighbor_dist'] for r in all_results]
     overall_collision_rates = [r['mean_collision_rate'] for r in all_results]
+    overall_spring_collisions = [r['mean_spring_collisions'] for r in all_results]
 
     print(f"\n--- Overall Average (across {num_shapes} shapes) ---")
     overall_reward = float(np.mean(overall_rewards))
@@ -239,18 +250,20 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
     overall_voronoi_uniformity = float(np.mean(overall_voronoi))
     overall_neighbor_dist = float(np.mean(overall_neighbor_dists))
     overall_collision_rate = float(np.mean(overall_collision_rates))
+    overall_spring_collision = float(np.mean(overall_spring_collisions))
 
-    print(f"  Reward:            {overall_reward:.4f}")
-    print(f"  Coverage:          {overall_coverage:.3f}")
-    print(f"  Dist Uniformity:   {overall_dist_uniformity:.3f}")
-    print(f"  Voronoi:           {overall_voronoi_uniformity:.3f}")
-    print(f"  Neighbor Dist:     {overall_neighbor_dist:.4f}")
-    print(f"  Collision Rate:    {overall_collision_rate:.4f}")
-    
+    print(f"  Reward:              {overall_reward:.4f}")
+    print(f"  Coverage:            {overall_coverage:.3f}")
+    print(f"  Dist Uniformity:     {overall_dist_uniformity:.3f}")
+    print(f"  Voronoi:             {overall_voronoi_uniformity:.3f}")
+    print(f"  Neighbor Dist:       {overall_neighbor_dist:.4f}")
+    print(f"  Collision Rate:      {overall_collision_rate:.4f}")
+    print(f"  Spring Collisions:   {overall_spring_collision:.1f}")
+
     print(f"\nGIFs saved to: {model_output_dir.resolve()}/")
     for shape_idx in range(num_shapes):
         print(f"  - shape_{shape_idx:02d}.gif")
-    
+
     # Save results to file
     import pickle
     results_path = model_output_dir / "eval_results.pkl"
@@ -267,6 +280,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
             'overall_voronoi_uniformity': overall_voronoi_uniformity,
             'overall_neighbor_dist': overall_neighbor_dist,
             'overall_collision_rate': overall_collision_rate,
+            'overall_spring_collisions': overall_spring_collision,
             'results': all_results,
         }, f)
     print(f"\nResults saved to: {results_path}")
@@ -280,6 +294,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
         'overall_voronoi_uniformity': overall_voronoi_uniformity,
         'overall_neighbor_dist': overall_neighbor_dist,
         'overall_collision_rate': overall_collision_rate,
+        'overall_spring_collisions': overall_spring_collision,
         'results_path': str(results_path),
     }
 

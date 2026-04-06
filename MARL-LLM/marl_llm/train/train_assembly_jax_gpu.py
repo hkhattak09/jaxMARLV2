@@ -89,11 +89,13 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
             shape_neighbor_dist = 0.0
             shape_collision_rate = 0.0
             shape_coverage_efficiency = 0.0
+            shape_spring_collisions = 0.0
 
             for ep_i in range(episodes_per_shape):
                 # Reset with specific shape, no rotation/offset
                 obs_gpu = env.reset_eval(shape_idx)
                 ep_reward = 0.0
+                ep_spring_collisions = 0.0
                 is_last_ep = (ep_i == episodes_per_shape - 1)
                 state_history = [] if is_last_ep else None
 
@@ -105,6 +107,7 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
                     agent_actions_gpu = torch.column_stack(torch_agent_actions)
                     obs_gpu, rewards_gpu, _, _, _ = env.step(agent_actions_gpu.t().detach())
                     ep_reward += rewards_gpu.cpu().mean().item()
+                    ep_spring_collisions += env.springboard_collision_count()
 
                     if is_last_ep:
                         state_history.append(env._states)
@@ -116,6 +119,7 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
                 shape_neighbor_dist      += env.mean_neighbor_distance()
                 shape_collision_rate     += env.collision_rate()
                 shape_coverage_efficiency += env.coverage_efficiency()
+                shape_spring_collisions  += ep_spring_collisions
 
                 # Save GIF of last episode for this shape
                 if is_last_ep:
@@ -131,6 +135,7 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
             mean_neighbor_dist        = shape_neighbor_dist       / episodes_per_shape
             mean_collision_rate       = shape_collision_rate      / episodes_per_shape
             mean_coverage_efficiency  = shape_coverage_efficiency / episodes_per_shape
+            mean_spring_collisions    = shape_spring_collisions   / episodes_per_shape
 
             all_results.append({
                 'shape':               shape_idx,
@@ -141,12 +146,14 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
                 'neighbor_dist':       mean_neighbor_dist,
                 'collision_rate':      mean_collision_rate,
                 'coverage_efficiency': mean_coverage_efficiency,
+                'spring_collisions':   mean_spring_collisions,
             })
 
             print(f"Shape {shape_idx}: reward={mean_reward:.4f} | coverage={mean_coverage:.4f} | "
                   f"uniformity={mean_uniformity:.4f} | voronoi={mean_voronoi:.4f} | "
                   f"neighbor_dist={mean_neighbor_dist:.4f} | collision_rate={mean_collision_rate:.4f} | "
-                  f"cov_efficiency={mean_coverage_efficiency:.4f}")
+                  f"cov_efficiency={mean_coverage_efficiency:.4f} | "
+                  f"spring_collisions={mean_spring_collisions:.1f}")
 
             # Log to TensorBoard
             logger.add_scalars(
@@ -159,6 +166,7 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
                     "neighbor_dist":       mean_neighbor_dist,
                     "collision_rate":      mean_collision_rate,
                     "coverage_efficiency": mean_coverage_efficiency,
+                    "spring_collisions":   mean_spring_collisions,
                 },
                 0,
             )
@@ -173,10 +181,12 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
     avg_neighbor_dist       = np.mean([r['neighbor_dist']       for r in all_results])
     avg_collision_rate      = np.mean([r['collision_rate']      for r in all_results])
     avg_coverage_efficiency = np.mean([r['coverage_efficiency'] for r in all_results])
+    avg_spring_collisions   = np.mean([r['spring_collisions']   for r in all_results])
     print(f"  Reward: {avg_reward:.4f} | Coverage: {avg_coverage:.4f} | "
           f"Uniformity: {avg_uniformity:.4f} | Voronoi: {avg_voronoi:.4f}")
     print(f"  Neighbor Dist: {avg_neighbor_dist:.4f} | Collision Rate: {avg_collision_rate:.4f} | "
-          f"Cov Efficiency: {avg_coverage_efficiency:.4f}")
+          f"Cov Efficiency: {avg_coverage_efficiency:.4f} | "
+          f"Spring Collisions: {avg_spring_collisions:.1f}")
     print("="*80 + "\n")
 
     # Log overall averages
@@ -190,6 +200,7 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
             "neighbor_dist":       avg_neighbor_dist,
             "collision_rate":      avg_collision_rate,
             "coverage_efficiency": avg_coverage_efficiency,
+            "spring_collisions":   avg_spring_collisions,
         },
         0,
     )
@@ -217,11 +228,13 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
     total_neighbor_dist = 0.0
     total_collision_rate = 0.0
     total_coverage_efficiency = 0.0
+    total_spring_collisions = 0.0
 
     with torch.no_grad():
         for ep_i in range(cfg.eval_episodes):
             obs_gpu = env.reset()
             ep_reward = 0.0
+            ep_spring_collisions = 0.0
             is_last_ep = (ep_i == cfg.eval_episodes - 1)
             state_history = [] if is_last_ep else None
 
@@ -234,6 +247,7 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
                 # Transpose for env, detach for DLPack
                 obs_gpu, rewards_gpu, _, _, _ = env.step(agent_actions_gpu.t().detach())
                 ep_reward += rewards_gpu.cpu().mean().item()
+                ep_spring_collisions += env.springboard_collision_count()
 
                 # Collect state snapshot on GPU — no transfer yet
                 if is_last_ep:
@@ -245,6 +259,7 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
             total_neighbor_dist      += env.mean_neighbor_distance()
             total_collision_rate     += env.collision_rate()
             total_coverage_efficiency += env.coverage_efficiency()
+            total_spring_collisions  += ep_spring_collisions
 
             # Bulk GPU→CPU transfer + GIF rendering after the episode is done
             if is_last_ep:
@@ -258,12 +273,14 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
     mean_neighbor_dist       = total_neighbor_dist       / cfg.eval_episodes
     mean_collision_rate      = total_collision_rate      / cfg.eval_episodes
     mean_coverage_efficiency = total_coverage_efficiency / cfg.eval_episodes
+    mean_spring_collisions   = total_spring_collisions   / cfg.eval_episodes
 
     print(
         f"[EVAL] ep {ep_index} | reward: {mean_reward:.4f} | "
         f"coverage: {mean_coverage:.4f} | uniformity: {mean_uniformity:.4f} | "
         f"neighbor_dist: {mean_neighbor_dist:.4f} | collision_rate: {mean_collision_rate:.4f} | "
-        f"cov_efficiency: {mean_coverage_efficiency:.4f}"
+        f"cov_efficiency: {mean_coverage_efficiency:.4f} | "
+        f"spring_collisions: {mean_spring_collisions:.1f}"
     )
     logger.add_scalars(
         "eval",
@@ -274,6 +291,7 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
             "neighbor_dist":       mean_neighbor_dist,
             "collision_rate":      mean_collision_rate,
             "coverage_efficiency": mean_coverage_efficiency,
+            "spring_collisions":   mean_spring_collisions,
         },
         ep_index,
     )
@@ -374,6 +392,7 @@ def run(cfg):
         "uniformity": [],
         "voronoi": [],
         "collisions": [],
+        "spring_collisions": [],
         "reward_mean": [],
         "reward_std": [],
         "reward_uniformity": [],
@@ -408,8 +427,9 @@ def run(cfg):
         next_obs_list = []
         dones_list = []
         prior_list = []
-        # Collision accumulator: stays as JAX array to avoid per-step device sync
+        # Collision accumulators: stay as JAX arrays to avoid per-step device sync
         collision_sum = jnp.zeros(())
+        spring_collision_sum = jnp.zeros(())
 
         start_time_1 = time.time()
         policy_time = 0.0
@@ -444,6 +464,7 @@ def run(cfg):
             dones_list.append(dones_gpu)
             prior_list.append(agent_actions_prior_gpu)
             collision_sum = collision_sum + env.collision_count_jax()
+            spring_collision_sum = spring_collision_sum + env.springboard_collision_count_jax()
             
             obs_gpu = next_obs_gpu  # Stay on GPU for next step
 
@@ -455,8 +476,9 @@ def run(cfg):
         next_obs_batch = torch.stack(next_obs_list).cpu().numpy() # (T, obs_dim, N*n_a)
         dones_batch = torch.stack(dones_list).cpu().numpy()       # (T, N*n_a)
         prior_batch = torch.stack(prior_list).cpu().numpy()       # (T, 2, N*n_a)
-        # Sync collision sum here alongside bulk transfer (one device sync total)
+        # Sync collision sums here alongside bulk transfer (one device sync total)
         episode_collisions = float(collision_sum) / cfg.n_rollout_threads
+        episode_spring_collisions = float(spring_collision_sum) / cfg.n_rollout_threads
         transfer_time = time.time() - t0
 
         # Push all transitions to buffer
@@ -525,6 +547,7 @@ def run(cfg):
         metric_history["uniformity"].append(uniformity)
         metric_history["voronoi"].append(voronoi_uniformity)
         metric_history["collisions"].append(episode_collisions)
+        metric_history["spring_collisions"].append(episode_spring_collisions)
         metric_history["reward_mean"].append(avg_reward)
         metric_history["reward_std"].append(episode_reward_std_bar)
         metric_history["reward_uniformity"].append(reward_uniformity)
@@ -546,6 +569,7 @@ def run(cfg):
             uni_mean, uni_std = np.mean(metric_history["uniformity"]), np.std(metric_history["uniformity"])
             vor_mean, vor_std = np.mean(metric_history["voronoi"]), np.std(metric_history["voronoi"])
             avg_collisions_10 = np.mean(metric_history["collisions"])
+            avg_spring_collisions_10 = np.mean(metric_history["spring_collisions"])
 
             # Compute 10-episode averages for rewards, losses, and timing
             avg_reward_10 = np.mean(metric_history["reward_mean"])
@@ -566,7 +590,7 @@ def run(cfg):
             print(f"REWARDS (last 10 eps):  Mean: {avg_reward_10:7.4f} | Std: {avg_reward_std_10:7.4f} | Uniformity: {avg_reward_uniformity_10:6.3f}")
             print(f"ENVIRONMENT METRICS (last 10 eps):")
             print(f"  - Coverage: {cov_mean:.3f}(std:{cov_std:.3f}) | Dist Uniformity: {uni_mean:.3f}(std:{uni_std:.3f}) | Voronoi Uniformity: {vor_mean:.3f}(std:{vor_std:.3f})")
-            print(f"  - Collisions (agent-steps/ep/env): {avg_collisions_10:.1f}")
+            print(f"  - Collisions (agent-steps/ep/env): {avg_collisions_10:.1f} | Spring Collisions (pairs/ep/env): {avg_spring_collisions_10:.1f}")
             print(f"LOSSES (last 10 eps):   VF: {avg_vf_loss_10:7.4f} | Policy: {avg_pol_loss_10:7.4f} | Reg: {avg_reg_loss_10:7.4f}")
             print(f"TIMING (last 10 eps):   Rollout: {avg_rollout_time_10:6.2f} | Policy Exec: {avg_policy_time_10:6.2f} | Env Step: {avg_env_time_10:6.2f} | Training: {avg_training_time_10:6.2f}")
             print(f"{sep}\n")

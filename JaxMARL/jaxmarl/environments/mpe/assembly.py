@@ -977,6 +977,23 @@ class AssemblyEnv(MultiAgentEnv):
         return jnp.mean(in_collision.astype(jnp.float32))
 
     @partial(jax.jit, static_argnums=[0])
+    def springboard_collision_count(self, state: AssemblyState) -> chex.Array:
+        """Count unique agent pairs currently in physical body contact (spring force active).
+
+        A springboard collision occurs when two agents overlap: dist < 2 * size_a (= 0.07).
+        This is the threshold at which k_ball spring repulsion kicks in (_ball_to_ball_force).
+        Counts unique pairs (i < j), so a two-agent collision = 1, three mutually-overlapping
+        agents = 3 pairs. Accumulate per step over an episode for a running total.
+        """
+        dists = jnp.linalg.norm(
+            state.p_pos[:, None, :] - state.p_pos[None, :, :], axis=-1
+        )  # [n_a, n_a]
+        # Upper-triangle mask: counts each pair (i,j) with i < j exactly once
+        upper = jnp.triu(jnp.ones((self.n_a, self.n_a), dtype=bool), k=1)
+        is_spring = (dists < 2.0 * self.size_a) & upper
+        return jnp.sum(is_spring.astype(jnp.float32))
+
+    @partial(jax.jit, static_argnums=[0])
     def coverage_efficiency(self, state: AssemblyState) -> chex.Array:
         """Cells covered per agent — measures whether agents are stacking.
 
