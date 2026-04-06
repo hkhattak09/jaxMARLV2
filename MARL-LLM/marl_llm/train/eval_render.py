@@ -62,11 +62,25 @@ def render_frame(p_pos_np, grid_center_np, valid_mask_np, l_cell, step,
 
     # Valid grid cells — grid_center_np is [2, n_g], valid_mask_np is [n_g]
     valid_cells = grid_center_np[:, valid_mask_np].T  # [n_valid, 2]
-    for cx, cy in valid_cells:
-        ax.add_patch(mpatches.Rectangle(
-            (cx - l_cell / 2, cy - l_cell / 2), l_cell, l_cell,
-            linewidth=0, facecolor='#4caf50', alpha=0.4,
-        ))
+
+    # Determine which valid cells are sensed by at least one agent (within d_sen)
+    # p_pos_np: [n_a, 2], valid_cells: [n_valid, 2]
+    diffs = valid_cells[None, :, :] - p_pos_np[:, None, :]   # [n_a, n_valid, 2]
+    dists = np.linalg.norm(diffs, axis=-1)                    # [n_a, n_valid]
+    sensed_mask = np.any(dists < d_sen, axis=0)               # [n_valid]
+
+    for k, (cx, cy) in enumerate(valid_cells):
+        if sensed_mask[k]:
+            # Sensed cell — warm orange tint so it stands out from the shape
+            ax.add_patch(mpatches.Rectangle(
+                (cx - l_cell / 2, cy - l_cell / 2), l_cell, l_cell,
+                linewidth=0, facecolor='#ff9800', alpha=0.55,
+            ))
+        else:
+            ax.add_patch(mpatches.Rectangle(
+                (cx - l_cell / 2, cy - l_cell / 2), l_cell, l_cell,
+                linewidth=0, facecolor='#4caf50', alpha=0.4,
+            ))
 
     # Agents: sensing ring, avoidance ring, body
     for x, y in p_pos_np:
