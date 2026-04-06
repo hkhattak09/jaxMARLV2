@@ -214,7 +214,7 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
 
     total_reward = 0.0
     total_coverage = 0.0
-    total_uniformity = 0.0
+    total_voronoi = 0.0
     total_neighbor_dist = 0.0
     total_r_avoid_violations = 0.0
     total_spring_collisions = 0.0
@@ -244,7 +244,7 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
 
             total_reward               += ep_reward / cfg.episode_length
             total_coverage             += env.sensing_coverage()
-            total_uniformity           += env.distribution_uniformity()
+            total_voronoi              += env.voronoi_based_uniformity()
             total_neighbor_dist        += env.mean_neighbor_distance()
             total_r_avoid_violations   += env.r_avoid_violation_count()
             total_spring_collisions    += ep_spring_collisions
@@ -257,14 +257,14 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
 
     mean_reward              = total_reward              / cfg.eval_episodes
     mean_coverage            = total_coverage            / cfg.eval_episodes
-    mean_uniformity          = total_uniformity          / cfg.eval_episodes
+    mean_voronoi             = total_voronoi              / cfg.eval_episodes
     mean_neighbor_dist       = total_neighbor_dist       / cfg.eval_episodes
     mean_r_avoid_violations  = total_r_avoid_violations  / cfg.eval_episodes
     mean_spring_collisions   = total_spring_collisions   / cfg.eval_episodes
 
     print(
         f"[EVAL] ep {ep_index} | reward: {mean_reward:.4f} | "
-        f"sensing_coverage: {mean_coverage:.4f} | uniformity: {mean_uniformity:.4f} | "
+        f"sensing_coverage: {mean_coverage:.4f} | voronoi_uniformity: {mean_voronoi:.4f} | "
         f"neighbor_dist: {mean_neighbor_dist:.4f} | r_avoid_violations: {mean_r_avoid_violations:.1f} | "
         f"spring_collisions: {mean_spring_collisions:.1f}"
     )
@@ -273,7 +273,7 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
         {
             "reward":               mean_reward,
             "sensing_coverage":     mean_coverage,
-            "uniformity":           mean_uniformity,
+            "voronoi_uniformity":   mean_voronoi,
             "neighbor_dist":        mean_neighbor_dist,
             "r_avoid_violations":   mean_r_avoid_violations,
             "spring_collisions":    mean_spring_collisions,
