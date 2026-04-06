@@ -61,11 +61,11 @@ def _build_comparison_table(model_summaries):
     headers = ["Metric"] + [summary["model_name"] for summary in model_summaries]
     metric_rows = [
         ("Reward", "overall_reward", ".4f"),
-        ("Coverage", "overall_coverage", ".3f"),
+        ("Sensing Coverage", "overall_coverage", ".3f"),
         ("Dist Uniformity", "overall_dist_uniformity", ".3f"),
         ("Voronoi Uniformity", "overall_voronoi_uniformity", ".3f"),
         ("Neighbor Dist", "overall_neighbor_dist", ".4f"),
-        ("Collision Rate", "overall_collision_rate", ".4f"),
+        ("R-Avoid Violations", "overall_r_avoid_violations", ".1f"),
         ("Spring Collisions", "overall_spring_collisions", ".1f"),
     ]
 
@@ -134,7 +134,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
         shape_dist_uniformities = []
         shape_voronoi_uniformities = []
         shape_neighbor_dists = []
-        shape_collision_rates = []
+        shape_r_avoid_violations = []
         shape_spring_collisions = []
 
         for ep_idx in range(EPISODES_PER_SHAPE):
@@ -167,24 +167,24 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
 
             # Record metrics
             avg_reward = ep_reward / cfg.episode_length
-            coverage = env.coverage_rate()
+            coverage = env.sensing_coverage()
             dist_uniformity = env.distribution_uniformity()
             voronoi_uniformity = env.voronoi_based_uniformity()
             neighbor_dist = env.mean_neighbor_distance()
-            collision_rate = env.collision_rate()
+            r_avoid_violations = env.r_avoid_violation_count()
 
             shape_rewards.append(avg_reward)
             shape_coverages.append(coverage)
             shape_dist_uniformities.append(dist_uniformity)
             shape_voronoi_uniformities.append(voronoi_uniformity)
             shape_neighbor_dists.append(neighbor_dist)
-            shape_collision_rates.append(collision_rate)
+            shape_r_avoid_violations.append(r_avoid_violations)
             shape_spring_collisions.append(ep_spring_collisions)
 
             print(f"  Episode {ep_idx + 1}/{EPISODES_PER_SHAPE}: "
                   f"Reward={avg_reward:.4f}, Coverage={coverage:.3f}, "
                   f"Dist Uniformity={dist_uniformity:.3f}, Voronoi={voronoi_uniformity:.3f}, "
-                  f"Neighbor Dist={neighbor_dist:.4f}, Collision Rate={collision_rate:.4f}, "
+                  f"Neighbor Dist={neighbor_dist:.4f}, R-Avoid Violations={r_avoid_violations:.0f}, "
                   f"Spring Collisions={ep_spring_collisions:.0f}")
 
             # Save GIF for last episode
@@ -199,7 +199,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
         mean_dist_uniformity = np.mean(shape_dist_uniformities)
         mean_voronoi = np.mean(shape_voronoi_uniformities)
         mean_neighbor_dist = np.mean(shape_neighbor_dists)
-        mean_collision_rate = np.mean(shape_collision_rates)
+        mean_r_avoid_violations = np.mean(shape_r_avoid_violations)
         mean_spring_collisions = np.mean(shape_spring_collisions)
 
         shape_result = {
@@ -209,14 +209,14 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
             'mean_dist_uniformity': mean_dist_uniformity,
             'mean_voronoi_uniformity': mean_voronoi,
             'mean_neighbor_dist': mean_neighbor_dist,
-            'mean_collision_rate': mean_collision_rate,
+            'mean_r_avoid_violations': mean_r_avoid_violations,
             'mean_spring_collisions': mean_spring_collisions,
             'all_rewards': shape_rewards,
             'all_coverages': shape_coverages,
             'all_dist_uniformities': shape_dist_uniformities,
             'all_voronoi_uniformities': shape_voronoi_uniformities,
             'all_neighbor_dists': shape_neighbor_dists,
-            'all_collision_rates': shape_collision_rates,
+            'all_r_avoid_violations': shape_r_avoid_violations,
             'all_spring_collisions': shape_spring_collisions,
         }
         all_results.append(shape_result)
@@ -227,7 +227,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
         print(f"  Dist Uniformity:     {mean_dist_uniformity:.3f}")
         print(f"  Voronoi:             {mean_voronoi:.3f}")
         print(f"  Neighbor Dist:       {mean_neighbor_dist:.4f}")
-        print(f"  Collision Rate:      {mean_collision_rate:.4f}")
+        print(f"  R-Avoid Violations:  {mean_r_avoid_violations:.1f}")
         print(f"  Spring Collisions:   {mean_spring_collisions:.1f}")
     
     # Print overall summary
@@ -240,7 +240,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
     overall_dist_uniformities = [r['mean_dist_uniformity'] for r in all_results]
     overall_voronoi = [r['mean_voronoi_uniformity'] for r in all_results]
     overall_neighbor_dists = [r['mean_neighbor_dist'] for r in all_results]
-    overall_collision_rates = [r['mean_collision_rate'] for r in all_results]
+    overall_r_avoid_violations = [r['mean_r_avoid_violations'] for r in all_results]
     overall_spring_collisions = [r['mean_spring_collisions'] for r in all_results]
 
     print(f"\n--- Overall Average (across {num_shapes} shapes) ---")
@@ -249,7 +249,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
     overall_dist_uniformity = float(np.mean(overall_dist_uniformities))
     overall_voronoi_uniformity = float(np.mean(overall_voronoi))
     overall_neighbor_dist = float(np.mean(overall_neighbor_dists))
-    overall_collision_rate = float(np.mean(overall_collision_rates))
+    overall_r_avoid_violations = float(np.mean(overall_r_avoid_violations))
     overall_spring_collision = float(np.mean(overall_spring_collisions))
 
     print(f"  Reward:              {overall_reward:.4f}")
@@ -257,7 +257,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
     print(f"  Dist Uniformity:     {overall_dist_uniformity:.3f}")
     print(f"  Voronoi:             {overall_voronoi_uniformity:.3f}")
     print(f"  Neighbor Dist:       {overall_neighbor_dist:.4f}")
-    print(f"  Collision Rate:      {overall_collision_rate:.4f}")
+    print(f"  R-Avoid Violations:  {overall_r_avoid_violations:.1f}")
     print(f"  Spring Collisions:   {overall_spring_collision:.1f}")
 
     print(f"\nGIFs saved to: {model_output_dir.resolve()}/")
@@ -279,7 +279,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
             'overall_dist_uniformity': overall_dist_uniformity,
             'overall_voronoi_uniformity': overall_voronoi_uniformity,
             'overall_neighbor_dist': overall_neighbor_dist,
-            'overall_collision_rate': overall_collision_rate,
+            'overall_r_avoid_violations': overall_r_avoid_violations,
             'overall_spring_collisions': overall_spring_collision,
             'results': all_results,
         }, f)
@@ -293,7 +293,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
         'overall_dist_uniformity': overall_dist_uniformity,
         'overall_voronoi_uniformity': overall_voronoi_uniformity,
         'overall_neighbor_dist': overall_neighbor_dist,
-        'overall_collision_rate': overall_collision_rate,
+        'overall_r_avoid_violations': overall_r_avoid_violations,
         'overall_spring_collisions': overall_spring_collision,
         'results_path': str(results_path),
     }
@@ -327,6 +327,8 @@ def run_eval():
         n_a=cfg.n_a,
         topo_nei_max=cfg.topo_nei_max,
         grid_obs_fraction=cfg.grid_obs_fraction,
+        d_sen=cfg.d_sen,
+        r_avoid=cfg.r_avoid,
     )
     env = JaxAssemblyAdapterGPU(
         jax_env,

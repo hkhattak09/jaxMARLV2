@@ -29,19 +29,26 @@ Simulates multi-agent swarm physics with:
 AssemblyEnv(
     results_file: str,           # Path to fig/results.pkl
     n_a: int = 30,               # Number of agents
-    topo_nei_max: int = 6,       # Max neighbors in observation
-    num_obs_grid_max: int = 80,  # Max target cells in observation
-    dt: float = 0.1,             # Physics timestep
+    topo_nei_max: int = 6,       # Max neighbors in observation (K)
+    num_obs_grid_max: int = 80,  # Max target cells in observation (M)
+    grid_obs_fraction: float = None,  # Alternative to num_obs_grid_max: fraction of shape cells visible
+    dt: float = 0.1,             # Physics timestep (4 substeps at dt/4=0.025 internally)
     vel_max: float = 0.8,        # Max agent velocity
-    k_ball: float = 30.0,        # Agent-agent repulsion stiffness
+    k_ball: float = 2000.0,      # Agent-agent repulsion stiffness (was 30 — increased to prevent tunneling)
     k_wall: float = 100.0,       # Wall repulsion stiffness
     c_wall: float = 5.0,         # Wall damping coefficient
-    size_a: float = 0.035,       # Agent radius
-    d_sen: float = 0.4,          # Neighbor sensing range
+    size_a: float = 0.035,       # Agent body radius. Physical contact: dist < 2*size_a = 0.07
+    d_sen: float = 0.4,          # Sensing radius (CLI: --d_sen). Controls observability AND sensing_coverage metric.
+    r_avoid: float = 0.10,       # Personal space radius (CLI: --r_avoid). Spacing violation: dist < 2*r_avoid = 0.20
     boundary_half: float = 2.4,  # Half-width of square boundary
     max_steps: int = 200,        # Episode length
 )
 ```
+
+**Key parameter changes vs original:**
+- `k_ball`: `30.0` → `2000.0` — prevents agent tunneling. With k=30 agents at vel_max=0.8 could pass through each other in a single dt=0.1 step. Now runs 4 substeps at dt_sub=0.025.
+- `r_avoid`: previously computed dynamically per shape (`sqrt(4*n_g/(n_a*π)) * l_cell` → gave 0.29 on small shapes, geometrically infeasible). Now a fixed constructor arg defaulting to 0.10, exposed via `--r_avoid` CLI flag.
+- `d_sen`: previously hardcoded; now exposed as `--d_sen` CLI flag.
 
 **Key Attributes**:
 - `obs_dim`: Observation dimension = `4*(topo_nei_max+1) + 4 + 2*num_obs_grid_max`
@@ -233,47 +240,70 @@ F_damping = -c_wall * velocity_component_toward_wall
 
 ### Reward Function
 
-**Location**: `_rewards_fast(state, cached)`
+**Location**: `_rewards_vectorized(state, cached)` (vectorised) + `_reward_single(i, state)` (reference)
 
-**Components** (per agent):
-
-1. **Assembly reward** (r_assem):
-   - If agent inside a grid cell: `+1.0`
-   - Else: `0.0`
-   - Uses `in_flag` from cached distances (threshold = √2 * l_cell / 2)
-
-2. **Avoidance penalty** (penalize_interaction):
-   - If distance to any neighbor < `r_avoid`: `-0.2`
-   - Encourages spacing within grid cells
-   - `r_avoid` computed from min shape size
-
-3. **Entering penalty** (penalize_entering):
-   - If agent moves from outside → inside occupied cell: `-0.3`
-   - Discourages pushing into already-filled cells
-   - Tracked via `in_flag` comparison with previous state
-
-4. **Exploration bonus** (penalize_exploration):
-   - Small negative reward for being far from target: `-0.05 * normalized_distance`
-   - Encourages agents to approach target region early
-
-**Total reward**: Sum of components, clipped to reasonable range
-
-**Example**:
+**Previous reward (replaced):**
 ```python
-# Agent inside cell, no neighbors nearby, not entering occupied cell
-reward = 1.0 + 0.0 - 0.0 - 0.01 = 0.99
+# Old: binary AND of three conditions, r_avoid dynamically set (0.29 on small shapes)
+# is_collision = dist < r_avoid  (wrong threshold — treated radius as diameter)
+# reward = where(in_flag & ~is_collision & is_uniform, 1.0, 0.0)
+# Problem: r_avoid=0.29 fired constantly (shape too small for 24 agents at that spacing)
+# → reward near-zero the entire training run, no learning signal
 ```
+
+**Current reward structure:**
+```python
+# Variable definitions:
+too_close   = any neighbor dist < 2 * r_avoid (= 0.20)  # spacing policy
+is_touching = any agent dist < 2 * size_a (= 0.07)       # physical body contact
+n_touching  = count of physically touching neighbors for agent i
+
+# is_uniform fix (saturated case):
+# Old: is_uniform = in_flag & any_sensed & (v_exp_norm < 0.05)  ← wrong: penalised agents in full regions
+# New:
+is_uniform = jnp.where(any_sensed, v_exp_norm < 0.05, True)
+# If unoccupied cells visible: must be centred among them
+# If none visible (saturated region): already doing job correctly → uniform=True
+
+# Reward:
+reward_i = 0.1  × in_flag                              # stepping stone: always positive inside shape
+         + 0.9  × (in_flag & ~too_close & is_uniform)  # full reward: inside, spaced, centred
+         - 0.07 × n_touching_i                         # physical contact penalty
+```
+
+**Stepping stone table:**
+| Situation | Reward |
+|---|---|
+| Outside shape | 0.0 |
+| Inside, physically touching 1 neighbour | 0.1 − 0.07 = **0.03** |
+| Inside, conditions not fully met | **0.1** |
+| Inside, all conditions met | **1.0** |
+| Inside, all met + touching 1 | 1.0 − 0.07 = **0.93** |
+
+**Key design rationale:**
+- Stepping stone (`+0.1` for `in_flag`) creates gradient at boundary from episode 1 — agents always prefer inside
+- `~too_close` (dist < 2×r_avoid) handles spacing policy. `is_touching` (dist < 2×size_a) handles physical contact — two distinct signals with separate weights
+- `is_uniform` saturated fix: agents holding a fully-covered patch no longer penalised for "not finding uncovered cells nearby"
+- Reynolds flocking prior in actor update reinforces entry further (cohesion pulls outliers toward shape)
 
 ### Prior Actions (Reynolds Flocking)
 
-**Location**: `_robot_policy_fast(state, cached)`
+**Location**: `_robot_policy_fast(state, cached)` (vectorised) + `_robot_policy_single(i, state)` (reference)
 
-**Purpose**: Provide expert behavior for regularization in MADDPG update.
+**Purpose**: Provide physics-based prior action for regularization in MADDPG update.
 
-**Algorithm** (simplified Reynolds rules):
+**Algorithm** (Reynolds rules):
 1. **Cohesion**: Move toward average position of nearby grid cells
-2. **Alignment**: Match velocities with neighbors
-3. **Separation**: Avoid crowding neighbors
+2. **Alignment**: Match velocities with neighbours
+3. **Separation**: Repel from neighbours within personal space
+
+**Updated separation threshold (Group 3 r_avoid fix):**
+```python
+# Old: rep_factor = where(nei_dists < r_avoid, 3*(r_avoid/dist - 1), 0)
+# New: consistent with new r_avoid definition (radius not diameter):
+rep_factor = where(nei_dists < 2*r_avoid, 3*(2*r_avoid/dist - 1), 0)
+```
+Repulsion fires at the same physical spacing (center-to-center 0.20) as `too_close` in the reward — policy and prior use identical thresholds.
 
 **Output**: Shape `[n_a, 2]` — desired actions for each agent
 
@@ -281,76 +311,72 @@ reward = 1.0 + 0.0 - 0.0 - 0.01 = 0.99
 ```python
 pol_loss = -Q(s, π(s)) + 0.3 * alpha * MSE(π(s), prior(s))
 ```
-- Helps bootstrap learning with reasonable swarm behavior
-- `alpha` gradually decreased to allow learned policy to dominate
+- Bootstraps learning from Reynolds flocking behaviour
+- `alpha` fixed at 0.1 (low — prior as regularizer, not behavioural cloning target)
 
 ### Evaluation Metrics
 
-**Coverage Rate**:
+**Metrics redesigned in the physics/reward overhaul.** Summary of what changed:
+
+| Old name | New name | Why changed |
+|---|---|---|
+| `coverage_rate` | **`sensing_coverage`** | Old used `a2g_dist < r_avoid/2` coverage radius → could never reach 1.0 with r_avoid=0.10. New uses `d_sen` (sensing range). |
+| `collision_rate` + `count_collisions` | **`r_avoid_violation_count`** | Old used wrong threshold (`dist < r_avoid` not `< 2*r_avoid`) and double-counted. New: pairwise upper-triangle, no double-counting. |
+| `coverage_efficiency` | **removed** | Algebraically identical to old `coverage_rate` — same value, different label. Redundant. |
+
+---
+
+**`sensing_coverage`** *(replaces `coverage_rate`)*:
 ```python
-def coverage_rate(self) -> float:
-    # Fraction of target cells occupied by at least one agent
-    # Uses in_flag: which agents are in which cells
-    n_occupied = count_unique_occupied_cells(state)
-    n_total = count_valid_cells(state.valid_mask)
-    return n_occupied / n_total
+def sensing_coverage(self, state) -> float:
+    # Fraction of valid shape cells observed by at least one agent
+    # A cell is "sensed" if any agent centre is within d_sen of it
+    cell_sensed = jnp.any(a2g_dist < self.d_sen, axis=0)  # [n_g_max]
+    return jnp.sum(cell_sensed & valid_mask) / jnp.sum(valid_mask)
+```
+- No r_avoid dependency — reaches 1.0 when agents cover the shape
+- Meaningful for partial observability: captures what fraction of shape the team can collectively perceive
+- Wrapper: `env.sensing_coverage()` (no state arg)
+
+**`r_avoid_violation_count`** *(replaces `collision_rate` + `count_collisions`)*:
+```python
+def r_avoid_violation_count(self, state) -> float:
+    # Number of unique agent pairs with centre-to-centre dist < 2 * r_avoid
+    # Upper-triangle only — no double counting (same pattern as springboard_collision_count)
+    upper = jnp.triu(jnp.ones((n_a, n_a), dtype=bool), k=1)
+    is_violation = (dists < 2.0 * self.r_avoid) & upper
+    return jnp.sum(is_violation.astype(jnp.float32))
+```
+- Three mutually-close agents = 3 pairs = 3 events
+- Accumulated per step via `r_avoid_violation_count_jax()` (no CPU sync); synced once at episode end
+- Wrapper: `env.r_avoid_violation_count()` and `env.r_avoid_violation_count_jax()`
+
+**`distribution_uniformity`** *(unchanged)*:
+```python
+# Uniformity of nearest-neighbour distances (CoV-based)
+# 1 / (1 + std/mean). Range [0,1]. Higher = more uniform spacing.
 ```
 
-**Distribution Uniformity**:
+**`voronoi_based_uniformity`** *(unchanged)*:
 ```python
-def distribution_uniformity(self) -> float:
-    # Uniformity of nearest-neighbor distances across agents
-    # Uses coefficient of variation: uniformity = 1 / (1 + std/mean)
-    # Range: [0, 1], higher = more uniform spacing
-    min_dists = [distance_to_nearest_neighbor(agent) for agent in agents]
-    return 1.0 / (1.0 + std(min_dists) / mean(min_dists))
+# CoV of Voronoi cell counts per agent. Range [0,1]. Higher = more balanced territory.
 ```
 
-**Voronoi Uniformity**:
+**`mean_neighbor_distance`** *(unchanged)*:
 ```python
-def voronoi_based_uniformity(self) -> float:
-    # Uniformity of Voronoi cell counts across agents
-    # Each grid cell is assigned to its nearest agent
-    # Uses coefficient of variation: uniformity = 1 / (1 + std/mean)
-    # Range: [0, 1], higher = more balanced cell distribution
-    cell_counts = [count_cells_assigned_to(agent) for agent in agents]
-    return 1.0 / (1.0 + std(cell_counts) / mean(cell_counts))
+# Mean nearest-neighbour distance across all agents.
+# Measures absolute spacing magnitude — complements uniformity metrics.
 ```
 
-**Mean Neighbor Distance** *(new)*:
+**`springboard_collision_count`** *(unchanged)*:
 ```python
-def mean_neighbor_distance(self) -> float:
-    # Mean nearest-neighbour distance across all agents
-    # Measures absolute magnitude of spacing — not just uniformity
-    # Higher = agents more spread out (less clustering)
-    # Unlike distribution_uniformity, sensitive to overall scale of separation
-    min_dists = [distance_to_nearest_neighbor(agent) for agent in agents]
-    return mean(min_dists)
+# Unique pairs with dist < 2*size_a = 0.07 (physical body contact).
+# Accumulated per step via springboard_collision_count_jax() (no CPU sync).
 ```
 
-**Collision Rate** *(new)*:
-```python
-def collision_rate(self) -> float:
-    # Fraction of agents currently in collision (any neighbour within r_avoid)
-    # Range: [0, 1]. 0 = no collisions, 1 = all agents colliding
-    # Direct measure of physical stacking — cleaner than collision count
-    in_collision = [any(dist < r_avoid for dist in neighbor_dists(agent)) for agent in agents]
-    return mean(in_collision)
-```
-
-**Coverage Efficiency** *(new)*:
-```python
-def coverage_efficiency(self) -> float:
-    # Cells covered / n_agents, normalised by ideal (n_cells / n_agents)
-    # Algebraically equivalent to coverage_rate — same number, cleaner label
-    # Value of 1.0 = agents spread perfectly with no cell-sharing
-    # Useful label when comparing CTM vs MLP stacking behaviour
-    return n_occupied / n_valid_cells  # = coverage_rate
-```
-
-**Note:** All new metrics are available on both `AssemblyEnv` (JAX, takes `state` arg) and
-`JaxAssemblyAdapterGPU` (wrapper, uses `self._states`). All appear in periodic eval logs,
-final eval per-shape output, final eval summary, and `eval_shapes.py`.
+**Note:** All metrics available on `AssemblyEnv` (takes `state` arg) and `JaxAssemblyAdapterGPU`
+(uses `self._states`). All appear in: periodic rolling stats, `run_eval`, `run_final_eval`,
+and standalone `eval_shapes.py`.
 
 ---
 

@@ -128,8 +128,6 @@ the MLP baseline proves cross-timestep memory is not required.
   pickle, comparison table)
 - Pass `--topo_nei_max N` when evaluating K≠6 models so env obs_dim matches checkpoint
 
-**`eval/eval_assembly.py`** — deprecated legacy script, not used.
-
 **`tests/test_ctm_implementation.py` — new test suite:**
 - Run with: `python tests/test_ctm_implementation.py` or `python -m pytest tests/test_ctm_implementation.py -v`
   from `MARL-LLM/marl_llm/`
@@ -335,18 +333,27 @@ metrics couldn't see it cleanly. New metrics should clarify. K=1 still to run.
 
 ### What to do next (ordered)
 
-0. ~~**Implement true centralised critic (CTDE)**~~ — **done.** Buffer, maddpg, agents, ctm_agent,
-   train script all updated. Critic input: `n_agents × (obs_dim+2)`, `critic_hidden_dim=256`.
-1. **Check if `num_obs_grid_max` is a configurable CLI parameter** — it's in AssemblyEnv
-   constructor but may not be wired to cfg/assembly_cfg.py yet. Wire it if not.
-2. **Run MLP at M=10, K=3 for 500 episodes** — confirm the task becomes genuinely hard.
-   If coverage drops substantially vs M=80 baseline, the regime is confirmed.
-   This is now scientifically valid: both actor and critic are correctly CTDE.
-3. **Run CTM zero-init at M=10, K=3** — establish whether zero-init CTM helps at all.
-4. **Implement prior-seeded CTM** only if steps 2-3 confirm a regime where MLP struggles.
-5. Full ablation table for paper once prior-seeded CTM shows a clear gap.
+0. ~~**Implement true centralised critic (CTDE)**~~ — **done.**
+1. ~~**Physics + Reward redesign**~~ — **in progress.** See `Docs/REWARD_PHYSICS_REDESIGN.md` for
+   full decisions. Summary of changes needed in `assembly.py` and `assembly_cfg.py`:
+   - k_ball=2000 + 4 substeps — **DONE**
+   - Hardcode r_avoid=0.10 as constructor arg, remove formula — TODO
+   - Rename `is_collision` → `too_close`, `dist < r_avoid` → `dist < 2 * r_avoid` — TODO
+   - Coverage radius: `r_avoid/2` → `r_avoid` everywhere — TODO
+   - Fix `is_uniform` saturated case: `any_sensed=False` → `is_uniform=True` — TODO
+   - Stepping stone reward: +0.1 for `in_flag` alone — TODO
+   - Physical contact penalty: -0.07 per `is_touching` neighbor (`dist < 2*size_a`) — TODO
+   - Wire `--d_sen` and `--r_avoid` as CLI flags in assembly_cfg.py — TODO
+2. **Run MLP baseline with fixed reward** for 500 episodes — verify task is now well-posed
+   (coverage should improve cleanly, reward no longer near-zero constantly).
+3. **Check if `num_obs_grid_max` is a configurable CLI parameter** — wire it if not.
+4. **Run MLP at M=10, K=3 for 500 episodes** — confirm the task becomes genuinely hard.
+5. **Run CTM zero-init at M=10, K=3** — establish whether zero-init CTM helps at all.
+6. **Implement prior-seeded CTM** only if steps 4-5 confirm a regime where MLP struggles.
+7. Full ablation table for paper once prior-seeded CTM shows a clear gap.
 
 **Do not run more K-sweep experiments at M=80 — they will not produce a meaningful result.**
+**Do not run partial observability experiments until the reward redesign is verified (step 2).**
 
 ### Intellectual honesty rule
 
@@ -356,6 +363,55 @@ Do not get carried away with ideas. An idea is not a result. Before any implemen
 - Do not frame incremental or null results as confirmation
 - If K-sweep shows no gap between CTM and MLP under partial obs, say so clearly and
   reconsider the direction rather than adding complexity to patch it
+
+---
+
+## Reward & Physics Redesign — Key Decisions (full detail in Docs/REWARD_PHYSICS_REDESIGN.md)
+
+### Canonical definitions (AGREED)
+- `size_a = 0.035` — agent body radius. Physical contact threshold: `dist < 2 * size_a = 0.07`
+- `r_avoid = 0.10` — personal space radius. Spacing violation: `dist < 2 * r_avoid = 0.20`
+- Coverage: a cell is covered if any agent centre is within `r_avoid` of it
+- `d_sen = 0.40` — sensing radius (not diameter)
+
+### Variable naming (AGREED)
+- `too_close` — replaces `is_collision`. Checks `dist < 2 * r_avoid` for K nearest within d_sen
+- `is_touching` — new. Physical contact: `dist < 2 * size_a = 0.07`. k_ball spring fires here
+- `n_touching` — count of physically touching neighbors for agent i
+
+### Reward structure (AGREED)
+```
+reward_i = 0.1  × in_flag                             # stepping stone — always inside
+         + 0.9  × (in_flag & ~too_close & is_uniform) # full conditions met
+         - 0.07 × n_touching_i                        # physical contact penalty
+```
+- Outside: 0.0 | Inside colliding: 0.03 | Inside settling: 0.1 | Full: 1.0
+
+### is_uniform fix (AGREED)
+```python
+# Old: is_uniform = in_flag & any_sensed & (v_exp_norm < 0.05)
+# New:
+is_uniform = jnp.where(any_sensed, v_exp_norm < 0.05, True)
+```
+Saturated case (no unoccupied cells visible): nowhere better to go, hold position — is_uniform=True.
+
+### Physics fix (DONE)
+- k_ball: 30 → 2000. _world_step: 4 substeps at dt/4=0.025. Prevents tunneling.
+
+### Metrics redesign (AGREED)
+- `coverage_rate` → **`sensing_coverage`**: `any(a2g_dist < d_sen)` per cell. Fraction of shape visible to at least one agent. No r_avoid dependency. Reaches 1.0 when achievable.
+- `collision_rate` + `count_collisions` → **`r_avoid_violation_count`**: unique pairs (upper triangle) with `dist < 2 * r_avoid`. Pairwise, no double-counting.
+- `coverage_efficiency` → **remove** (mathematically identical to coverage_rate)
+- `distribution_uniformity`, `voronoi_based_uniformity`, `mean_neighbor_distance`, `springboard_collision_count` — correct as-is
+
+### r_avoid full audit (every occurrence in assembly.py)
+- **Group 1** spacing check: `dist < r_avoid` → `dist < 2 * r_avoid` (too_close, r_avoid_violation_count)
+- **Group 2** coverage radius: `r_avoid/2` → `r_avoid` (obs occupancy, sensing_coverage)
+- **Group 3** Reynolds prior repulsion: `nei_dists < r_avoid, r_avoid/dist` → `nei_dists < 2*r_avoid, 2*r_avoid/dist` (both vectorised and single-agent)
+- **Group 4** is_nearby filter: `d_sen + r_avoid/2` → `d_sen + r_avoid` (4 occurrences in obs)
+- **Group 5** formula removal: remove dynamic r_avoid formula, add constructor arg `r_avoid=0.10`
+
+Full detail in `Docs/REWARD_PHYSICS_REDESIGN.md`.
 
 ---
 

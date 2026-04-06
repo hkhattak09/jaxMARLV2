@@ -31,7 +31,6 @@ import matplotlib.pyplot as plt
 import torch
 import jax.numpy as jnp
 import time
-import os
 import random
 import numpy as np
 
@@ -87,8 +86,7 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
             shape_uniformity = 0.0
             shape_voronoi = 0.0
             shape_neighbor_dist = 0.0
-            shape_collision_rate = 0.0
-            shape_coverage_efficiency = 0.0
+            shape_r_avoid_violations = 0.0
             shape_spring_collisions = 0.0
 
             for ep_i in range(episodes_per_shape):
@@ -112,14 +110,13 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
                     if is_last_ep:
                         state_history.append(env._states)
 
-                shape_reward             += ep_reward / cfg.episode_length
-                shape_coverage           += env.coverage_rate()
-                shape_uniformity         += env.distribution_uniformity()
-                shape_voronoi            += env.voronoi_based_uniformity()
-                shape_neighbor_dist      += env.mean_neighbor_distance()
-                shape_collision_rate     += env.collision_rate()
-                shape_coverage_efficiency += env.coverage_efficiency()
-                shape_spring_collisions  += ep_spring_collisions
+                shape_reward               += ep_reward / cfg.episode_length
+                shape_coverage             += env.sensing_coverage()
+                shape_uniformity           += env.distribution_uniformity()
+                shape_voronoi              += env.voronoi_based_uniformity()
+                shape_neighbor_dist        += env.mean_neighbor_distance()
+                shape_r_avoid_violations   += env.r_avoid_violation_count()
+                shape_spring_collisions    += ep_spring_collisions
 
                 # Save GIF of last episode for this shape
                 if is_last_ep:
@@ -128,31 +125,28 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
                                   size_a=env.size_a, d_sen=env.d_sen, r_avoid=env.r_avoid)
 
             # Average over episodes
-            mean_reward               = shape_reward              / episodes_per_shape
-            mean_coverage             = shape_coverage            / episodes_per_shape
-            mean_uniformity           = shape_uniformity          / episodes_per_shape
-            mean_voronoi              = shape_voronoi             / episodes_per_shape
-            mean_neighbor_dist        = shape_neighbor_dist       / episodes_per_shape
-            mean_collision_rate       = shape_collision_rate      / episodes_per_shape
-            mean_coverage_efficiency  = shape_coverage_efficiency / episodes_per_shape
-            mean_spring_collisions    = shape_spring_collisions   / episodes_per_shape
+            mean_reward              = shape_reward              / episodes_per_shape
+            mean_coverage            = shape_coverage            / episodes_per_shape
+            mean_uniformity          = shape_uniformity          / episodes_per_shape
+            mean_voronoi             = shape_voronoi             / episodes_per_shape
+            mean_neighbor_dist       = shape_neighbor_dist       / episodes_per_shape
+            mean_r_avoid_violations  = shape_r_avoid_violations  / episodes_per_shape
+            mean_spring_collisions   = shape_spring_collisions   / episodes_per_shape
 
             all_results.append({
-                'shape':               shape_idx,
-                'reward':              mean_reward,
-                'coverage':            mean_coverage,
-                'uniformity':          mean_uniformity,
-                'voronoi':             mean_voronoi,
-                'neighbor_dist':       mean_neighbor_dist,
-                'collision_rate':      mean_collision_rate,
-                'coverage_efficiency': mean_coverage_efficiency,
-                'spring_collisions':   mean_spring_collisions,
+                'shape':                shape_idx,
+                'reward':               mean_reward,
+                'coverage':             mean_coverage,
+                'uniformity':           mean_uniformity,
+                'voronoi':              mean_voronoi,
+                'neighbor_dist':        mean_neighbor_dist,
+                'r_avoid_violations':   mean_r_avoid_violations,
+                'spring_collisions':    mean_spring_collisions,
             })
 
-            print(f"Shape {shape_idx}: reward={mean_reward:.4f} | coverage={mean_coverage:.4f} | "
+            print(f"Shape {shape_idx}: reward={mean_reward:.4f} | sensing_coverage={mean_coverage:.4f} | "
                   f"uniformity={mean_uniformity:.4f} | voronoi={mean_voronoi:.4f} | "
-                  f"neighbor_dist={mean_neighbor_dist:.4f} | collision_rate={mean_collision_rate:.4f} | "
-                  f"cov_efficiency={mean_coverage_efficiency:.4f} | "
+                  f"neighbor_dist={mean_neighbor_dist:.4f} | r_avoid_violations={mean_r_avoid_violations:.1f} | "
                   f"spring_collisions={mean_spring_collisions:.1f}")
 
             # Log to TensorBoard
@@ -160,12 +154,11 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
                 f"final_eval/shape_{shape_idx}",
                 {
                     "reward":              mean_reward,
-                    "coverage":            mean_coverage,
+                    "sensing_coverage":    mean_coverage,
                     "uniformity":          mean_uniformity,
                     "voronoi":             mean_voronoi,
                     "neighbor_dist":       mean_neighbor_dist,
-                    "collision_rate":      mean_collision_rate,
-                    "coverage_efficiency": mean_coverage_efficiency,
+                    "r_avoid_violations":  mean_r_avoid_violations,
                     "spring_collisions":   mean_spring_collisions,
                 },
                 0,
@@ -174,18 +167,16 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
     # Print summary
     print("\n" + "-"*80)
     print("FINAL EVAL SUMMARY (averaged across all shapes):")
-    avg_reward              = np.mean([r['reward']              for r in all_results])
-    avg_coverage            = np.mean([r['coverage']            for r in all_results])
-    avg_uniformity          = np.mean([r['uniformity']          for r in all_results])
-    avg_voronoi             = np.mean([r['voronoi']             for r in all_results])
-    avg_neighbor_dist       = np.mean([r['neighbor_dist']       for r in all_results])
-    avg_collision_rate      = np.mean([r['collision_rate']      for r in all_results])
-    avg_coverage_efficiency = np.mean([r['coverage_efficiency'] for r in all_results])
-    avg_spring_collisions   = np.mean([r['spring_collisions']   for r in all_results])
-    print(f"  Reward: {avg_reward:.4f} | Coverage: {avg_coverage:.4f} | "
+    avg_reward             = np.mean([r['reward']             for r in all_results])
+    avg_coverage           = np.mean([r['coverage']           for r in all_results])
+    avg_uniformity         = np.mean([r['uniformity']         for r in all_results])
+    avg_voronoi            = np.mean([r['voronoi']            for r in all_results])
+    avg_neighbor_dist      = np.mean([r['neighbor_dist']      for r in all_results])
+    avg_r_avoid_violations = np.mean([r['r_avoid_violations'] for r in all_results])
+    avg_spring_collisions  = np.mean([r['spring_collisions']  for r in all_results])
+    print(f"  Reward: {avg_reward:.4f} | Sensing Coverage: {avg_coverage:.4f} | "
           f"Uniformity: {avg_uniformity:.4f} | Voronoi: {avg_voronoi:.4f}")
-    print(f"  Neighbor Dist: {avg_neighbor_dist:.4f} | Collision Rate: {avg_collision_rate:.4f} | "
-          f"Cov Efficiency: {avg_coverage_efficiency:.4f} | "
+    print(f"  Neighbor Dist: {avg_neighbor_dist:.4f} | R-Avoid Violations: {avg_r_avoid_violations:.1f} | "
           f"Spring Collisions: {avg_spring_collisions:.1f}")
     print("="*80 + "\n")
 
@@ -194,12 +185,11 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
         "final_eval/overall",
         {
             "reward":              avg_reward,
-            "coverage":            avg_coverage,
+            "sensing_coverage":    avg_coverage,
             "uniformity":          avg_uniformity,
             "voronoi":             avg_voronoi,
             "neighbor_dist":       avg_neighbor_dist,
-            "collision_rate":      avg_collision_rate,
-            "coverage_efficiency": avg_coverage_efficiency,
+            "r_avoid_violations":  avg_r_avoid_violations,
             "spring_collisions":   avg_spring_collisions,
         },
         0,
@@ -226,8 +216,7 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
     total_coverage = 0.0
     total_uniformity = 0.0
     total_neighbor_dist = 0.0
-    total_collision_rate = 0.0
-    total_coverage_efficiency = 0.0
+    total_r_avoid_violations = 0.0
     total_spring_collisions = 0.0
 
     with torch.no_grad():
@@ -253,13 +242,12 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
                 if is_last_ep:
                     state_history.append(env._states)
 
-            total_reward             += ep_reward / cfg.episode_length
-            total_coverage           += env.coverage_rate()
-            total_uniformity         += env.distribution_uniformity()
-            total_neighbor_dist      += env.mean_neighbor_distance()
-            total_collision_rate     += env.collision_rate()
-            total_coverage_efficiency += env.coverage_efficiency()
-            total_spring_collisions  += ep_spring_collisions
+            total_reward               += ep_reward / cfg.episode_length
+            total_coverage             += env.sensing_coverage()
+            total_uniformity           += env.distribution_uniformity()
+            total_neighbor_dist        += env.mean_neighbor_distance()
+            total_r_avoid_violations   += env.r_avoid_violation_count()
+            total_spring_collisions    += ep_spring_collisions
 
             # Bulk GPU→CPU transfer + GIF rendering after the episode is done
             if is_last_ep:
@@ -271,27 +259,24 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
     mean_coverage            = total_coverage            / cfg.eval_episodes
     mean_uniformity          = total_uniformity          / cfg.eval_episodes
     mean_neighbor_dist       = total_neighbor_dist       / cfg.eval_episodes
-    mean_collision_rate      = total_collision_rate      / cfg.eval_episodes
-    mean_coverage_efficiency = total_coverage_efficiency / cfg.eval_episodes
+    mean_r_avoid_violations  = total_r_avoid_violations  / cfg.eval_episodes
     mean_spring_collisions   = total_spring_collisions   / cfg.eval_episodes
 
     print(
         f"[EVAL] ep {ep_index} | reward: {mean_reward:.4f} | "
-        f"coverage: {mean_coverage:.4f} | uniformity: {mean_uniformity:.4f} | "
-        f"neighbor_dist: {mean_neighbor_dist:.4f} | collision_rate: {mean_collision_rate:.4f} | "
-        f"cov_efficiency: {mean_coverage_efficiency:.4f} | "
+        f"sensing_coverage: {mean_coverage:.4f} | uniformity: {mean_uniformity:.4f} | "
+        f"neighbor_dist: {mean_neighbor_dist:.4f} | r_avoid_violations: {mean_r_avoid_violations:.1f} | "
         f"spring_collisions: {mean_spring_collisions:.1f}"
     )
     logger.add_scalars(
         "eval",
         {
-            "reward":              mean_reward,
-            "coverage":            mean_coverage,
-            "uniformity":          mean_uniformity,
-            "neighbor_dist":       mean_neighbor_dist,
-            "collision_rate":      mean_collision_rate,
-            "coverage_efficiency": mean_coverage_efficiency,
-            "spring_collisions":   mean_spring_collisions,
+            "reward":               mean_reward,
+            "sensing_coverage":     mean_coverage,
+            "uniformity":           mean_uniformity,
+            "neighbor_dist":        mean_neighbor_dist,
+            "r_avoid_violations":   mean_r_avoid_violations,
+            "spring_collisions":    mean_spring_collisions,
         },
         ep_index,
     )
@@ -331,6 +316,8 @@ def run(cfg):
         n_a=cfg.n_a,
         topo_nei_max=cfg.topo_nei_max,
         grid_obs_fraction=cfg.grid_obs_fraction,
+        d_sen=cfg.d_sen,
+        r_avoid=cfg.r_avoid,
     )
     # GPU adapter returns PyTorch CUDA tensors via DLPack
     env = JaxAssemblyAdapterGPU(
@@ -381,17 +368,15 @@ def run(cfg):
         )
     ]
 
-    torch_agent_actions = []
-
     # Initialize all networks on GPU in training mode
     maddpg.prep_training(device="gpu")
 
     # Metric history for 10-episode rolling statistics
     metric_history = {
-        "coverage": [],
+        "sensing_coverage": [],
         "uniformity": [],
         "voronoi": [],
-        "collisions": [],
+        "r_avoid_violations": [],
         "spring_collisions": [],
         "reward_mean": [],
         "reward_std": [],
@@ -427,8 +412,8 @@ def run(cfg):
         next_obs_list = []
         dones_list = []
         prior_list = []
-        # Collision accumulators: stay as JAX arrays to avoid per-step device sync
-        collision_sum = jnp.zeros(())
+        # Violation accumulators: stay as JAX arrays to avoid per-step device sync
+        r_avoid_violation_sum = jnp.zeros(())
         spring_collision_sum = jnp.zeros(())
 
         start_time_1 = time.time()
@@ -463,7 +448,7 @@ def run(cfg):
             next_obs_list.append(next_obs_gpu)
             dones_list.append(dones_gpu)
             prior_list.append(agent_actions_prior_gpu)
-            collision_sum = collision_sum + env.collision_count_jax()
+            r_avoid_violation_sum = r_avoid_violation_sum + env.r_avoid_violation_count_jax()
             spring_collision_sum = spring_collision_sum + env.springboard_collision_count_jax()
             
             obs_gpu = next_obs_gpu  # Stay on GPU for next step
@@ -476,8 +461,8 @@ def run(cfg):
         next_obs_batch = torch.stack(next_obs_list).cpu().numpy() # (T, obs_dim, N*n_a)
         dones_batch = torch.stack(dones_list).cpu().numpy()       # (T, N*n_a)
         prior_batch = torch.stack(prior_list).cpu().numpy()       # (T, 2, N*n_a)
-        # Sync collision sums here alongside bulk transfer (one device sync total)
-        episode_collisions = float(collision_sum) / cfg.n_rollout_threads
+        # Sync violation sums here alongside bulk transfer (one device sync total)
+        episode_r_avoid_violations = float(r_avoid_violation_sum) / cfg.n_rollout_threads
         episode_spring_collisions = float(spring_collision_sum) / cfg.n_rollout_threads
         transfer_time = time.time() - t0
 
@@ -536,17 +521,17 @@ def run(cfg):
 
         ########################### Logging and Checkpointing ###########################
         # Compute end-of-episode metrics
-        coverage = env.coverage_rate()
+        coverage = env.sensing_coverage()
         uniformity = env.distribution_uniformity()
         voronoi_uniformity = env.voronoi_based_uniformity()
         avg_reward = episode_reward_mean_bar / cfg.episode_length
         reward_uniformity = 1.0 / (1.0 + episode_reward_std_bar / (abs(episode_reward_mean_bar) + 1e-8))
         
         # Track metrics for rolling statistics
-        metric_history["coverage"].append(coverage)
+        metric_history["sensing_coverage"].append(coverage)
         metric_history["uniformity"].append(uniformity)
         metric_history["voronoi"].append(voronoi_uniformity)
-        metric_history["collisions"].append(episode_collisions)
+        metric_history["r_avoid_violations"].append(episode_r_avoid_violations)
         metric_history["spring_collisions"].append(episode_spring_collisions)
         metric_history["reward_mean"].append(avg_reward)
         metric_history["reward_std"].append(episode_reward_std_bar)
@@ -565,10 +550,10 @@ def run(cfg):
         
         if ep_index % 10 == 0:
             # Compute mean and std over last 10 episodes (or fewer if just starting)
-            cov_mean, cov_std = np.mean(metric_history["coverage"]), np.std(metric_history["coverage"])
+            sc_mean, sc_std = np.mean(metric_history["sensing_coverage"]), np.std(metric_history["sensing_coverage"])
             uni_mean, uni_std = np.mean(metric_history["uniformity"]), np.std(metric_history["uniformity"])
             vor_mean, vor_std = np.mean(metric_history["voronoi"]), np.std(metric_history["voronoi"])
-            avg_collisions_10 = np.mean(metric_history["collisions"])
+            avg_r_avoid_violations_10 = np.mean(metric_history["r_avoid_violations"])
             avg_spring_collisions_10 = np.mean(metric_history["spring_collisions"])
 
             # Compute 10-episode averages for rewards, losses, and timing
@@ -589,8 +574,8 @@ def run(cfg):
             print(sep)
             print(f"REWARDS (last 10 eps):  Mean: {avg_reward_10:7.4f} | Std: {avg_reward_std_10:7.4f} | Uniformity: {avg_reward_uniformity_10:6.3f}")
             print(f"ENVIRONMENT METRICS (last 10 eps):")
-            print(f"  - Coverage: {cov_mean:.3f}(std:{cov_std:.3f}) | Dist Uniformity: {uni_mean:.3f}(std:{uni_std:.3f}) | Voronoi Uniformity: {vor_mean:.3f}(std:{vor_std:.3f})")
-            print(f"  - Collisions (agent-steps/ep/env): {avg_collisions_10:.1f} | Spring Collisions (pairs/ep/env): {avg_spring_collisions_10:.1f}")
+            print(f"  - Sensing Coverage: {sc_mean:.3f}(std:{sc_std:.3f}) | Dist Uniformity: {uni_mean:.3f}(std:{uni_std:.3f}) | Voronoi Uniformity: {vor_mean:.3f}(std:{vor_std:.3f})")
+            print(f"  - R-Avoid Violations (pairs/ep/env): {avg_r_avoid_violations_10:.1f} | Spring Collisions (pairs/ep/env): {avg_spring_collisions_10:.1f}")
             print(f"LOSSES (last 10 eps):   VF: {avg_vf_loss_10:7.4f} | Policy: {avg_pol_loss_10:7.4f} | Reg: {avg_reg_loss_10:7.4f}")
             print(f"TIMING (last 10 eps):   Rollout: {avg_rollout_time_10:6.2f} | Policy Exec: {avg_policy_time_10:6.2f} | Env Step: {avg_env_time_10:6.2f} | Training: {avg_training_time_10:6.2f}")
             print(f"{sep}\n")
@@ -600,7 +585,7 @@ def run(cfg):
                 "agent/data",
                 {
                     "episode_reward": avg_reward,
-                    "coverage": coverage,
+                    "sensing_coverage": coverage,
                     "nn_uniformity": uniformity,
                     "voronoi_uniformity": voronoi_uniformity,
                     "vf_loss": avg_vf_loss,

@@ -25,7 +25,7 @@ from pathlib import Path
 _BOUNDARY_HALF = 2.4
 _SIZE_A        = 0.035
 _D_SEN         = 0.4
-_R_AVOID       = 0.29
+_R_AVOID       = 0.10
 
 
 def render_frame(p_pos_np, grid_center_np, valid_mask_np, l_cell, step,

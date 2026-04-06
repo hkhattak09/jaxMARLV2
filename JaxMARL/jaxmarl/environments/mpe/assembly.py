@@ -69,11 +69,12 @@ class AssemblyEnv(MultiAgentEnv):
         grid_obs_fraction: float = None,
         dt: float = 0.1,
         vel_max: float = 0.8,
-        k_ball: float = 30.0,
+        k_ball: float = 2000.0,
         k_wall: float = 100.0,
         c_wall: float = 5.0,
         size_a: float = 0.035,
         d_sen: float = 0.4,
+        r_avoid: float = 0.10,
         boundary_half: float = 2.4,
         max_steps: int = 200,
     ):
@@ -88,6 +89,10 @@ class AssemblyEnv(MultiAgentEnv):
         self.c_wall = c_wall
         self.size_a = size_a
         self.d_sen = d_sen
+        # r_avoid: personal space radius. Spacing violation: dist < 2*r_avoid.
+        # Cell covered when agent centre within r_avoid of cell centre.
+        # Preferred value: floor(size_a + 2*size_a) = 3*size_a ≈ 0.105 → 0.10.
+        self.r_avoid = r_avoid
         self.boundary_half = boundary_half
         self.max_steps = max_steps
 
@@ -123,11 +128,6 @@ class AssemblyEnv(MultiAgentEnv):
         self.all_grid_centers = jnp.array(all_gc)   # [num_shapes, 2, n_g_max]
         self.all_valid_masks  = jnp.array(all_vm)   # [num_shapes, n_g_max]
         self.all_l_cells      = jnp.array(l_cells_np)  # [num_shapes]
-
-        # r_avoid: same formula as original __reinit__
-        min_n_g   = float(min(n_gs))
-        min_l_cell = float(np.min(l_cells_np))
-        self.r_avoid = round(np.sqrt(4.0 * min_n_g / (n_a * np.pi)) * min_l_cell, 2)
 
         # ── Resolve num_obs_grid_max from fraction if provided ───────────────
         # grid_obs_fraction in (0, 1]: fraction of baseline M=80 visible per agent.
@@ -403,15 +403,20 @@ class AssemblyEnv(MultiAgentEnv):
     # ────────────────────────────────────────────────────────────────────────
 
     def _world_step(self, state: AssemblyState, u: chex.Array):
-        """Integrate one timestep. Matches step() in assembly.py (C++ backed)."""
-        sf_b2b          = self._ball_to_ball_force(state.p_pos)
-        sf_b2w, df_b2w  = self._ball_to_wall_force(state.p_pos, state.p_vel)
+        """Integrate one timestep using 4 substeps at dt/4.
 
-        # sensitivity=1 in original, m_a=1
-        F = u + sf_b2b + sf_b2w + df_b2w    # [n_a, 2]
-        p_vel = state.p_vel + F * self.dt    # ddp = F/1, integrate
-        p_vel = jnp.clip(p_vel, -self.vel_max, self.vel_max)
-        p_pos = state.p_pos + p_vel * self.dt
+        k_ball=2000 with dt_sub=dt/4=0.025 gives stability margin k*dt²=1.25<2.
+        Worst-case head-on collision at vel_max produces ~0.02 units max penetration
+        (29% of agent diameter) before the spring reverses the agents — no tunneling.
+        """
+        dt_sub = self.dt / 4.0
+        p_pos, p_vel = state.p_pos, state.p_vel
+        for _ in range(4):
+            sf_b2b         = self._ball_to_ball_force(p_pos)
+            sf_b2w, df_b2w = self._ball_to_wall_force(p_pos, p_vel)
+            F     = u + sf_b2b + sf_b2w + df_b2w
+            p_vel = jnp.clip(p_vel + F * dt_sub, -self.vel_max, self.vel_max)
+            p_pos = p_pos + p_vel * dt_sub
         return p_pos, p_vel
 
     def _ball_to_ball_force(self, p_pos: chex.Array) -> chex.Array:
@@ -564,14 +569,14 @@ class AssemblyEnv(MultiAgentEnv):
         # in_sensor: cells within d_sen for each agent
         in_sensor = (cached.a2g_dist < self.d_sen) & state.valid_mask[None, :]  # [n_a, n_g_max]
         
-        # is_nearby: agents within d_sen + r_avoid/2 of each agent
-        is_nearby = cached.agent_dists < (self.d_sen + self.r_avoid / 2.0)  # [n_a, n_a]
-        
-        # Cell occupied if any nearby agent is within r_avoid/2 of it
+        # is_nearby: agents within d_sen + r_avoid of each agent (could own a visible cell)
+        is_nearby = cached.agent_dists < (self.d_sen + self.r_avoid)  # [n_a, n_a]
+
+        # Cell occupied if any nearby agent is within r_avoid of it
         # For each agent i, check if any agent j (where is_nearby[i,j]) is close to each grid cell
         # is_nearby: [n_a, n_a], a2g_dist: [n_a, n_g_max]
-        # We need: for each agent i, for each grid cell g: any(is_nearby[i,j] & (a2g_dist[j,g] < r_avoid/2))
-        cell_agent_close = cached.a2g_dist < (self.r_avoid / 2.0)  # [n_a, n_g_max]
+        # We need: for each agent i, for each grid cell g: any(is_nearby[i,j] & (a2g_dist[j,g] < r_avoid))
+        cell_agent_close = cached.a2g_dist < self.r_avoid  # [n_a, n_g_max]
         # is_occupied_by_nearby[i,g] = any_j(is_nearby[i,j] & cell_agent_close[j,g])
         # This is: is_nearby @ cell_agent_close (treating bools as 0/1)
         is_occupied_by_nearby = jnp.matmul(
@@ -675,17 +680,17 @@ class AssemblyEnv(MultiAgentEnv):
         # Cells within d_sen, not "occupied" by a nearby agent when in_flag
         in_sensor = (grid_dist < self.d_sen) & state.valid_mask  # [n_g_max]
 
-        # Nearby agents: within d_sen + r_avoid/2 of agent i
+        # Nearby agents: within d_sen + r_avoid of agent i (could own a visible cell)
         agent_dists = jnp.linalg.norm(state.p_pos - state.p_pos[i], axis=-1)  # [n_a]
-        is_nearby   = agent_dists < (self.d_sen + self.r_avoid / 2.0)          # [n_a]
+        is_nearby   = agent_dists < (self.d_sen + self.r_avoid)                # [n_a]
 
         # Agent-to-grid distances: [n_a, n_g_max]
         a2g = state.grid_center.T[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
         a2g_dist = jnp.linalg.norm(a2g, axis=-1)                          # [n_a, n_g_max]
 
-        # Cell is occupied if any nearby agent is within r_avoid/2 of it
+        # Cell is occupied if any nearby agent is within r_avoid of it
         is_occupied_by_nearby = jnp.any(
-            is_nearby[:, None] & (a2g_dist < self.r_avoid / 2.0), axis=0
+            is_nearby[:, None] & (a2g_dist < self.r_avoid), axis=0
         )  # [n_g_max]
 
         # Only apply occupancy filter when agent i itself is in a grid cell
@@ -747,51 +752,60 @@ class AssemblyEnv(MultiAgentEnv):
         in_flag = cached.in_flag  # [n_a]
         
         # ══════════════════════════════════════════════════════════════════════
-        # is_collision: any neighbor within r_avoid AND within d_sen
+        # too_close: any neighbor within 2*r_avoid (spacing violation) AND within d_sen
         # ══════════════════════════════════════════════════════════════════════
         nei_dists = cached.nei_dists  # [n_a, K]
         in_nei_range = nei_dists < self.d_sen  # [n_a, K]
-        is_collision = jnp.any(in_nei_range & (nei_dists < self.r_avoid), axis=1)  # [n_a]
-        
+        too_close = jnp.any(in_nei_range & (nei_dists < 2.0 * self.r_avoid), axis=1)  # [n_a]
+
         # ══════════════════════════════════════════════════════════════════════
         # is_uniform: sensed unoccupied cells are uniformly distributed
         # ══════════════════════════════════════════════════════════════════════
-        
+
         # Grid relative positions for each agent: [n_a, n_g_max, 2]
         grid_pos = state.grid_center.T  # [n_g_max, 2]
         grid_rel = grid_pos[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
-        
+
         # in_sensor: [n_a, n_g_max]
         in_sensor = (cached.a2g_dist < self.d_sen) & state.valid_mask[None, :]
-        
-        # is_nearby: [n_a, n_a]
-        is_nearby = cached.agent_dists < (self.d_sen + self.r_avoid / 2.0)
-        
-        # Cell occupied if any nearby agent is within r_avoid/2
-        cell_agent_close = cached.a2g_dist < (self.r_avoid / 2.0)  # [n_a, n_g_max]
+
+        # is_nearby: agents within d_sen + r_avoid (filter for occupancy computation)
+        is_nearby = cached.agent_dists < (self.d_sen + self.r_avoid)
+
+        # Cell occupied if any nearby agent is within r_avoid
+        cell_agent_close = cached.a2g_dist < self.r_avoid  # [n_a, n_g_max]
         is_occupied_by_nearby = jnp.matmul(
             is_nearby.astype(jnp.float32),
             cell_agent_close.astype(jnp.float32)
         ) > 0  # [n_a, n_g_max]
-        
+
         is_occupied = in_flag[:, None] & is_occupied_by_nearby  # [n_a, n_g_max]
         is_sensed_unoccupied = in_sensor & ~is_occupied  # [n_a, n_g_max]
-        
+
         # psi = rho_cos_dec for all agents/cells: [n_a, n_g_max]
         psi = self._rho_cos_dec(cached.a2g_dist, self.d_sen)
         psi_valid = jnp.where(is_sensed_unoccupied, psi, 0.0)  # [n_a, n_g_max]
-        
+
         # v_exp for each agent: [n_a, 2]
         numerator = jnp.sum(psi_valid[:, :, None] * grid_rel, axis=1)  # [n_a, 2]
         denominator = jnp.sum(psi_valid, axis=1, keepdims=True) + 1e-8  # [n_a, 1]
         v_exp = numerator / denominator  # [n_a, 2]
         v_exp_norm = jnp.linalg.norm(v_exp, axis=1)  # [n_a]
-        
+
         any_sensed = jnp.any(is_sensed_unoccupied, axis=1)  # [n_a]
-        is_uniform = in_flag & any_sensed & (v_exp_norm < 0.05)  # [n_a]
-        
-        # Final reward
-        return jnp.where(in_flag & ~is_collision & is_uniform, 1.0, 0.0)  # [n_a]
+        # Saturated case (no unoccupied cells visible): nowhere better to go → is_uniform=True
+        is_uniform = in_flag & jnp.where(any_sensed, v_exp_norm < 0.05, True)  # [n_a]
+
+        # ══════════════════════════════════════════════════════════════════════
+        # is_touching: physical body contact (dist < 2*size_a = 0.07)
+        # ══════════════════════════════════════════════════════════════════════
+        is_touching = (cached.agent_dists < 2.0 * self.size_a) & ~jnp.eye(self.n_a, dtype=bool)
+        n_touching = jnp.sum(is_touching.astype(jnp.float32), axis=1)  # [n_a]
+
+        # Final reward: stepping stone (in_flag) + full conditions + physical contact penalty
+        base = (0.1 * in_flag.astype(jnp.float32) +
+                0.9 * (in_flag & ~too_close & is_uniform).astype(jnp.float32))
+        return base - 0.07 * n_touching
 
     def _reward_single(self, i: int, state: AssemblyState) -> chex.Array:
         # ── in_flag ──────────────────────────────────────────────────────
@@ -801,29 +815,24 @@ class AssemblyEnv(MultiAgentEnv):
         min_dist  = jnp.min(grid_dist_masked)
         in_flag   = min_dist < (jnp.sqrt(2.0) * state.l_cell / 2.0)
 
-        # ── is_collision: penalize_interaction (condition[3]) ─────────────
-        # C++ uses neighbor_index[agent]: top topo_nei_max nearest within d_sen.
-        # We replicate that by sorting and taking the K nearest, then checking
-        # if any of those K neighbours is closer than r_avoid.
+        # ── too_close: spacing violation (dist < 2*r_avoid) ─────────────────
         agent_dists      = jnp.linalg.norm(state.p_pos - state.p_pos[i], axis=-1)  # [n_a]
         agent_dists_excl = jnp.where(jnp.arange(self.n_a) == i, jnp.inf, agent_dists)
 
-        # Top topo_nei_max nearest (same set as neighbor_index in C++)
+        # Top topo_nei_max nearest (same set as neighbor_index)
         sorted_nei_idx = jnp.argsort(agent_dists_excl)[:self.topo_nei_max]   # [K]
         nei_dists_topo = agent_dists_excl[sorted_nei_idx]                     # [K]
         in_nei_range   = nei_dists_topo < self.d_sen                          # [K]
-        is_collision   = jnp.any(in_nei_range & (nei_dists_topo < self.r_avoid))
+        too_close      = jnp.any(in_nei_range & (nei_dists_topo < 2.0 * self.r_avoid))
 
-        # ── is_uniform: penalize_exploration (condition[4]) ───────────────
-        # Only evaluated when in_flag=True.
-        # Sensed unoccupied cells (same logic as obs):
+        # ── is_uniform: sensed unoccupied cells uniformly distributed ────────
         in_sensor  = (grid_dist < self.d_sen) & state.valid_mask
 
-        is_nearby  = agent_dists < (self.d_sen + self.r_avoid / 2.0)
+        is_nearby  = agent_dists < (self.d_sen + self.r_avoid)
         a2g        = state.grid_center.T[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
         a2g_dist   = jnp.linalg.norm(a2g, axis=-1)
         is_occupied_by_nearby = jnp.any(
-            is_nearby[:, None] & (a2g_dist < self.r_avoid / 2.0), axis=0
+            is_nearby[:, None] & (a2g_dist < self.r_avoid), axis=0
         )
         is_occupied           = in_flag & is_occupied_by_nearby
         is_sensed_unoccupied  = in_sensor & ~is_occupied  # [n_g_max]
@@ -838,10 +847,18 @@ class AssemblyEnv(MultiAgentEnv):
         v_exp_norm  = jnp.linalg.norm(v_exp)
 
         any_sensed = jnp.any(is_sensed_unoccupied)
-        is_uniform = in_flag & any_sensed & (v_exp_norm < 0.05)
+        # Saturated case (no unoccupied cells visible): nowhere better to go → is_uniform=True
+        is_uniform = in_flag & jnp.where(any_sensed, v_exp_norm < 0.05, True)
 
-        # Final reward (all three conditions must hold)
-        return jnp.where(in_flag & ~is_collision & is_uniform, 1.0, 0.0)
+        # ── is_touching: physical body contact (dist < 2*size_a = 0.07) ──────
+        is_touching = agent_dists < 2.0 * self.size_a  # [n_a] (includes self, but self=0 < threshold)
+        is_touching = is_touching & (jnp.arange(self.n_a) != i)  # exclude self
+        n_touching  = jnp.sum(is_touching.astype(jnp.float32))
+
+        # Final reward: stepping stone + full conditions + physical contact penalty
+        base = (0.1 * in_flag.astype(jnp.float32) +
+                0.9 * (in_flag & ~too_close & is_uniform).astype(jnp.float32))
+        return base - 0.07 * n_touching
 
     # ────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -857,23 +874,24 @@ class AssemblyEnv(MultiAgentEnv):
     # ────────────────────────────────────────────────────────────────────────
 
     @partial(jax.jit, static_argnums=[0])
-    def coverage_rate(self, state: AssemblyState) -> chex.Array:
-        """Fraction of valid target grid cells occupied by at least one agent.
+    def sensing_coverage(self, state: AssemblyState) -> chex.Array:
+        """Fraction of valid target grid cells sensed by at least one agent.
 
-        A cell is considered occupied when any agent centre lies within
-        r_avoid / 2 of the cell centre — matching AssemblySwarmWrapper.coverage_rate().
+        A cell is sensed when any agent centre lies within d_sen of the cell centre.
+        Reaches 1.0 when all agents collectively observe the entire shape.
+        No r_avoid dependency — purely geometric coverage by sensing radius.
         """
         # a2g[i, j] = distance from agent i to grid cell j
         a2g = state.grid_center.T[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
         a2g_dist = jnp.linalg.norm(a2g, axis=-1)                          # [n_a, n_g_max]
 
-        # Cell occupied if ANY agent is within r_avoid/2
-        cell_occupied = jnp.any(a2g_dist < self.r_avoid / 2.0, axis=0)   # [n_g_max]
+        # Cell sensed if ANY agent is within d_sen
+        cell_sensed = jnp.any(a2g_dist < self.d_sen, axis=0)   # [n_g_max]
 
         # Only count valid (non-padding) cells
         n_g = jnp.sum(state.valid_mask.astype(jnp.float32))
-        n_occupied = jnp.sum((cell_occupied & state.valid_mask).astype(jnp.float32))
-        return n_occupied / n_g
+        n_sensed = jnp.sum((cell_sensed & state.valid_mask).astype(jnp.float32))
+        return n_sensed / n_g
 
     @partial(jax.jit, static_argnums=[0])
     def distribution_uniformity(self, state: AssemblyState) -> chex.Array:
@@ -934,19 +952,19 @@ class AssemblyEnv(MultiAgentEnv):
         return 1.0 / (1.0 + std_c / jnp.maximum(mean_c, 1e-8))
 
     @partial(jax.jit, static_argnums=[0])
-    def count_collisions(self, state: AssemblyState) -> chex.Array:
-        """Count agents currently involved in a collision (any neighbour within r_avoid).
+    def r_avoid_violation_count(self, state: AssemblyState) -> chex.Array:
+        """Count unique agent pairs violating the minimum spacing (dist < 2*r_avoid).
 
-        This counts agents, not collision pairs. A single two-agent collision
-        contributes 2; if three agents are all within r_avoid of each other,
-        it contributes 3. Minimum possible value for any collision event is 2.
+        Counts pairs (i < j) where dist < 2*r_avoid, so each pair is counted once.
+        A single two-agent violation = 1, three mutually-violating agents = 3 pairs.
         """
         dists = jnp.linalg.norm(
             state.p_pos[:, None, :] - state.p_pos[None, :, :], axis=-1
         )  # [n_a, n_a]
-        dists_excl = jnp.where(jnp.eye(self.n_a, dtype=bool), jnp.inf, dists)
-        in_collision = jnp.any(dists_excl < self.r_avoid, axis=1)  # [n_a]
-        return jnp.sum(in_collision.astype(jnp.float32))
+        # Upper-triangle mask: counts each pair (i,j) with i < j exactly once
+        upper = jnp.triu(jnp.ones((self.n_a, self.n_a), dtype=bool), k=1)
+        is_violation = (dists < 2.0 * self.r_avoid) & upper
+        return jnp.sum(is_violation.astype(jnp.float32))
 
     @partial(jax.jit, static_argnums=[0])
     def mean_neighbor_distance(self, state: AssemblyState) -> chex.Array:
@@ -962,19 +980,6 @@ class AssemblyEnv(MultiAgentEnv):
         min_dists = jnp.min(dists_excl, axis=1)                     # [n_a]
         return jnp.mean(min_dists)
 
-    @partial(jax.jit, static_argnums=[0])
-    def collision_rate(self, state: AssemblyState) -> chex.Array:
-        """Fraction of agents currently in collision (any neighbour within r_avoid).
-
-        Returns a value in [0, 1]. 0 = no collisions, 1 = all agents colliding.
-        Directly measures how much agents are physically stacking.
-        """
-        dists = jnp.linalg.norm(
-            state.p_pos[:, None, :] - state.p_pos[None, :, :], axis=-1
-        )  # [n_a, n_a]
-        dists_excl = jnp.where(jnp.eye(self.n_a, dtype=bool), jnp.inf, dists)
-        in_collision = jnp.any(dists_excl < self.r_avoid, axis=1)  # [n_a]
-        return jnp.mean(in_collision.astype(jnp.float32))
 
     @partial(jax.jit, static_argnums=[0])
     def springboard_collision_count(self, state: AssemblyState) -> chex.Array:
@@ -994,33 +999,14 @@ class AssemblyEnv(MultiAgentEnv):
         return jnp.sum(is_spring.astype(jnp.float32))
 
     @partial(jax.jit, static_argnums=[0])
-    def coverage_efficiency(self, state: AssemblyState) -> chex.Array:
-        """Cells covered per agent — measures whether agents are stacking.
-
-        Perfect spread: each agent covers a unique cell → value = n_cells / n_agents.
-        Normalised to [0, 1] by dividing by n_cells/n_agents (ideal value).
-        Value of 1.0 means no stacking; < 1.0 means agents are sharing cells.
-        """
-        a2g = state.grid_center.T[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
-        a2g_dist = jnp.linalg.norm(a2g, axis=-1)                          # [n_a, n_g_max]
-        cell_occupied = jnp.any(a2g_dist < self.r_avoid / 2.0, axis=0)    # [n_g_max]
-        n_g = jnp.sum(state.valid_mask.astype(jnp.float32))
-        n_occupied = jnp.sum((cell_occupied & state.valid_mask).astype(jnp.float32))
-        # Ideal: all n_a agents spread perfectly → each covers n_g/n_a cells
-        # Efficiency = actual cells covered / n_agents, normalised by ideal (n_g/n_a)
-        ideal = n_g / self.n_a
-        return (n_occupied / self.n_a) / ideal  # = n_occupied / n_g = coverage_rate
-
-    @partial(jax.jit, static_argnums=[0])
     def eval_metrics(self, state: AssemblyState) -> Dict[str, chex.Array]:
         """Return all evaluation metrics as a dict."""
         return {
-            "coverage_rate":           self.coverage_rate(state),
+            "sensing_coverage":        self.sensing_coverage(state),
             "distribution_uniformity": self.distribution_uniformity(state),
             "voronoi_uniformity":      self.voronoi_based_uniformity(state),
             "mean_neighbor_distance":  self.mean_neighbor_distance(state),
-            "collision_rate":          self.collision_rate(state),
-            "coverage_efficiency":     self.coverage_efficiency(state),
+            "r_avoid_violation_count": self.r_avoid_violation_count(state),
         }
 
     # ────────────────────────────────────────────────────────────────────────
@@ -1069,13 +1055,14 @@ class AssemblyEnv(MultiAgentEnv):
         nei_vel          = state.p_vel[sorted_nei_idx]                         # [K, 2]
 
         # ── Repulsion: repulsion_strength=3.0 ────────────────────────────
+        # Fires when dist < 2*r_avoid (personal space bubble overlap).
         # Direction from neighbour toward self (pointing away from each neighbour)
         dir_away      = pos_i - nei_pos                          # [K, 2]
         safe_nei_dist = jnp.maximum(nei_dists, 1e-8)
         unit_away     = dir_away / safe_nei_dist[:, None]        # [K, 2]
         rep_factor    = jnp.where(
-            (nei_dists > 0) & (nei_dists < self.r_avoid),
-            3.0 * (self.r_avoid / safe_nei_dist - 1.0),
+            (nei_dists > 0) & (nei_dists < 2.0 * self.r_avoid),
+            3.0 * (2.0 * self.r_avoid / safe_nei_dist - 1.0),
             0.0,
         )  # [K]
         repulsion = jnp.sum(rep_factor[:, None] * unit_away, axis=0)  # [2]
@@ -1146,10 +1133,10 @@ class AssemblyEnv(MultiAgentEnv):
         safe_nei_dist = jnp.maximum(nei_dists, 1e-8)  # [n_a, K]
         unit_away = dir_away / safe_nei_dist[:, :, None]  # [n_a, K, 2]
         
-        # Repulsion factor
+        # Repulsion factor: fires when dist < 2*r_avoid (personal space bubble overlap)
         rep_factor = jnp.where(
-            (nei_dists > 0) & (nei_dists < self.r_avoid),
-            3.0 * (self.r_avoid / safe_nei_dist - 1.0),
+            (nei_dists > 0) & (nei_dists < 2.0 * self.r_avoid),
+            3.0 * (2.0 * self.r_avoid / safe_nei_dist - 1.0),
             0.0
         )  # [n_a, K]
         

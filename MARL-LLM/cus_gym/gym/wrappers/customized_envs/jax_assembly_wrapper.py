@@ -214,10 +214,10 @@ class JaxAssemblyAdapter:
 
     # ── Evaluation metrics (proxy onto JAX env methods) ───────────────────
 
-    def coverage_rate(self) -> float:
+    def sensing_coverage(self) -> float:
         if self.n_envs == 1:
-            return float(self.env.coverage_rate(self._states))
-        return float(jnp.mean(jax.vmap(self.env.coverage_rate)(self._states)))
+            return float(self.env.sensing_coverage(self._states))
+        return float(jnp.mean(jax.vmap(self.env.sensing_coverage)(self._states)))
 
     def distribution_uniformity(self) -> float:
         if self.n_envs == 1:

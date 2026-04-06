@@ -50,8 +50,6 @@ class MADDPG(object):
         self.trgt_pol_dev = 'cpu'
         self.trgt_critic_dev = 'cpu'
 
-        self.spatial_loss = False
-        self.temporal_loss = False
         self.niter = 0
 
         if device != 'cpu':
@@ -132,15 +130,6 @@ class MADDPG(object):
             log_pis.append(log_pi)
         return actions, log_pis, new_hidden_states
     
-    def step_rew(self, observations, start_stop_num):
-        """
-        Take a step forward in environment with all agents to get intrinsic rewards.
-        Inputs:
-            observations: List of observations for each agent
-        Outputs:
-            rewards: List of intrinsic rewards for each agent
-        """                                                           
-        return [self.agents[i].step_rew(observations[:, start_stop_num[i]].t()) for i in range(len(start_stop_num))]
 
     def update(self, obs, acs, rews, next_obs, dones, agent_i, acs_prior=None, alpha=0.5, parallel=False, logger=None):
         """
@@ -221,17 +210,15 @@ class MADDPG(object):
         regularization_term = torch.tensor(0.0, requires_grad=True)
         if acs_prior is not None:
             mse_loss = torch.nn.MSELoss()
-            
+
             # Filter out near-zero prior actions (likely invalid/padding)
             mask = (acs_prior.abs() < 1e-2).all(dim=1)
             valid_mask = ~mask
             filtered_all_pol_acs = all_pol_acs[valid_mask]
             filtered_acs_prior = acs_prior[valid_mask]
-            
+
             # Compute regularization loss only for valid prior actions
-            if filtered_all_pol_acs.numel() == 0 or filtered_acs_prior.numel() == 0:
-                regularization_term = torch.tensor(0.0, requires_grad=True)
-            else:
+            if filtered_all_pol_acs.numel() > 0 and filtered_acs_prior.numel() > 0:
                 regularization_term = mse_loss(filtered_all_pol_acs, filtered_acs_prior)
 
             # Add weighted regularization to policy loss
@@ -360,19 +347,3 @@ class MADDPG(object):
             a.load_params(params)
         return instance
 
-    @classmethod
-    def init_from_save_with_id(cls, filename, list_id):    
-        """
-        Instantiate instance of this class from file created by 'save' method with specific agent IDs.
-        """
-        save_dict = torch.load(filename)
-        instance = cls(**save_dict['init_dict'])
-        instance.init_dict = save_dict['init_dict']
-        for i in range(len(instance.agents)):
-            a = instance.agents[i]
-            policy_id = list_id[i]
-            if policy_id == 2:
-                continue
-            params = save_dict['agent_params'][policy_id]
-            a.load_params(params)
-        return instance

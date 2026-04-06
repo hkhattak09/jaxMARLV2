@@ -261,10 +261,10 @@ class JaxAssemblyAdapterGPU:
         """No-op — JAX env has no renderer yet."""
         pass
 
-    def coverage_rate(self) -> float:
+    def sensing_coverage(self) -> float:
         if self.n_envs == 1:
-            return float(self.env.coverage_rate(self._states))
-        return float(jnp.mean(jax.vmap(self.env.coverage_rate)(self._states)))
+            return float(self.env.sensing_coverage(self._states))
+        return float(jnp.mean(jax.vmap(self.env.sensing_coverage)(self._states)))
 
     def distribution_uniformity(self) -> float:
         if self.n_envs == 1:
@@ -281,15 +281,10 @@ class JaxAssemblyAdapterGPU:
             return float(self.env.mean_neighbor_distance(self._states))
         return float(jnp.mean(jax.vmap(self.env.mean_neighbor_distance)(self._states)))
 
-    def collision_rate(self) -> float:
+    def r_avoid_violation_count(self) -> float:
         if self.n_envs == 1:
-            return float(self.env.collision_rate(self._states))
-        return float(jnp.mean(jax.vmap(self.env.collision_rate)(self._states)))
-
-    def coverage_efficiency(self) -> float:
-        if self.n_envs == 1:
-            return float(self.env.coverage_efficiency(self._states))
-        return float(jnp.mean(jax.vmap(self.env.coverage_efficiency)(self._states)))
+            return float(self.env.r_avoid_violation_count(self._states))
+        return float(jnp.mean(jax.vmap(self.env.r_avoid_violation_count)(self._states)))
 
     def springboard_collision_count(self) -> float:
         """Number of unique agent pairs in physical body contact this step (averaged over envs).
@@ -313,16 +308,16 @@ class JaxAssemblyAdapterGPU:
             return self.env.springboard_collision_count(self._states)
         return jnp.sum(jax.vmap(self.env.springboard_collision_count)(self._states))
 
-    def collision_count_jax(self):
-        """JAX scalar: total agents in collision across all envs this step.
+    def r_avoid_violation_count_jax(self):
+        """JAX scalar: total r_avoid violation pairs across all envs this step.
 
         Returns a JAX DeviceArray (no Python sync) so callers can accumulate
         across steps and sync once at episode end. Divide by n_envs to get
         a per-env figure comparable across different n_rollout_threads values.
         """
         if self.n_envs == 1:
-            return self.env.count_collisions(self._states)
-        return jnp.sum(jax.vmap(self.env.count_collisions)(self._states))
+            return self.env.r_avoid_violation_count(self._states)
+        return jnp.sum(jax.vmap(self.env.r_avoid_violation_count)(self._states))
 
 
 class _DummyAgent:

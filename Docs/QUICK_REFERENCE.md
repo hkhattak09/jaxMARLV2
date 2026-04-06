@@ -22,35 +22,35 @@
 ```python
 # Initialization
 env = AssemblyEnv(
-    results_file: str,           # Path to 'fig/results.pkl'
-    n_a: int = 30,               # Number of agents
-    topo_nei_max: int = 6,       # Neighbors in observation
-    num_obs_grid_max: int = 80,  # Max target cells in obs
-    dt: float = 0.1,             # Physics timestep
-    vel_max: float = 0.8,        # Max velocity
-    k_ball: float = 30.0,        # Agent repulsion
-    k_wall: float = 100.0,       # Wall repulsion
-    size_a: float = 0.035,       # Agent radius
-    max_steps: int = 200,        # Episode length
+    results_file: str,              # Path to 'fig/results.pkl'
+    n_a: int = 24,                  # Number of agents
+    topo_nei_max: int = 6,          # Neighbors in observation (K), CLI: --topo_nei_max
+    num_obs_grid_max: int = 80,     # Max target cells in obs (M)
+    grid_obs_fraction: float = None,  # Alternative to num_obs_grid_max
+    dt: float = 0.1,                # Physics timestep (4 substeps internally at dt/4)
+    vel_max: float = 0.8,           # Max velocity
+    k_ball: float = 2000.0,         # Agent-agent repulsion (was 30 — increased to prevent tunneling)
+    k_wall: float = 100.0,          # Wall repulsion
+    size_a: float = 0.035,          # Agent body radius. Contact threshold: 2*size_a = 0.07
+    d_sen: float = 0.4,             # Sensing radius, CLI: --d_sen
+    r_avoid: float = 0.10,          # Personal space radius (was dynamic formula → fixed). CLI: --r_avoid
+    max_steps: int = 200,           # Episode length
 )
 
 # Reset
 obs_dict, state = env.reset(key: PRNGKey)
-# Returns: obs_dict: Dict[str, Array(obs_dim)], state: AssemblyState
 
 # Step
 obs_dict, new_state, rew_dict, done_dict, prior = env.step_env(
-    key: PRNGKey,
-    state: AssemblyState,
-    actions: Dict[str, Array(2)]
+    key: PRNGKey, state: AssemblyState, actions: Dict[str, Array(2)]
 )
-# Returns: All dicts, prior: Array(n_a, 2)
+# prior: Array(n_a, 2) — Reynolds flocking prior actions
 ```
 
-#### JaxAssemblyAdapterGPUGPU (GPU-optimized)
+#### JaxAssemblyAdapterGPU (GPU-optimized)
 ```python
 # Initialization
-adapter = JaxAssemblyAdapterGPUGPU(
+adapter = JaxAssemblyAdapterGPU(
     jax_env: AssemblyEnv,
     n_envs: int = 1,      # Parallel environments
     seed: int = 0,
@@ -63,13 +63,19 @@ obs_gpu = adapter.reset()  # Returns: (obs_dim, n_envs*n_a) torch.cuda.FloatTens
 # Step (MUST .detach() actions for DLPack)
 obs, rew, done, info, prior = adapter.step(actions: torch.cuda.FloatTensor)
 # Input:  actions (n_envs*n_a, 2) GPU tensor, MUST be .detach()'ed
-# Output: obs (obs_dim, n_envs*n_a), rew (1, n_envs*n_a), 
+# Output: obs (obs_dim, n_envs*n_a), rew (1, n_envs*n_a),
 #         done (1, n_envs*n_a), prior (2, n_envs*n_a)
 #         All torch.cuda.FloatTensor (except done is BoolTensor)
 
-# Metrics
-coverage = adapter.coverage_rate()           # Returns: float in [0, 1]
-uniformity = adapter.distribution_uniformity()  # Returns: float in [0, 1]
+# Metrics (updated names — see metrics redesign)
+coverage   = adapter.sensing_coverage()            # was coverage_rate() — now uses d_sen threshold
+violations = adapter.r_avoid_violation_count()     # was collision_rate() — pairwise, dist < 2*r_avoid
+violations_jax = adapter.r_avoid_violation_count_jax()  # no CPU sync — for accumulation during rollout
+spring     = adapter.springboard_collision_count() # physical contact pairs (dist < 2*size_a = 0.07)
+spring_jax = adapter.springboard_collision_count_jax()  # no CPU sync
+uniformity = adapter.distribution_uniformity()     # unchanged
+voronoi    = adapter.voronoi_based_uniformity()    # unchanged
+nd         = adapter.mean_neighbor_distance()      # unchanged
 ```
 
 ### MADDPG Algorithm
@@ -79,26 +85,30 @@ uniformity = adapter.distribution_uniformity()  # Returns: float in [0, 1]
 maddpg = MADDPG.init_from_env(
     env: JaxAssemblyAdapterGPU,
     agent_alg: str = 'MADDPG',
-    adversary_alg: str = None,
     tau: float = 0.01,              # Target network update rate
     lr_actor: float = 1e-4,
     lr_critic: float = 1e-3,
-    hidden_dim: int = 180,          # Actor hidden dim
-    critic_hidden_dim: int = 256,   # Centralised critic hidden dim (larger — joint input)
+    hidden_dim: int = 180,          # MLP actor hidden dim (ignored for CTM)
+    # critic_hidden_dim removed — AggregatingCritic has fixed internal structure
     device: str = 'gpu',
     epsilon: float = 0.1,           # Random action probability
     noise: float = 0.9,             # Gaussian noise scale
-    name: str = 'assembly',
+    use_ctm_actor: bool = True,     # CTM actor by default; pass --use_mlp_actor to CLI to revert
+    ctm_config: dict = None,        # CTM hyperparameters dict (required if use_ctm_actor=True)
 )
-# Sets dim_input_critic = env.num_agents * (obs_dim + action_dim) automatically
+# Critic: AggregatingCritic(n_agents, obs_dim, act_dim) — permutation-equivariant, set automatically
 
-# Action selection
-actions, log_pis = maddpg.step(
-    observations: Tensor,     # (obs_dim, n_agents)
-    start_stop_num: List[slice],  # [slice(0, n_agents)]
+# Action selection (3-tuple — always, even for MLP)
+actions, log_pis, new_hidden_states = maddpg.step(
+    observations: Tensor,           # (obs_dim, n_agents) — GPU tensor
+    start_stop_num: List[slice],    # [slice(0, n_agents)]
     explore: bool = False,
+    hidden_states = None,           # CTM: (state_trace, activated_trace); MLP: None
 )
-# Returns: actions: List[Tensor(action_dim, n_agents)], log_pis: List[Tensor(1, n_agents)]
+# actions: List[Tensor(action_dim, n_agents)]
+# log_pis: None for CTM; log-prob tensor for MLP
+# new_hidden_states: updated CTM state or None for MLP
+# Note: was 2-tuple (actions, log_pis) — updated to 3-tuple everywhere
 
 # Update networks (centralised critic — joint tensor inputs)
 vf_loss, pol_loss, reg_loss = maddpg.update(
@@ -256,30 +266,37 @@ for ep in range(3000):
 import torch
 import numpy as np
 from jaxmarl.environments.mpe.assembly import AssemblyEnv
-from gym.wrappers import JaxAssemblyAdapterGPU
+from gym.wrappers.customized_envs.jax_assembly_wrapper_gpu import JaxAssemblyAdapterGPU
 from algorithm.algorithms import MADDPG
+from cfg.assembly_cfg import gpsargs as cfg
 
-# 1. Load model
-maddpg = MADDPG.load('model_ep3000.pt')
+# 1. Load model (auto-detects CTM vs MLP via saved init_dict)
+maddpg = MADDPG.init_from_save('model.pt')
 
-# 2. Create environment
-jax_env = AssemblyEnv(results_file='fig/results.pkl', n_a=30)
-env = JaxAssemblyAdapterGPU(jax_env, n_envs=1, seed=42)
+# 2. Create environment (pass d_sen and r_avoid from cfg)
+jax_env = AssemblyEnv(results_file=cfg.results_file, n_a=cfg.n_a,
+                      topo_nei_max=cfg.topo_nei_max,
+                      d_sen=cfg.d_sen, r_avoid=cfg.r_avoid)
+env = JaxAssemblyAdapterGPU(jax_env, n_envs=1, seed=cfg.seed)
 
-# 3. Evaluate
-maddpg.prep_rollouts('cpu')
-obs = env.reset()
+# 3. Evaluate (GPU, stateless CTM)
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+maddpg.prep_rollouts(device='gpu')
+obs_gpu = env.reset()
 total_reward = 0.0
 
 with torch.no_grad():
     for t in range(200):
-        actions, _ = maddpg.step(torch.Tensor(obs), [slice(0, 30)], explore=False)
-        actions_np = np.column_stack([a.numpy() for a in actions])
-        obs, rews, dones, _, _ = env.step(actions_np.T)
-        total_reward += rews.mean()
+        hidden = (maddpg.agents[0].policy.get_initial_hidden_state(env.n_a, device)
+                  if maddpg.use_ctm_actor else None)
+        actions, _, _ = maddpg.step(obs_gpu, [slice(0, env.n_a)], explore=False, hidden_states=hidden)
+        agent_actions_gpu = torch.column_stack(actions)
+        obs_gpu, rews_gpu, _, _, _ = env.step(agent_actions_gpu.t().detach())
+        total_reward += rews_gpu.mean().item()
 
 print(f"Episode reward: {total_reward}")
-print(f"Coverage: {env.coverage_rate():.3f}")
+print(f"Sensing Coverage: {env.sensing_coverage():.3f}")  # was coverage_rate()
+print(f"R-Avoid Violations: {env.r_avoid_violation_count():.0f}")  # was collision_rate()
 print(f"Uniformity: {env.distribution_uniformity():.3f}")
 ```
 
@@ -305,38 +322,51 @@ print(f"Buffer sample acs: {acs_sample.shape}")  # Expected: (512, 2)
 
 ```python
 # Environment
-n_a = 30                    # Number of agents
-agent_strategy = 'input'    # Control: 'input'/'random'/'rule'
-results_file = 'fig/results.pkl'  # Target shapes
+n_a = 24                    # Number of agents
+topo_nei_max = 6            # K nearest neighbours each agent observes (CLI: --topo_nei_max)
+grid_obs_fraction = None    # Shape cells visible fraction; None = use num_obs_grid_max=80
+d_sen = 0.4                 # Sensing radius (CLI: --d_sen). Added in physics redesign.
+r_avoid = 0.10              # Personal space radius (CLI: --r_avoid). Was dynamic formula → fixed 0.10.
+results_file = 'fig/results.pkl'
 
 # Training
-seed = 226                  # Random seed
-n_rollout_threads = 1       # Parallel environments
-n_training_threads = 5      # CPU threads for training
-buffer_length = 20000       # Replay buffer capacity
-n_episodes = 3000           # Total episodes
-episode_length = 200        # Steps per episode
-batch_size = 512            # Training batch size
+seed = 226
+n_rollout_threads = 1
+buffer_length = 20000
+n_episodes = 3000
+episode_length = 200
+batch_size = 512
 
 # Networks
-hidden_dim = 180            # Hidden layer size
-lr_actor = 1e-4             # Actor learning rate
-lr_critic = 1e-3            # Critic learning rate
+hidden_dim = 180            # MLP actor hidden dim (CTM uses ctm_* params below)
+lr_actor = 1e-4
+lr_critic = 1e-3
+
+# CTM Actor (default — pass --use_mlp_actor to revert)
+use_ctm_actor = True        # Default True; --use_mlp_actor sets this to False
+ctm_d_model = 256           # Neuron population size
+ctm_memory_length = 16      # FIFO memory window length
+ctm_n_synch_out = 16        # Output neurons (output size = 16×17/2 = 136)
+ctm_iterations = 4          # Inner loop iterations per forward call
+ctm_synapse_depth = 1       # Synapse network depth
+ctm_deep_nlms = False       # Deep NLMs (not recommended — 68× more compute)
+ctm_do_layernorm_nlm = True # LayerNorm after NLMs
+ctm_memory_hidden_dims = 64 # Hidden dim for deep NLMs (unused when deep_nlms=False)
 
 # Exploration
-epsilon = 0.1               # Random action probability
-noise_scale = 0.9           # Initial Gaussian noise scale
-tau = 0.01                  # Target network soft update rate
+epsilon = 0.1
+noise_scale = 0.9
+tau = 0.01
 
 # Algorithm
-agent_alg = 'MADDPG'        # Algorithm type
-device = 'gpu'              # 'cpu' or 'gpu'
+agent_alg = 'MADDPG'
+device = 'gpu'
 
-# Checkpointing
-save_interval = 100         # Save every N episodes
-eval_interval = 100         # Evaluate every N episodes
-eval_episodes = 3           # Episodes per evaluation
-gif_dir = './eval_gifs'     # GIF output directory
+# Checkpointing / Evaluation
+save_interval = 100
+eval_interval = 100
+eval_episodes = 3
+gif_dir = './eval_gifs'
 ```
 
 ### Memory Calculation
@@ -590,11 +620,15 @@ for ep_index in range(0, cfg.n_episodes, cfg.n_rollout_threads):
 
 | File | Purpose |
 |------|---------|
-| `algorithm/utils/agents.py` | DDPGAgent (individual agent) |
-| `algorithm/utils/buffer_agent.py` | Replay buffer |
-| `cus_gym/gym/wrappers/customized_envs/jax_assembly_wrapper.py` | JAX-PyTorch adapter |
-| `train/eval_render.py` | Evaluation and GIF rendering |
-| `eval/eval_assembly.py` | Standalone evaluation script |
+| `algorithm/utils/agents.py` | DDPGAgent (MLP actor + AggregatingCritic) |
+| `algorithm/utils/ctm_actor.py` | CTMActor (wraps ContinuousThoughtMachineRL) |
+| `algorithm/utils/ctm_agent.py` | CTMDDPGAgent (subclass of DDPGAgent) |
+| `algorithm/utils/buffer_agent.py` | ReplayBufferAgent (joint rows, one per timestep) |
+| `algorithm/utils/networks.py` | MLPNetwork (MLP actor), AggregatingCritic (centralised critic) |
+| `cus_gym/gym/wrappers/customized_envs/jax_assembly_wrapper_gpu.py` | GPU adapter (DLPack) |
+| `cus_gym/gym/wrappers/customized_envs/jax_assembly_wrapper.py` | CPU adapter (legacy) |
+| `train/eval_render.py` | GIF rendering utility (shared by training and eval) |
+| `eval/eval_shapes.py` | Standalone post-training evaluation script |
 
 ### Documentation Files
 
@@ -612,15 +646,21 @@ for ep_index in range(0, cfg.n_episodes, cfg.n_rollout_threads):
 ## Quick Commands
 
 ```bash
-# Train from scratch (requires GPU)
+# Train from scratch with CTM actor (default)
 cd MARL-LLM/marl_llm
 python train/train_assembly_jax_gpu.py
+
+# Train with MLP actor (revert to baseline)
+python train/train_assembly_jax_gpu.py --use_mlp_actor
+
+# Train with custom observability (partial obs experiment)
+python train/train_assembly_jax_gpu.py --topo_nei_max 3 --use_mlp_actor
 
 # Monitor training
 tensorboard --logdir=./models/assembly/
 
-# Evaluate saved model
-python eval/eval_assembly.py --model_path=./models/assembly/.../model.pt
+# Evaluate saved model (standalone — edit WEIGHTS_PATHS inside the script)
+python eval/eval_shapes.py
 
 # Check GPU usage
 nvidia-smi -l 1

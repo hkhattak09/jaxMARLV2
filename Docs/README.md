@@ -59,6 +59,20 @@ Read in order for comprehensive understanding:
    - Where to add features
    - Quick commands
 
+### 🧠 Design Decision Records
+
+6. **[CTM_ACTOR_DESIGN.md](CTM_ACTOR_DESIGN.md)** — CTM actor design decisions
+   - Why stateless rollout (vs stateful / R-MADDPG)
+   - AggregatingCritic (centralised critic) design and failure history
+   - CTMActor and CTMDDPGAgent implementation details
+   - Prior-seeded iterative reasoning research direction
+
+7. **[REWARD_PHYSICS_REDESIGN.md](REWARD_PHYSICS_REDESIGN.md)** — Physics and reward redesign decisions *(all implemented)*
+   - Physics fix: k_ball=2000, 4 substeps (prevents tunneling)
+   - r_avoid redesign: dynamic formula → fixed 0.10, correct radius definition
+   - New reward structure: stepping stone + physical contact penalty
+   - Metrics redesign: sensing_coverage, r_avoid_violation_count
+
 ## 🚀 Quick Start for Agents
 
 ### First-Time Navigation
@@ -150,25 +164,40 @@ new_marl_llm_implementation/
 ├── MARL-LLM/                  # Main implementation
 │   ├── marl_llm/
 │   │   ├── train/            # Training scripts ⭐
-│   │   │   └── train_assembly_jax_gpu.py  # GPU-optimized entry point
+│   │   │   ├── train_assembly_jax_gpu.py  # GPU-optimized entry point (main)
+│   │   │   └── eval_render.py             # GIF rendering utility (shared)
 │   │   ├── algorithm/        # MADDPG, buffers, networks ⭐
+│   │   │   └── utils/
+│   │   │       ├── ctm_actor.py    # CTMActor (wraps ContinuousThoughtMachineRL)
+│   │   │       ├── ctm_agent.py   # CTMDDPGAgent
+│   │   │       ├── agents.py      # DDPGAgent (MLP actor)
+│   │   │       ├── networks.py    # MLPNetwork, AggregatingCritic
+│   │   │       └── buffer_agent.py
 │   │   ├── cfg/              # Configuration ⭐
-│   │   └── eval/             # Evaluation
+│   │   ├── eval/             # Evaluation
+│   │   │   └── eval_shapes.py  # Standalone post-training eval
+│   │   └── tests/            # Test suite
+│   │       └── test_ctm_implementation.py
 │   └── cus_gym/              # Environment adapter (GPU, DLPack) ⭐
 │       └── gym/wrappers/customized_envs/
-│           └── jax_assembly_wrapper_gpu.py
+│           ├── jax_assembly_wrapper_gpu.py  # Active (DLPack, GPU)
+│           └── jax_assembly_wrapper.py      # CPU adapter (legacy)
 ├── JaxMARL/                   # JAX environment ⭐
-│   └── jaxmarl/environments/mpe/
+│   └── jaxmarl/environments/mpe/assembly.py
+├── continuous-thought-machines/ # CTM base model
+│   └── models/ctm_rl.py
 ├── fig/                       # Target shapes
 │   └── results.pkl           # Preprocessed coordinates
 └── Docs/                      # **This documentation** ⭐
-    ├── README.md             # This file
+    ├── README.md
     ├── SYSTEM_ARCHITECTURE.md
     ├── CORE_COMPONENTS.md
     ├── ENVIRONMENT_INTERFACE.md
     ├── DATA_FLOW.md
     ├── TRAINING_PIPELINE.md
-    └── QUICK_REFERENCE.md
+    ├── QUICK_REFERENCE.md
+    ├── CTM_ACTOR_DESIGN.md      # CTM design decisions
+    └── REWARD_PHYSICS_REDESIGN.md  # Physics + reward + metrics redesign (all implemented)
 ```
 
 ⭐ = Most frequently accessed by agents

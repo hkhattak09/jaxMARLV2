@@ -28,51 +28,66 @@ Coordinates multiple DDPG agents for multi-agent learning. In this codebase, typ
 ```python
 MADDPG(agent_init_params, alg_types, epsilon, noise,
        gamma=0.95, tau=0.01, lr_actor=1e-4, lr_critic=1e-3,
-       hidden_dim=64, critic_hidden_dim=None, n_agents=None,
+       hidden_dim=64, n_agents=None,
        device='cpu', discrete_action=False,
        use_ctm_actor=False, ctm_config=None)
 ```
 
 **Key Parameters**:
-- `agent_init_params`: List of dicts with `dim_input_policy`, `dim_output_policy`, `dim_input_critic` for each agent type
+- `agent_init_params`: List of dicts with `dim_input_policy`, `dim_output_policy`, `n_agents` for each agent type
 - `alg_types`: List of agent types (e.g., `["agent"]`)
-- `n_agents`: Total physical agents (e.g., 24). Needed for joint reshape in update/target_policies.
+- `n_agents`: Total physical agents (e.g., 24). Used by `AggregatingCritic` and for joint reshape in `update`/`target_policies`.
 - `epsilon`: Probability of random action (exploration)
 - `noise`: Scale of Gaussian noise for exploration
 - `gamma`: Discount factor for rewards
 - `tau`: Soft update rate for target networks (θ_target ← τ*θ + (1-τ)*θ_target)
-- `hidden_dim`: Hidden layer size for actor networks (default 180)
-- `critic_hidden_dim`: Hidden layer size for centralised critic (default 256 — larger than actor because critic input is `n_agents×(obs_dim+2)`)
+- `hidden_dim`: Hidden layer size for MLP actor networks (default 180). CTM actor ignores this (uses `ctm_config`).
+- `use_ctm_actor`: If True, build `CTMDDPGAgent` with `CTMActor` instead of `DDPGAgent` with `MLPNetwork`. **Default True** (pass `--use_mlp_actor` CLI flag to revert).
+- `ctm_config`: Dict of CTM hyperparameters (d_model, memory_length, n_synch_out, iterations, synapse_depth, etc.).
+
+**Note on `critic_hidden_dim`**: Previously a constructor parameter for `MLPNetwork`-based critics. **Removed** — the centralised critic is now `AggregatingCritic` which has a fixed internal structure (shared encoder 194→128→64, mean aggregation, head 64→128→1). Its internal dims are not configurable via `MADDPG`.
 
 **Factory Method** (Recommended):
 ```python
 maddpg = MADDPG.init_from_env(env, agent_alg='MADDPG', tau=0.01,
                               lr_actor=1e-4, lr_critic=1e-3,
-                              hidden_dim=180, critic_hidden_dim=256,
-                              device='gpu', epsilon=0.1, noise=0.9)
+                              hidden_dim=180,
+                              device='gpu', epsilon=0.1, noise=0.9,
+                              use_ctm_actor=True, ctm_config={...})
 ```
 - Automatically extracts observation/action dimensions and `n_agents` from `env`
-- Sets `dim_input_critic = n_agents * (obs_dim + action_dim)` (centralised critic)
+- Passes `n_agents` to `AggregatingCritic` for permutation-equivariant joint Q-value
 
 ### Key Methods
 
-#### `step(observations, start_stop_num, explore=False)`
+#### `step(observations, start_stop_num, explore=False, hidden_states=None)`
 **Purpose**: Get actions from all agents for the current observations.
 
 **Inputs**:
 - `observations`: Tensor of shape `(obs_dim, n_agents)` — note: features in rows!
 - `start_stop_num`: List of slices, e.g., `[slice(0, 30)]` to select agent indices
 - `explore`: If True, adds exploration noise; if False, uses deterministic policy
+- `hidden_states`: CTM hidden state tuple `(state_trace, activated_trace)` or `None` for MLP. Under stateless rollout, pass fresh hidden state from `get_initial_hidden_state()` every step.
 
-**Outputs**:
-- `actions`: List of tensors, each shape `(n_agents, action_dim)` — **already transposed by DDPGAgent**
-- `log_pis`: List of log probabilities (used for some regularization schemes)
+**Outputs** (3-tuple — always, even for MLP):
+- `actions`: List of tensors, each shape `(n_agents, action_dim)` — **already transposed**
+- `log_pis`: List of log probabilities (None for CTM actor)
+- `new_hidden_states`: Updated CTM hidden state tuple, or None for MLP
 
-**Example**:
+**Previous return (changed)**: Was a 2-tuple `(actions, log_pis)`. Now always 3-tuple. All call sites updated: training loop, `run_eval`, `run_final_eval`, `eval_shapes.py`.
+
+**Example** (MLP):
 ```python
-obs = torch.Tensor(np_obs)  # shape: (192, 30) for obs_dim=192, n_a=30
-actions, log_pis = maddpg.step(obs, [slice(0, 30)], explore=True)
-# actions[0] shape: (30, 2) for 30 agents with 2D continuous actions
+obs_gpu = env.reset()  # (192, 24) torch.cuda.FloatTensor
+actions, _, _ = maddpg.step(obs_gpu, [slice(0, 24)], explore=True)
+# actions[0] shape: (24, 2)
+```
+
+**Example** (CTM, stateless):
+```python
+hidden = maddpg.agents[0].policy.get_initial_hidden_state(n_a, device)
+actions, _, _ = maddpg.step(obs_gpu, [slice(0, n_a)], explore=True, hidden_states=hidden)
+# hidden states discarded — fresh ones generated next step
 ```
 
 #### `update(obs, acs, rews, next_obs, dones, agent_i, acs_prior=None, alpha=0.5, parallel=False, logger=None)`
@@ -210,6 +225,59 @@ Get/set network parameters for checkpointing.
 
 ---
 
+## 2b. CTM Actor (Default)
+
+**CTM is the default actor.** Pass `--use_mlp_actor` to revert to the MLP actor.
+
+**Files**:
+- `algorithm/utils/ctm_actor.py` — `CTMActor(nn.Module)` wrapping `ContinuousThoughtMachineRL`
+- `algorithm/utils/ctm_agent.py` — `CTMDDPGAgent(DDPGAgent)` subclass
+
+### Why CTM
+
+The MLP actor makes a single feedforward pass: obs → action. The CTM runs `iterations=4` inner loop passes per observation, refining its action iteratively within a single timestep. Under partial observability (limited shape visibility), the CTM can start from a physics prior and iterate toward a learned action — a structural advantage over single-pass MLP.
+
+### Stateless Rollout (critical design decision)
+
+**Problem with stateful rollout**: Propagating hidden states across timesteps during rollout but reinitialising during actor updates caused a rollout/update mismatch. The critic was trained on actions from warm context-rich hidden states; policy gradient computed actions from a blank board → Q-overestimation, policy loss diverged.
+
+**Storing hidden states in buffer** (R-MADDPG approach): infeasible. CTM hidden state = 2 × (256 × 16) = 8,192 floats per agent per transition. At buffer_length=20k, 24 agents: ~15.7 GB.
+
+**Fix — stateless rollout**: Reset hidden states fresh at every timestep, identical to how actor updates work. Zero mismatch. CTM value-add is the iterative computation **within** a single timestep (4 inner passes), not cross-timestep memory.
+
+```python
+# Stateless rollout: every step
+hidden = maddpg.agents[0].policy.get_initial_hidden_state(n_a, device)
+actions, _, _ = maddpg.step(obs_gpu, start_stop_num, explore=True, hidden_states=hidden)
+hidden_states = None  # discarded — fresh ones next step
+```
+
+### CTMActor Architecture
+
+```python
+CTMActor(
+    obs_dim: int,         # 192
+    action_dim: int,      # 2
+    d_model: int = 256,   # Neuron population size
+    memory_length: int = 16,
+    n_synch_out: int = 16,   # Output size = 16×17/2 = 136-dim
+    iterations: int = 4,
+    synapse_depth: int = 1,
+    ...
+)
+# Internals: ContinuousThoughtMachineRL + nn.Linear(136, 2) action head + Tanh
+# backbone_type='classic-control-backbone', heads=0
+```
+
+`get_initial_hidden_state(batch_size, device)` → `(zeros, start_activated_trace.expand(batch_size))`
+— gradients flow through `start_activated_trace` (an `nn.Parameter`) during stateless actor updates.
+
+### CTMDDPGAgent
+
+Subclass of `DDPGAgent`. Does **not** call `DDPGAgent.__init__` (would create unwanted MLP policy). Does a dummy forward pass on both `policy` and `target_policy` before `hard_update` to materialise `nn.LazyLinear` layers — critical, otherwise both networks would materialise with different random weights.
+
+---
+
 ## 3. ReplayBufferAgent Class
 
 **Location**: `algorithm/utils/buffer_agent.py`
@@ -300,48 +368,46 @@ Compute mean reward over last N experiences (for logging).
 
 ---
 
-## 4. MLPNetwork Class
+## 4. Network Classes
 
 **Location**: `algorithm/utils/networks.py`
 
-### Purpose
-Multi-layer perceptron for policy (actor) or value (critic) function approximation.
+### MLPNetwork
 
-### Architecture
+Multi-layer perceptron used for the **actor** (MLP actor path only).
 
 ```python
-MLPNetwork(input_dim, out_dim, hidden_dim=64, 
-           nonlin=F.leaky_relu, constrain_out=False, 
+MLPNetwork(input_dim, out_dim, hidden_dim=64,
+           nonlin=F.leaky_relu, constrain_out=False,
            discrete_action=False)
 ```
 
-**Layers**:
-```
-Input (input_dim)
-    ↓
-FC1 → LeakyReLU → hidden_dim
-    ↓
-FC2 → LeakyReLU → hidden_dim
-    ↓
-FC3 → LeakyReLU → hidden_dim
-    ↓
-FC4 → out_dim
-    ↓
-[Tanh if constrain_out=True] → Output
-```
+**Layers**: `input → hidden → hidden → hidden → output [→ Tanh if constrain_out]`
 
 **Usage**:
-- **Policy**: `constrain_out=True` → Tanh output in [-1, 1]
-- **Critic**: `constrain_out=False` → Linear output (unbounded Q-values)
+- **MLP Policy**: `constrain_out=True` → Tanh output in [-1, 1]
+- Was previously also used for critic — **replaced** by `AggregatingCritic`
 
-### Forward Pass
+### AggregatingCritic *(centralised critic — replaces flat MLPNetwork critic)*
 
+**Previous critic**: `MLPNetwork` over flat 4,656-dim joint input (24 agents × 194). This caused catastrophic regression — an 18× compression in the first linear layer prevented the critic from learning a useful Q-function. The flat MLP has no way to exploit permutation equivariance of the Q-function over homogeneous agents.
+
+**Current critic** (permutation-equivariant by construction):
 ```python
-output = network(input_tensor)
+AggregatingCritic(n_agents, obs_dim, act_dim)
+# Internal structure:
+#   Shared encoder: (obs_dim + act_dim) → 128 → 64  (applied independently per agent)
+#   Mean aggregation: 24 × 64 → 64-dim team summary
+#   Head MLP: 64 → 128 → 1
+
+# Forward pass — same call site as before:
+q = critic(torch.cat([obs_all, act_all], dim=1))  # (batch, n_agents*(obs_dim+2)) → (batch, 1)
 ```
 
-**Input**: `(batch_size, input_dim)`
-**Output**: `(batch_size, out_dim)`
+- **Permutation equivariant**: Q(s,a) unchanged if agents reordered
+- **24× fewer parameters** than a flat MLP needed to cover the same input space
+- Both MLP and CTM actor use this same critic
+- `forward(X)` accepts concatenated joint obs+actions — no changes to `maddpg.py` call sites
 
 ---
 

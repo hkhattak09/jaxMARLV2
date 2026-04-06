@@ -80,7 +80,11 @@ elif cfg.device == "gpu":
 # 1. Create JAX environment
 jax_env = AssemblyEnv(
     results_file=cfg.results_file,  # 'fig/results.pkl'
-    n_a=cfg.n_a,                    # Default: 30 agents
+    n_a=cfg.n_a,                    # Default: 24 agents
+    topo_nei_max=cfg.topo_nei_max,  # K nearest neighbours each agent observes (default 6)
+    grid_obs_fraction=cfg.grid_obs_fraction,  # Alternative to num_obs_grid_max (None = use 80)
+    d_sen=cfg.d_sen,                # Sensing radius (default 0.4, CLI: --d_sen)
+    r_avoid=cfg.r_avoid,            # Personal space radius (default 0.10, CLI: --r_avoid)
 )
 
 # 2. Wrap with GPU-optimized adapter (uses DLPack)
@@ -92,30 +96,45 @@ env = JaxAssemblyAdapterGPU(
 )
 ```
 
+**Note**: `d_sen` and `r_avoid` are now CLI flags (added in physics/reward redesign). Old code that omits them will use the hardcoded defaults (0.4, 0.10). Old checkpoints trained without these flags used the old dynamic `r_avoid=0.29` formula — those checkpoints are incompatible.
+
 **Key**: `JaxAssemblyAdapterGPU` returns PyTorch CUDA tensors via DLPack. All data stays on GPU during rollout.
 
 ### Initialize MADDPG
 
 ```python
-adversary_alg = None  # Not used in assembly environment
+# Build CTM config if using CTM actor (default)
+ctm_config = {
+    'd_model': cfg.ctm_d_model,               # 256
+    'memory_length': cfg.ctm_memory_length,   # 16
+    'n_synch_out': cfg.ctm_n_synch_out,       # 16
+    'iterations': cfg.ctm_iterations,         # 4
+    'synapse_depth': cfg.ctm_synapse_depth,   # 1
+    'deep_nlms': cfg.ctm_deep_nlms,           # False
+    'do_layernorm_nlm': cfg.ctm_do_layernorm_nlm,  # True
+    'memory_hidden_dims': [cfg.ctm_memory_hidden_dims],  # [64]
+    'dropout': 0,
+} if cfg.use_ctm_actor else None
+
 maddpg = MADDPG.init_from_env(
     env,
     agent_alg=cfg.agent_alg,      # "MADDPG"
-    adversary_alg=adversary_alg,
     tau=cfg.tau,                  # 0.01 (soft update rate)
     lr_actor=cfg.lr_actor,        # 1e-4
     lr_critic=cfg.lr_critic,      # 1e-3
-    hidden_dim=cfg.hidden_dim,    # 180
+    hidden_dim=cfg.hidden_dim,    # 180 (MLP actor only; CTM uses ctm_config)
     device=cfg.device,            # "gpu"
     epsilon=cfg.epsilon,          # 0.1 (random action probability)
     noise=cfg.noise_scale,        # 0.9 (Gaussian noise scale)
-    name=cfg.env_name,
+    use_ctm_actor=cfg.use_ctm_actor,  # True (default); --use_mlp_actor to revert
+    ctm_config=ctm_config,
 )
 ```
 
 **Result**: MADDPG object with:
-- 1 DDPGAgent (homogeneous team)
-- Actor/critic networks (4-layer MLP, hidden_dim=180)
+- 1 CTMDDPGAgent (default) or DDPGAgent (--use_mlp_actor)
+- Actor: CTMActor (ContinuousThoughtMachineRL + Linear(136,2) + Tanh) or MLPNetwork
+- Critic: AggregatingCritic (permutation-equivariant centralised critic, shared across both actor types)
 - Target networks (soft-updated copies)
 - Optimizers (Adam for actor and critic)
 
@@ -353,22 +372,29 @@ decay = noise_scale / n_episodes  # 0.9 / 3000 = 0.0003
 ### Compute Metrics
 
 ```python
-# Environment quality metrics
-coverage = env.coverage_rate()                 # Fraction of target cells occupied
-uniformity = env.distribution_uniformity()     # Spacing uniformity
-voronoi_uniformity = env.voronoi_based_uniformity()  # Voronoi diagram uniformity
+# Environment quality metrics (updated names — see metrics redesign)
+coverage = env.sensing_coverage()               # Fraction of shape cells sensed by ≥1 agent (was coverage_rate)
+uniformity = env.distribution_uniformity()      # Spacing uniformity (unchanged)
+voronoi_uniformity = env.voronoi_based_uniformity()  # Voronoi diagram uniformity (unchanged)
+neighbor_dist = env.mean_neighbor_distance()    # Mean nearest-neighbour distance
 
-# Collision metric (accumulated during rollout, synced once at episode end)
-# episode_collisions = total agent-collision-steps / n_rollout_threads
-# Counts agents involved, not collision pairs. A single 2-agent collision
-# = 2; three agents all within r_avoid of each other = 3. Minimum is 2.
-# Dividing by n_rollout_threads normalises across any number of parallel envs.
-episode_collisions = float(collision_sum) / cfg.n_rollout_threads
+# R-avoid violations (replaces collision_rate + count_collisions)
+# Accumulated per step as JAX scalar (no CPU sync during rollout)
+# episode_r_avoid_violations = unique pairs with dist < 2*r_avoid, summed over 200 steps / n_envs
+episode_r_avoid_violations = float(r_avoid_violation_sum) / cfg.n_rollout_threads
+
+# Spring collisions: unique pairs with dist < 2*size_a = 0.07 (physical body contact)
+episode_spring_collisions = float(spring_collision_sum) / cfg.n_rollout_threads
 
 # Reward metrics
 avg_reward = episode_reward_mean_bar / cfg.episode_length
 reward_uniformity = 1.0 / (1.0 + episode_reward_std_bar / (abs(episode_reward_mean_bar) + 1e-8))
 ```
+
+**What changed from old metrics:**
+- `env.coverage_rate()` → `env.sensing_coverage()` — now uses `d_sen` (not `r_avoid/2`), reaches 1.0
+- `collision_sum` / `episode_collisions` → `r_avoid_violation_sum` / `episode_r_avoid_violations` — now pairwise pairs (not agent-steps), threshold `2*r_avoid`
+- `coverage_efficiency` removed entirely (was algebraically identical to old `coverage_rate`)
 
 ### Console Output (every 10 episodes)
 
@@ -378,14 +404,16 @@ Episode   100/ 3000 | Agents: 24 | Envs: 1
 ====================================================================================================
 REWARDS (last 10 eps):  Mean:  0.8234 | Std:  0.1456 | Uniformity:  0.850
 ENVIRONMENT METRICS (last 10 eps):
-  - Coverage: 0.823(std:0.012) | Dist Uniformity: 0.762(std:0.018) | Voronoi Uniformity: 0.701(std:0.021)
-  - Collisions (agent-steps/ep/env): 1240.5
+  - Sensing Coverage: 0.823(std:0.012) | Dist Uniformity: 0.762(std:0.018) | Voronoi Uniformity: 0.701(std:0.021)
+  - R-Avoid Violations (pairs/ep/env): 42.3 | Spring Collisions (pairs/ep/env): 1.2
 LOSSES (last 10 eps):   VF:  0.0234 | Policy: -0.8123 | Reg:  0.0145
 TIMING (last 10 eps):   Rollout:   5.23 | Policy Exec:   1.24 | Env Step:   3.89 | Training: 12.45
 ====================================================================================================
 ```
 
-**Collision metric interpretation**: `agent-steps/ep/env` = total agent-timesteps in collision, summed over 200 steps, averaged over last 10 episodes and N parallel envs. With 24 agents and 200 steps, theoretical maximum is 24×200 = 4800 (all agents in collision every step). Lower is better. Early training values of 1000-4000 are typical as agents explore randomly; expect this to decrease as policy improves.
+**R-Avoid Violations interpretation**: unique agent pairs with centre-to-centre dist < 2×r_avoid = 0.20, summed over 200 steps per episode, averaged over N envs. Three mutually-close agents = 3 pairs. With 24 agents the maximum is C(24,2)×200 = 55,200 (all pairs violating every step). Values < 100 indicate good spacing.
+
+**Spring Collisions interpretation**: unique pairs with dist < 2×size_a = 0.07 (physical body contact). Should be near zero once training converges — non-zero indicates agents physically overlapping.
 
 ### TensorBoard Logging (every save_interval=100)
 
@@ -394,7 +422,7 @@ logger.add_scalars(
     "agent/data",
     {
         "episode_reward": avg_reward,
-        "coverage": coverage,
+        "sensing_coverage": coverage,       # was "coverage"
         "nn_uniformity": uniformity,
         "voronoi_uniformity": voronoi_uniformity,
         "vf_loss": avg_vf_loss,
@@ -403,6 +431,8 @@ logger.add_scalars(
     },
     ep_index,
 )
+# Also logged: eval scalars under "eval/" and "final_eval/" keys
+# All keys use correct names: "sensing_coverage", "r_avoid_violations", "spring_collisions"
 ```
 
 **Visualization**: Run `tensorboard --logdir=./models/assembly/` to view training curves.
@@ -475,70 +505,61 @@ if ep_index > 0 and ep_index % cfg.eval_interval < cfg.n_rollout_threads:
 
 ```python
 def run_eval(maddpg, env, cfg, ep_index, logger):
-    # 1. Prepare for evaluation
-    maddpg.prep_rollouts(device="cpu")  # Eval mode, deterministic policy
+    # 1. Prepare for evaluation — networks stay on GPU
+    maddpg.prep_rollouts(device="gpu")  # Eval mode, deterministic policy, GPU
+    torch_device = torch.device('cuda')
     start_stop_num = [slice(0, env.n_a)]
-    
+
     total_reward = 0.0
     total_coverage = 0.0
     total_uniformity = 0.0
-    
+    total_r_avoid_violations = 0.0
+
     # 2. Run multiple evaluation episodes
-    with torch.no_grad():  # Disable gradient tracking
+    with torch.no_grad():
         for ep_i in range(cfg.eval_episodes):  # Default: 3
-            obs = env.reset()
+            obs_gpu = env.reset()
             ep_reward = 0.0
-            is_last_ep = (ep_i == cfg.eval_episodes - 1)
-            state_history = [] if is_last_ep else None
-            
-            # 3. Rollout episode (no exploration)
+            state_history = [] if (ep_i == cfg.eval_episodes - 1) else None
+
+            # 3. Rollout episode (no exploration, stateless CTM)
             for _ in range(cfg.episode_length):  # 200 steps
-                torch_obs = torch.Tensor(obs).requires_grad_(False)
-                torch_agent_actions, _ = maddpg.step(
-                    torch_obs, 
-                    start_stop_num, 
-                    explore=False  # ← Deterministic policy!
+                # Fresh hidden state every step (stateless rollout)
+                eval_hidden = (maddpg.agents[0].policy.get_initial_hidden_state(env.n_a, torch_device)
+                               if maddpg.use_ctm_actor else None)
+                # step() returns 3-tuple always
+                torch_agent_actions, _, _ = maddpg.step(
+                    obs_gpu, start_stop_num, explore=False, hidden_states=eval_hidden
                 )
-                agent_actions = np.column_stack(
-                    [ac.data.numpy() for ac in torch_agent_actions]
-                )
-                obs, rewards, _, _, _ = env.step(agent_actions)
-                ep_reward += np.mean(rewards)
-                
-                # 4. Collect states for GIF (last episode only)
-                if is_last_ep:
+                agent_actions_gpu = torch.column_stack(torch_agent_actions)
+                obs_gpu, rewards_gpu, _, _, _ = env.step(agent_actions_gpu.t().detach())
+                ep_reward += rewards_gpu.mean().item()
+
+                if state_history is not None:
                     state_history.append(env._states)
-            
-            # 5. Accumulate metrics
+
+            # 4. Accumulate metrics (updated names)
             total_reward += ep_reward / cfg.episode_length
-            total_coverage += env.coverage_rate()
+            total_coverage += env.sensing_coverage()           # was coverage_rate()
             total_uniformity += env.distribution_uniformity()
-            
-            # 6. Render GIF (last episode only)
-            if is_last_ep:
-                gif_path = Path(cfg.gif_dir) / f"eval_{ep_index}.gif"
-                save_eval_gif(state_history, gif_path)
-    
-    # 7. Average and log
+            total_r_avoid_violations += env.r_avoid_violation_count()  # was collision_rate()
+
+    # 5. Average and log (updated keys)
     mean_reward = total_reward / cfg.eval_episodes
     mean_coverage = total_coverage / cfg.eval_episodes
     mean_uniformity = total_uniformity / cfg.eval_episodes
-    
-    print(
-        f"[EVAL] ep {ep_index} | reward: {mean_reward:.4f} | "
-        f"coverage: {mean_coverage:.4f} | uniformity: {mean_uniformity:.4f}"
-    )
-    logger.add_scalars(
-        "eval",
-        {
-            "reward": mean_reward,
-            "coverage": mean_coverage,
-            "uniformity": mean_uniformity,
-        },
-        ep_index,
-    )
-    
-    # 8. Restore training mode
+    mean_r_avoid_violations = total_r_avoid_violations / cfg.eval_episodes
+
+    print(f"[EVAL] ep {ep_index} | reward: {mean_reward:.4f} | "
+          f"sensing_coverage: {mean_coverage:.4f} | r_avoid_violations: {mean_r_avoid_violations:.1f}")
+    logger.add_scalars("eval", {
+        "reward": mean_reward,
+        "sensing_coverage": mean_coverage,       # was "coverage"
+        "uniformity": mean_uniformity,
+        "r_avoid_violations": mean_r_avoid_violations,  # new (replaced collision_rate)
+    }, ep_index)
+
+    # 6. Restore training mode
     maddpg.prep_training(device=cfg.device)
 ```
 
