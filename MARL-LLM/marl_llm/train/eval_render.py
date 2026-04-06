@@ -24,9 +24,12 @@ from pathlib import Path
 # AssemblyEnv defaults — used for rendering geometry
 _BOUNDARY_HALF = 2.4
 _SIZE_A        = 0.035
+_D_SEN         = 0.4
+_R_AVOID       = 0.29
 
 
-def render_frame(p_pos_np, grid_center_np, valid_mask_np, l_cell, step):
+def render_frame(p_pos_np, grid_center_np, valid_mask_np, l_cell, step,
+                 size_a=_SIZE_A, d_sen=_D_SEN, r_avoid=_R_AVOID):
     """Render one timestep to a 480×480 RGB numpy array.
 
     Args:
@@ -35,6 +38,9 @@ def render_frame(p_pos_np, grid_center_np, valid_mask_np, l_cell, step):
         valid_mask_np: (n_g,)     bool numpy    — True = real cell.
         l_cell:        float      — grid cell side-length.
         step:          int        — step index shown in title.
+        size_a:        float      — agent physical radius.
+        d_sen:         float      — sensing radius (drawn as thin ring).
+        r_avoid:       float      — avoidance radius (drawn as dashed ring).
 
     Returns:
         (480, 480, 3) uint8 numpy RGB array.
@@ -62,9 +68,19 @@ def render_frame(p_pos_np, grid_center_np, valid_mask_np, l_cell, step):
             linewidth=0, facecolor='#4caf50', alpha=0.4,
         ))
 
-    # Agents
+    # Agents: sensing ring, avoidance ring, body
     for x, y in p_pos_np:
-        ax.add_patch(mpatches.Circle((x, y), _SIZE_A, color='#42a5f5', zorder=3))
+        # Sensing distance — thin solid yellow ring
+        ax.add_patch(mpatches.Circle((x, y), d_sen,
+                                     linewidth=0.4, edgecolor='#ffeb3b',
+                                     facecolor='none', alpha=0.25, zorder=2))
+        # Avoidance radius — thin dashed red ring
+        ax.add_patch(mpatches.Circle((x, y), r_avoid,
+                                     linewidth=0.6, edgecolor='#ef5350',
+                                     facecolor='none', alpha=0.4, zorder=2,
+                                     linestyle='--'))
+        # Agent body
+        ax.add_patch(mpatches.Circle((x, y), size_a, color='#42a5f5', zorder=3))
 
     ax.set_title(f"Step {step}", color='white', fontsize=9, pad=3)
     ax.tick_params(colors='white', labelsize=7)
@@ -81,7 +97,8 @@ def render_frame(p_pos_np, grid_center_np, valid_mask_np, l_cell, step):
     return frame
 
 
-def save_eval_gif(state_history_jax, gif_path, fps=12, frame_skip=2):
+def save_eval_gif(state_history_jax, gif_path, fps=12, frame_skip=2,
+                  size_a=_SIZE_A, d_sen=_D_SEN, r_avoid=_R_AVOID):
     """Bulk-transfer episode states from device to CPU, render frames, save GIF.
 
     Args:
@@ -89,6 +106,9 @@ def save_eval_gif(state_history_jax, gif_path, fps=12, frame_skip=2):
         gif_path:          str or Path — where to write the .gif file.
         fps:               int — frames per second for the output GIF.
         frame_skip:        int — render every Nth step (2 = half the frames).
+        size_a:            float — agent physical radius (from env.size_a).
+        d_sen:             float — sensing radius (from env.d_sen).
+        r_avoid:           float — avoidance radius (from env.r_avoid).
     """
     import jax
     import jax.numpy as jnp
@@ -116,7 +136,8 @@ def save_eval_gif(state_history_jax, gif_path, fps=12, frame_skip=2):
     # ──────────────────────────────────────────────────────────────────────
 
     frames = [
-        render_frame(p_pos_np, grid_center_np, valid_mask_np, l_cell, t)
+        render_frame(p_pos_np, grid_center_np, valid_mask_np, l_cell, t,
+                     size_a=size_a, d_sen=d_sen, r_avoid=r_avoid)
         for t, p_pos_np in enumerate(p_pos_all)
     ]
 

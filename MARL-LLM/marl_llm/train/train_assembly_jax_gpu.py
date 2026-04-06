@@ -120,7 +120,8 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
                 # Save GIF of last episode for this shape
                 if is_last_ep:
                     gif_path = run_dir / "final_eval" / f"shape_{shape_idx}.gif"
-                    save_eval_gif(state_history, gif_path)
+                    save_eval_gif(state_history, gif_path,
+                                  size_a=env.size_a, d_sen=env.d_sen, r_avoid=env.r_avoid)
 
             # Average over episodes
             mean_reward               = shape_reward              / episodes_per_shape
@@ -248,7 +249,8 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
             # Bulk GPU→CPU transfer + GIF rendering after the episode is done
             if is_last_ep:
                 gif_path = Path(cfg.gif_dir) / f"eval_{ep_index}.gif"
-                save_eval_gif(state_history, gif_path)
+                save_eval_gif(state_history, gif_path,
+                              size_a=env.size_a, d_sen=env.d_sen, r_avoid=env.r_avoid)
 
     mean_reward              = total_reward              / cfg.eval_episodes
     mean_coverage            = total_coverage            / cfg.eval_episodes

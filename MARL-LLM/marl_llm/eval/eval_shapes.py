@@ -184,7 +184,8 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
             # Save GIF for last episode
             if is_last_episode:
                 gif_path = model_output_dir / f"shape_{shape_idx:02d}.gif"
-                save_eval_gif(state_history, gif_path, fps=12, frame_skip=2)
+                save_eval_gif(state_history, gif_path, fps=12, frame_skip=2,
+                              size_a=env.size_a, d_sen=env.d_sen, r_avoid=env.r_avoid)
 
         # Compute shape statistics
         mean_reward = np.mean(shape_rewards)
