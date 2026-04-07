@@ -158,7 +158,7 @@ results_file = os.path.join(_repo_root, 'fig', 'results.pkl')
 parser.add_argument("--n_a", type=int, default=24, help='Number of agents in the swarm')
 parser.add_argument("--topo_nei_max", type=int, default=6, help='Number of nearest neighbors each agent can observe (K). Default 6. Reduce for partial observability experiments.')
 parser.add_argument("--grid_obs_fraction", type=float, default=None, help='Fraction of shape cells visible to each agent, in (0, 1]. None = use legacy num_obs_grid_max=80. Example: 0.3 means each agent sees floor(0.3 * n_cells) nearest unoccupied cells.')
-parser.add_argument("--d_sen", type=float, default=0.2, help='Agent sensing radius. Must be >= thinnest_feature_width/2 for the global medial axis signal to work. Default 0.2.')
+parser.add_argument("--d_sen", type=float, default=0.3, help='Agent sensing radius. Must be >= thinnest_feature_width/2 for the global medial axis signal to work. Default 0.2.')
 parser.add_argument("--r_avoid", type=float, default=0.10, help='Personal space radius. Spacing violation when dist < 2*r_avoid. Coverage when agent within r_avoid of cell. Recommended: 3*size_a ≈ 0.105 → 0.10.')
 
 # Agent behavior configuration
