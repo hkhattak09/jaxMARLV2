@@ -793,8 +793,8 @@ class AssemblyEnv(MultiAgentEnv):
         v_exp_norm = jnp.linalg.norm(v_exp, axis=1)  # [n_a]
 
         any_sensed = jnp.any(is_sensed_unoccupied, axis=1)  # [n_a]
-        # Saturated case (no unoccupied cells visible): nowhere better to go → is_uniform=True
-        is_uniform = in_flag & jnp.where(any_sensed, v_exp_norm < 0.05, True)  # [n_a]
+        # No unoccupied cells visible → cluster is fully packed, not uniform
+        is_uniform = in_flag & jnp.where(any_sensed, v_exp_norm < 0.05, False)  # [n_a]
 
         # ══════════════════════════════════════════════════════════════════════
         # is_touching: physical body contact (dist < 2*size_a = 0.07)
@@ -847,8 +847,8 @@ class AssemblyEnv(MultiAgentEnv):
         v_exp_norm  = jnp.linalg.norm(v_exp)
 
         any_sensed = jnp.any(is_sensed_unoccupied)
-        # Saturated case (no unoccupied cells visible): nowhere better to go → is_uniform=True
-        is_uniform = in_flag & jnp.where(any_sensed, v_exp_norm < 0.05, True)
+        # No unoccupied cells visible → cluster is fully packed, not uniform
+        is_uniform = in_flag & jnp.where(any_sensed, v_exp_norm < 0.05, False)
 
         # ── is_touching: physical body contact (dist < 2*size_a = 0.07) ──────
         is_touching = agent_dists < 2.0 * self.size_a  # [n_a] (includes self, but self=0 < threshold)
