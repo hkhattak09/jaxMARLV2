@@ -42,6 +42,8 @@ class CTMDDPGAgent(DDPGAgent):
 
         self.critic = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180)
         self.target_critic = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180)
+        self.critic2 = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180)
+        self.target_critic2 = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180)
 
         # Materialize nn.LazyLinear layers in CTMActor before hard_update.
         # LazyLinear weights don't exist until the first forward pass — copying
@@ -56,9 +58,11 @@ class CTMDDPGAgent(DDPGAgent):
 
         hard_update(self.target_policy, self.policy)
         hard_update(self.target_critic, self.critic)
+        hard_update(self.target_critic2, self.critic2)
 
         self.policy_optimizer = Adam(self.policy.parameters(), lr=lr_actor)
         self.critic_optimizer = Adam(self.critic.parameters(), lr=lr_critic)
+        self.critic2_optimizer = Adam(self.critic2.parameters(), lr=lr_critic)
 
         # Attributes used by inherited scale_noise / reset_noise
         self.epsilon = epsilon
@@ -96,16 +100,22 @@ class CTMDDPGAgent(DDPGAgent):
         return {
             'policy': self.policy.state_dict(),
             'critic': self.critic.state_dict(),
+            'critic2': self.critic2.state_dict(),
             'target_policy': self.target_policy.state_dict(),
             'target_critic': self.target_critic.state_dict(),
+            'target_critic2': self.target_critic2.state_dict(),
             'policy_optimizer': self.policy_optimizer.state_dict(),
             'critic_optimizer': self.critic_optimizer.state_dict(),
+            'critic2_optimizer': self.critic2_optimizer.state_dict(),
         }
 
     def load_params(self, params):
         self.policy.load_state_dict(params['policy'])
         self.critic.load_state_dict(params['critic'])
+        self.critic2.load_state_dict(params['critic2'])
         self.target_policy.load_state_dict(params['target_policy'])
         self.target_critic.load_state_dict(params['target_critic'])
+        self.target_critic2.load_state_dict(params['target_critic2'])
         self.policy_optimizer.load_state_dict(params['policy_optimizer'])
         self.critic_optimizer.load_state_dict(params['critic_optimizer'])
+        self.critic2_optimizer.load_state_dict(params['critic2_optimizer'])

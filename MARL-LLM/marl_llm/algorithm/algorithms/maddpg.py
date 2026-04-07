@@ -151,29 +151,45 @@ class MADDPG(object):
         """
         curr_agent = self.agents[agent_i]    
 
-        ######################### Update Critic #########################       
+        ######################### Update Critic (TD3 double critic) #########################
         curr_agent.critic_optimizer.zero_grad()
-        
+        curr_agent.critic2_optimizer.zero_grad()
+
         # Compute target actions using target policies
-        all_trgt_acs = self.target_policies(agent_i, next_obs)  
-        trgt_vf_in = torch.cat((next_obs, all_trgt_acs), dim=1) 
+        all_trgt_acs = self.target_policies(agent_i, next_obs)
+        trgt_vf_in = torch.cat((next_obs, all_trgt_acs), dim=1)
 
-        # Calculate target Q-value using Bellman equation
-        target_value = (rews + self.gamma * curr_agent.target_critic(trgt_vf_in) * (1 - dones))
-        
-        # Compute current Q-value
+        # TD3: target value uses min of both target critics — prevents Q-overestimation
+        with torch.no_grad():
+            target_value = rews + self.gamma * torch.min(
+                curr_agent.target_critic(trgt_vf_in),
+                curr_agent.target_critic2(trgt_vf_in),
+            ) * (1 - dones)
+
+        # Compute current Q-values from both critics
         vf_in = torch.cat((obs, acs), dim=1)
-        actual_value = curr_agent.critic(vf_in)
-        
-        # Critic loss (TD error)
-        vf_loss = MSELoss(actual_value, target_value.detach())
+        actual_value1 = curr_agent.critic(vf_in)
+        actual_value2 = curr_agent.critic2(vf_in)
 
-        # Backward pass for critic
-        vf_loss.backward()
+        # Critic losses (TD error) — both trained against the same min target
+        vf_loss1 = MSELoss(actual_value1, target_value)
+        vf_loss2 = MSELoss(actual_value2, target_value)
+
+        # Backward pass for critic 1
+        vf_loss1.backward()
         if parallel:
             average_gradients(curr_agent.critic)
         torch.nn.utils.clip_grad_norm_(curr_agent.critic.parameters(), 0.5)
         curr_agent.critic_optimizer.step()
+
+        # Backward pass for critic 2
+        vf_loss2.backward()
+        if parallel:
+            average_gradients(curr_agent.critic2)
+        torch.nn.utils.clip_grad_norm_(curr_agent.critic2.parameters(), 0.5)
+        curr_agent.critic2_optimizer.step()
+
+        vf_loss = vf_loss1  # used for logging below
 
         ######################### Update Actor (Option A) #########################
         # Recompute only agent_i's actions through the shared policy; use stored
@@ -247,7 +263,8 @@ class MADDPG(object):
         Update all target networks (called after normal updates have been performed for each agent).
         """
         for a in self.agents:
-            soft_update(a.target_critic, a.critic, self.tau)   
+            soft_update(a.target_critic, a.critic, self.tau)
+            soft_update(a.target_critic2, a.critic2, self.tau)
             soft_update(a.target_policy, a.policy, self.tau)
         self.niter += 1
 
@@ -256,9 +273,12 @@ class MADDPG(object):
         Prepare agents for training by setting them to training mode and moving them to the specified device.
         """
         for a in self.agents:
-            a.policy.train()  
+            a.policy.train()
             a.target_policy.train()
+            a.critic.train()
+            a.critic2.train()
             a.target_critic.train()
+            a.target_critic2.train()
 
         # device transform
         if device == 'gpu':
@@ -272,6 +292,7 @@ class MADDPG(object):
         if not self.critic_dev == device:
             for a in self.agents:
                 a.critic = fn(a.critic)
+                a.critic2 = fn(a.critic2)
             self.critic_dev = device
         if not self.trgt_pol_dev == device:
             for a in self.agents:
@@ -280,6 +301,7 @@ class MADDPG(object):
         if not self.trgt_critic_dev == device:
             for a in self.agents:
                 a.target_critic = fn(a.target_critic)
+                a.target_critic2 = fn(a.target_critic2)
             self.trgt_critic_dev = device
 
     def prep_rollouts(self, device='cpu'):

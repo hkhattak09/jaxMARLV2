@@ -352,23 +352,27 @@ metrics couldn't see it cleanly. New metrics should clarify. K=1 still to run.
 1. ~~**Physics + Reward redesign**~~ — **in progress.** See `Docs/REWARD_PHYSICS_REDESIGN.md` for
    full decisions. Summary of changes needed in `assembly.py` and `assembly_cfg.py`:
    - k_ball=2000 + 4 substeps — **DONE**
+   - is_uniform saturated case → False — **DONE**
    - Hardcode r_avoid=0.10 as constructor arg, remove formula — TODO
    - Rename `is_collision` → `too_close`, `dist < r_avoid` → `dist < 2 * r_avoid` — TODO
    - Coverage radius: `r_avoid/2` → `r_avoid` everywhere — TODO
-   - Fix `is_uniform` saturated case: `any_sensed=False` → `is_uniform=True` — TODO
    - Stepping stone reward: +0.1 for `in_flag` alone — TODO
    - Physical contact penalty: -0.07 per `is_touching` neighbor (`dist < 2*size_a`) — TODO
    - Wire `--d_sen` and `--r_avoid` as CLI flags in assembly_cfg.py — TODO
-2. **Run MLP baseline with fixed reward** for 500 episodes — verify task is now well-posed
-   (coverage should improve cleanly, reward no longer near-zero constantly).
-3. **Check if `num_obs_grid_max` is a configurable CLI parameter** — wire it if not.
-4. **Run MLP at M=10, K=3 for 500 episodes** — confirm the task becomes genuinely hard.
-5. **Run CTM zero-init at M=10, K=3** — establish whether zero-init CTM helps at all.
-6. **Implement prior-seeded CTM** only if steps 4-5 confirm a regime where MLP struggles.
-7. Full ablation table for paper once prior-seeded CTM shows a clear gap.
+2. **Implement TD3 double critic** — root cause of policy collapse after ep ~90 in both MLP
+   and CTM runs. Training logs show policy loss growing unbounded (-1 → -12) while coverage
+   plateaus/oscillates — classic DDPG Q-overestimation. Fix: two AggregatingCritic instances,
+   take min Q for target. Files to change: `agents.py`, `ctm_agent.py`, `maddpg.py`.
+3. **Run MLP baseline with fixed reward + TD3** for 500 episodes — verify policy no longer
+   collapses after ep 90 and coverage improves past the ~0.70 ceiling.
+4. **Check if `num_obs_grid_max` is a configurable CLI parameter** — wire it if not.
+5. **Run MLP at M=10, K=3 for 500 episodes** — confirm the task becomes genuinely hard.
+6. **Run CTM zero-init at M=10, K=3** — establish whether zero-init CTM helps at all.
+7. **Implement prior-seeded CTM** only if steps 5-6 confirm a regime where MLP struggles.
+8. Full ablation table for paper once prior-seeded CTM shows a clear gap.
 
 **Do not run more K-sweep experiments at M=80 — they will not produce a meaningful result.**
-**Do not run partial observability experiments until the reward redesign is verified (step 2).**
+**Do not run partial observability experiments until TD3 + reward fixes are verified (steps 2-3).**
 
 ### Intellectual honesty rule
 
@@ -402,13 +406,15 @@ reward_i = 0.1  × in_flag                             # stepping stone — alwa
 ```
 - Outside: 0.0 | Inside colliding: 0.03 | Inside settling: 0.1 | Full: 1.0
 
-### is_uniform fix (AGREED)
+### is_uniform fix (DONE — reversed)
 ```python
-# Old: is_uniform = in_flag & any_sensed & (v_exp_norm < 0.05)
-# New:
-is_uniform = jnp.where(any_sensed, v_exp_norm < 0.05, True)
+# Implemented:
+is_uniform = in_flag & jnp.where(any_sensed, v_exp_norm < 0.05, False)
 ```
-Saturated case (no unoccupied cells visible): nowhere better to go, hold position — is_uniform=True.
+Saturated case (no unoccupied cells visible) → `is_uniform=False`. A fully packed cluster
+should not earn the 0.9 reward — the agent just can't *see* that it's in a bad position.
+Defaulting to True was actively rewarding clustering at d_sen=0.2.
+Both vectorised (`rewards()`) and single-agent (`_reward_single()`) versions updated.
 
 ### Physics fix (DONE)
 - k_ball: 30 → 2000. _world_step: 4 substeps at dt/4=0.025. Prevents tunneling.
