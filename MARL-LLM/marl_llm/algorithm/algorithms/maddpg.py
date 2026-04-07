@@ -10,15 +10,25 @@ class MADDPG(object):
     """
     def __init__(self, agent_init_params, alg_types, epsilon, noise, gamma=0.95, tau=0.01, lr_actor=1e-4, lr_critic=1e-3,
                  hidden_dim=64, n_agents=None, device='cpu', discrete_action=False,
-                 use_ctm_actor=False, ctm_config=None):
+                 use_ctm_actor=False, ctm_config=None, prior_mode='none'):
         """
         Initialize the MADDPG object with given parameters.
+
+        Args:
+            prior_mode: How to use the Reynolds prior during training.
+                'none'       — prior is ignored entirely.
+                'regularize' — prior is used as an MSE regularization term on actor output.
+                'seed'       — prior seeds the CTM state_trace at the start of each
+                               actor-update forward pass (CTM only; error if MLP).
         """
+        if prior_mode == 'seed' and not use_ctm_actor:
+            raise ValueError("prior_mode='seed' requires use_ctm_actor=True — MLP has no hidden state to seed.")
         self.nagents = len(alg_types)
         self.alg_types = alg_types
         self.epsilon = epsilon
         self.noise = noise
         self.use_ctm_actor = use_ctm_actor
+        self.prior_mode = prior_mode
         # n_agents: number of physical agents (≥ nagents when parameter sharing is used)
         self.n_agents = n_agents if n_agents is not None else self.nagents
 
@@ -206,7 +216,13 @@ class MADDPG(object):
         agent_obs = obs[:, agent_i * obs_dim : (agent_i + 1) * obs_dim]
 
         if self.use_ctm_actor:
-            hidden = curr_agent.policy.get_initial_hidden_state(batch_size, obs.device)
+            if self.prior_mode == 'seed' and acs_prior is not None:
+                # Seed mode: initialise state_trace from (obs, prior) via learned seed_mlp.
+                # acs_prior is joint (batch, n_agents*action_dim); extract agent_i's slice.
+                prior_agent_i = acs_prior[:, agent_i * action_dim : (agent_i + 1) * action_dim]
+                hidden = curr_agent.policy.get_prior_seeded_hidden_state(agent_obs, prior_agent_i)
+            else:
+                hidden = curr_agent.policy.get_initial_hidden_state(batch_size, obs.device)
             curr_pol_out, _ = curr_agent.policy(agent_obs, hidden)
         else:
             curr_pol_out = curr_agent.policy(agent_obs)  # (batch, action_dim)
@@ -222,9 +238,9 @@ class MADDPG(object):
         vf_in = torch.cat((obs, all_pol_acs), dim=1)
         pol_loss = -curr_agent.critic(vf_in).mean()
 
-        # Add regularization term towards prior actions if provided
+        # Regularization towards prior actions (only for prior_mode='regularize')
         regularization_term = torch.tensor(0.0, requires_grad=True)
-        if acs_prior is not None:
+        if self.prior_mode == 'regularize' and acs_prior is not None:
             mse_loss = torch.nn.MSELoss()
 
             # Filter out near-zero prior actions (likely invalid/padding)
@@ -237,7 +253,6 @@ class MADDPG(object):
             if filtered_all_pol_acs.numel() > 0 and filtered_acs_prior.numel() > 0:
                 regularization_term = mse_loss(filtered_all_pol_acs, filtered_acs_prior)
 
-            # Add weighted regularization to policy loss
             pol_loss = pol_loss + 0.3 * alpha * regularization_term
 
         # Backward pass for actor
@@ -332,7 +347,7 @@ class MADDPG(object):
     @classmethod
     def init_from_env(cls, env, agent_alg="MADDPG", adversary_alg="MADDPG", gamma=0.95, tau=0.01, lr_actor=1e-4, lr_critic=1e-3,
                       hidden_dim=64, name='flocking', device='cpu', epsilon=0.1, noise=0.1,
-                      use_ctm_actor=False, ctm_config=None):
+                      use_ctm_actor=False, ctm_config=None, prior_mode='none'):
         """
         Instantiate instance of this class from multi-agent environment.
         """
@@ -352,7 +367,8 @@ class MADDPG(object):
                          'epsilon': epsilon, 'noise': noise, 'hidden_dim': hidden_dim,
                          'n_agents': n_agents, 'device': device, 'alg_types': alg_types,
                          'agent_init_params': agent_init_params,
-                         'use_ctm_actor': use_ctm_actor, 'ctm_config': ctm_config}
+                         'use_ctm_actor': use_ctm_actor, 'ctm_config': ctm_config,
+                         'prior_mode': prior_mode}
         instance = cls(**init_dict)
         instance.init_dict = init_dict
         return instance

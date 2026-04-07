@@ -191,6 +191,14 @@ parser.add_argument("--use_mlp_actor", dest="use_ctm_actor", action='store_false
                     help="Use MLP actor instead of CTM actor (CTM is the default)")
 parser.set_defaults(use_ctm_actor=True)
 
+# Prior mode: how the Reynolds prior is used during training.
+#   none       — prior ignored (baseline CTM or MLP)
+#   regularize — prior used as MSE loss regularizer on actor output (original behaviour)
+#   seed       — prior seeds CTM state_trace via learned seed_mlp (CTM only)
+parser.add_argument("--prior_mode", type=str, default="none",
+                    choices=["none", "regularize", "seed"],
+                    help="How to use the Reynolds prior: none | regularize | seed (CTM only)")
+
 # CTM architecture hyperparameters
 parser.add_argument("--ctm_d_model", type=int, default=256, help="CTM neuron population size")
 parser.add_argument("--ctm_memory_length", type=int, default=16, help="CTM FIFO memory window length in steps")
