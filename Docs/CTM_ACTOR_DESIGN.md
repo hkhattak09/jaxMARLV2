@@ -174,53 +174,82 @@ incorrect — each agent has genuinely local partial observability at all M sett
 
 ---
 
-## Architecture (Current)
+### Phase 5 — Stateful CTM + Recurrent Critic (Current Direction)
 
-- **Single shared CTM network** across all 24 agents (parameter sharing, homogeneous team)
-- **Individual hidden states** per agent — one board per agent (under stateful rollout);
-  under stateless rollout, these are reinitialised every step
-- **Attention and KV projections removed** — flat 192-dim obs, no sequence (heads=0)
-- **Action head** — Linear(136, 2) + Tanh
-- **Critic** — `AggregatingCritic`: shared encoder per agent (194→128→64), mean aggregation, head MLP (64→128→1)
+**Why stateless failed:** Stateless mode with `iterations=4` and `memory_length=16` means
+the activated_state_trace has 12 identical initial columns + 4 computed columns. NLMs
+process mostly padding. Synchronization is computed over this padded trace — it's meaningless.
+The CTM is functionally a deeper feedforward network, not leveraging its two core innovations
+(temporal NLM dynamics, synchronization-as-representation).
+
+**Evidence from results:**
+- MLP + prior reg: Coverage 0.916, Voronoi 0.653 (best)
+- CTM seed (d_model=256): Coverage 0.835, Voronoi 0.564
+- CTM doesn't beat MLP because it's not actually doing what CTM is designed to do
+
+**Key insight from CTM paper (Appendix G.6):** Their RL setup uses 1-2 internal ticks per
+env step, stateful across the episode. After 200 env steps × 1 tick, the activation history
+has 200 meaningful entries. Our setup: 4 ticks per step, history reset → 4 entries total.
+
+**Key insight from R-MADDPG (Wang et al., 2020):** Recurrent actor alone doesn't help.
+Recurrent critic is what matters for partial observability. Both together is best.
+
+**The plan:**
+
+1. **Stateful CTM actor** — `iterations=1`, hidden states carried across all 200 episode
+   steps. CTM builds temporal dynamics naturally. Prior seeding initialises the first step.
+
+2. **Recurrent critic** — LSTM after aggregation in AggregatingCritic:
+   ```
+   per-agent encoder: (obs_i, act_i) → 128 → 64    [shared, independent]
+   mean aggregate → 64-dim team summary              [permutation equivariant]
+   LSTM: 64-dim → hidden_dim                         [temporal reasoning]
+   head: hidden → Q-value
+   ```
+   Permutation equivariance preserved (aggregation before recurrence).
+
+3. **Episode-sequence replay buffer** — contiguous episode chunks instead of random
+   transitions. R2D2-style burn-in: replay prefix without gradient to reconstruct
+   hidden states, then compute gradients on remaining steps.
+
+**What this fixes:**
+- Rollout/update mismatch: both are now stateful with burn-in to reconstruct context
+- CTM actually functions as designed: meaningful temporal dynamics and synchronization
+- Critic gets temporal reasoning: can track team state evolution (R-MADDPG finding)
+- Paper story: prior-seeded CTM actor + recurrent equivariant critic for partial obs MARL
 
 ---
 
-## Stateless Rollout Implementation Plan
+## Architecture (Current → Next)
 
-**Change required:** In the training loop rollout, instead of carrying hidden states
-forward between steps, call `get_initial_hidden_state()` before every `maddpg.step()`.
-The per-episode initialisation and done-mask reset logic can be removed entirely.
+### Current (stateless — being replaced)
+- **Actor**: CTMActor, `iterations=4`, hidden states fresh every step
+- **Critic**: AggregatingCritic, memoryless
+- **Buffer**: Random transition sampling
 
-**Files to change:**
-- `train/train_assembly_jax_gpu.py` — remove hidden state carry-forward in rollout loop;
-  reinitialise fresh hidden state at every step instead. Same change in `run_eval` and
-  `run_final_eval`.
+### Next (stateful + recurrent)
+- **Actor**: CTMActor, `iterations=1`, stateful across episode steps, prior-seeded init
+- **Critic**: AggregatingCritic + LSTM after aggregation
+- **Buffer**: Episode-sequence sampling with burn-in
 
-**Files unchanged:**
-- `ctm_actor.py`, `ctm_agent.py`, `maddpg.py` — no changes needed
-- Buffer, critic, reward structure — unchanged
+### Unchanged
+- Single shared CTM network across all 24 agents (parameter sharing)
+- Attention and KV projections removed (heads=0) — flat obs, no sequence
+- Action head: Linear(136, 2) + Tanh on synchronization output
+- AggregatingCritic's per-agent encoder and aggregation (LSTM added after)
 
 ---
 
 ## Hyperparameters
 
-| Parameter | Value | Reasoning |
-|---|---|---|
-| d_model | 256 | Richer neuron population; GPU makes this cheap |
-| memory_length | 16 | Less relevant under stateless rollout, but kept for consistency |
-| n_synch_out | 16 | 136-dim synchronisation output (16×17/2) |
-| iterations | 4 | 4 inner reasoning passes per observation — the primary value-add under stateless rollout |
-| synapse_depth | 1 | Flat obs, 2-block MLP sufficient |
-| deep_nlms | False | 68× cheaper, sufficient expressiveness |
-| do_layernorm_nlm | True | Training stability |
-| memory_hidden_dims | [64] | Unused when deep_nlms=False |
-
----
-
-## What Does Not Change
-
-- Replay buffer structure and interface
-- Reward structure and Reynolds flocking prior
-- MADDPG update logic (critic call sites unchanged — AggregatingCritic accepts same input format)
-- Environment interface
-- CTM actor/agent code
+| Parameter | Current | Next | Reasoning |
+|---|---|---|---|
+| d_model | 128 | 128 | Sufficient for 192-dim obs |
+| memory_length | 16 | 16 | 16-step sliding window of activations |
+| n_synch_out | 16 | 16 | 136-dim synchronisation output (16×17/2) |
+| iterations | 4 | **1** | 1 tick per env step; dynamics build across 200 steps |
+| synapse_depth | 1 | 1 | 2-block MLP sufficient |
+| deep_nlms | False | False | 68× cheaper, sufficient expressiveness |
+| lstm_hidden_dim | N/A | TBD | Critic LSTM hidden size |
+| sequence_length | N/A | TBD | Sampled sequence length for training |
+| burn_in_length | N/A | TBD | Prefix replayed without gradient |

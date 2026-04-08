@@ -522,9 +522,11 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
             ep_reward = 0.0
             state_history = [] if (ep_i == cfg.eval_episodes - 1) else None
 
-            # 3. Rollout episode (no exploration, stateless CTM)
+            # 3. Rollout episode (no exploration)
+            # NOTE: Currently stateless (fresh hidden state every step).
+            # UPCOMING: stateful rollout — hidden states carried across steps,
+            # matching the new stateful training with burn-in.
             for _ in range(cfg.episode_length):  # 200 steps
-                # Fresh hidden state every step (stateless rollout)
                 eval_hidden = (maddpg.agents[0].policy.get_initial_hidden_state(env.n_a, torch_device)
                                if maddpg.use_ctm_actor else None)
                 # step() returns 3-tuple always

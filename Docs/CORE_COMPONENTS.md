@@ -366,6 +366,13 @@ obs, acs, rews, next_obs, dones, acs_prior, _ = buffer.sample(512, to_gpu=True, 
 #### `get_average_rewards(N)`
 Compute mean reward over last N experiences (for logging).
 
+**UPCOMING — Episode-sequence buffer:**
+The buffer will be restructured to store complete episodes and sample contiguous sequences
+(instead of random individual transitions). This is required for the stateful CTM actor and
+recurrent LSTM critic — both need temporal context during training updates. R2D2-style
+burn-in will replay a prefix without gradient to reconstruct hidden states.
+See `Docs/CTM_ACTOR_DESIGN.md` Phase 5 for full details.
+
 ---
 
 ## 4. Network Classes
@@ -408,6 +415,13 @@ q = critic(torch.cat([obs_all, act_all], dim=1))  # (batch, n_agents*(obs_dim+2)
 - **24× fewer parameters** than a flat MLP needed to cover the same input space
 - Both MLP and CTM actor use this same critic
 - `forward(X)` accepts concatenated joint obs+actions — no changes to `maddpg.py` call sites
+
+**UPCOMING — Recurrent critic (LSTM after aggregation):**
+An LSTM will be added after the mean aggregation step, before the head MLP. This follows
+the R-MADDPG finding that a recurrent critic is critical for partial observability.
+The LSTM processes the 64-dim team summary over time, tracking how the team state evolves.
+Permutation equivariance is preserved because aggregation happens before recurrence.
+See `Docs/CTM_ACTOR_DESIGN.md` Phase 5 for full details.
 
 ---
 

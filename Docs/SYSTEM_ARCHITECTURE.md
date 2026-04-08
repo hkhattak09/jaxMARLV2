@@ -97,7 +97,7 @@ new_marl_llm_implementation/
 
 ### Multi-Environment Parallelism
 - `n_rollout_threads` environments run in parallel via `jax.vmap`
-- Each environment has `n_a` agents (default 30)
+- Each environment has `n_a` agents (default 24)
 - Total agents in buffer = `n_rollout_threads × n_a`
 - **Memory scaling**: Buffer size = `buffer_length × n_rollout_threads × n_a × obs_dim × 4 bytes`
 
@@ -128,7 +128,7 @@ Key parameters:
 - `buffer_length`: Replay buffer capacity in timesteps (default: 20000)
 - `episode_length`: Steps per episode (default: 200)
 - `hidden_dim`: Actor hidden layer size (default: 180)
-- `critic_hidden_dim`: Centralised critic hidden layer size (default: 256 — larger than actor because critic input is `n_agents×(obs_dim+2)`)
+- `use_ctm_actor`: CTM actor (default True); pass `--use_mlp_actor` to revert to MLP
 - `lr_actor`, `lr_critic`: Learning rates
 - `results_file`: Preprocessed target shapes (`fig/results.pkl`)
 
