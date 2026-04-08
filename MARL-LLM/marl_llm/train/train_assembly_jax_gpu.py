@@ -512,9 +512,9 @@ def run(cfg):
         t0 = time.time()
         obs_batch = torch.stack(obs_list).cpu().numpy()           # (T, obs_dim, N*n_a)
         actions_batch = torch.stack(actions_list).cpu().numpy()   # (T, 2, N*n_a)
-        rewards_batch = torch.stack(rewards_list).cpu().numpy()   # (T, N*n_a)
+        rewards_batch = torch.stack(rewards_list).squeeze(1).cpu().numpy()   # (T, N*n_a)
         next_obs_batch = torch.stack(next_obs_list).cpu().numpy() # (T, obs_dim, N*n_a)
-        dones_batch = torch.stack(dones_list).cpu().numpy()       # (T, N*n_a)
+        dones_batch = torch.stack(dones_list).squeeze(1).cpu().numpy()       # (T, N*n_a)
         prior_batch = torch.stack(prior_list).cpu().numpy()       # (T, 2, N*n_a)
         # Sync violation sums here alongside bulk transfer (one device sync total)
         episode_r_avoid_violations = float(r_avoid_violation_sum) / cfg.n_rollout_threads
