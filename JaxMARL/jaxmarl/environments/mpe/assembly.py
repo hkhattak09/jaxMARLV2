@@ -70,8 +70,10 @@ class AssemblyEnv(MultiAgentEnv):
         dt: float = 0.1,
         vel_max: float = 0.8,
         k_ball: float = 2000.0,
+        c_ball: float = 30.0,
         k_wall: float = 100.0,
         c_wall: float = 5.0,
+        c_drag: float = 1.5,
         size_a: float = 0.035,
         d_sen: float = 0.4,
         r_avoid: float = 0.10,
@@ -85,8 +87,10 @@ class AssemblyEnv(MultiAgentEnv):
         self.dt = dt
         self.vel_max = vel_max
         self.k_ball = k_ball
+        self.c_ball = c_ball
         self.k_wall = k_wall
         self.c_wall = c_wall
+        self.c_drag = c_drag
         self.size_a = size_a
         self.d_sen = d_sen
         # r_avoid: personal space radius. Spacing violation: dist < 2*r_avoid.
@@ -421,21 +425,32 @@ class AssemblyEnv(MultiAgentEnv):
         k_ball=2000 with dt_sub=dt/4=0.025 gives stability margin k*dt²=1.25<2.
         Worst-case head-on collision at vel_max produces ~0.02 units max penetration
         (29% of agent diameter) before the spring reverses the agents — no tunneling.
+
+        Physics forces:
+          - Ball-to-ball: spring repulsion (k_ball) + dashpot damping (c_ball)
+          - Ball-to-wall: spring repulsion (k_wall) + damping (c_wall)
+          - Aerodynamic drag: F_drag = -c_drag * v (viscous medium, dissipates KE)
         """
         dt_sub = self.dt / 4.0
         p_pos, p_vel = state.p_pos, state.p_vel
         for _ in range(4):
-            sf_b2b         = self._ball_to_ball_force(p_pos)
+            sf_b2b, df_b2b = self._ball_to_ball_force(p_pos, p_vel)
             sf_b2w, df_b2w = self._ball_to_wall_force(p_pos, p_vel)
-            F     = u + sf_b2b + sf_b2w + df_b2w
+            F_drag = -self.c_drag * p_vel
+            F     = u + sf_b2b + df_b2b + sf_b2w + df_b2w + F_drag
             p_vel = jnp.clip(p_vel + F * dt_sub, -self.vel_max, self.vel_max)
             p_pos = p_pos + p_vel * dt_sub
         return p_pos, p_vel
 
-    def _ball_to_ball_force(self, p_pos: chex.Array) -> chex.Array:
-        """Spring repulsion between overlapping agents (k_ball).
+    def _ball_to_ball_force(self, p_pos: chex.Array, p_vel: chex.Array
+                            ) -> Tuple[chex.Array, chex.Array]:
+        """Spring repulsion + dashpot damping between overlapping agents.
 
-        Matches _sf_b2b_all() in AssemblyEnv.cpp.
+        Spring (k_ball): elastic repulsion proportional to overlap depth.
+        Dashpot (c_ball): velocity-dependent damping along collision normal.
+        Together they form a spring-dashpot contact model that dissipates
+        kinetic energy during collisions, preventing perpetual bouncing.
+
         delta[i,j] = p[j] - p[i]; force on i from j is repulsion (-dir_ij).
         """
         # delta[i,j] = p[j] - p[i]
@@ -444,19 +459,22 @@ class AssemblyEnv(MultiAgentEnv):
 
         overlap    = 2.0 * self.size_a - dist             # [n_a, n_a]
         is_collide = (dist < 2.0 * self.size_a) & (dist > 1e-8)  # exclude self
+        collide_f  = is_collide[:, :, None].astype(jnp.float32)
 
         safe_dist = jnp.maximum(dist, 1e-8)
         dir_ij    = delta / safe_dist[:, :, None]          # [n_a, n_a, 2]
 
-        # Force on i from j: repulsion away from j  → -dir_ij
-        force = (
-            is_collide[:, :, None].astype(jnp.float32)
-            * overlap[:, :, None]
-            * self.k_ball
-            * (-dir_ij)
-        )  # [n_a, n_a, 2]
+        # Spring: repulsion away from j  → -dir_ij * k * overlap
+        sf_b2b = collide_f * overlap[:, :, None] * self.k_ball * (-dir_ij)
 
-        return jnp.sum(force, axis=1)  # [n_a, 2]
+        # Dashpot: damp relative velocity along collision normal.
+        # v_rel[i,j] = v[j] - v[i]; project onto dir_ij (i→j).
+        # When closing (v_rel_n < 0): extra repulsion. When separating: slows separation.
+        v_rel = p_vel[None, :, :] - p_vel[:, None, :]     # [n_a, n_a, 2]
+        v_rel_n = jnp.sum(v_rel * dir_ij, axis=-1)        # [n_a, n_a]
+        df_b2b = collide_f * (self.c_ball * v_rel_n[:, :, None]) * dir_ij
+
+        return jnp.sum(sf_b2b, axis=1), jnp.sum(df_b2b, axis=1)  # [n_a, 2] each
 
     def _ball_to_wall_force(
         self, p_pos: chex.Array, p_vel: chex.Array
@@ -817,12 +835,21 @@ class AssemblyEnv(MultiAgentEnv):
         n_touching = jnp.sum(is_touching.astype(jnp.float32), axis=1)  # [n_a]
 
         # ══════════════════════════════════════════════════════════════════════
+        # Component 5: Settling penalty (velocity near shape)
+        # ══════════════════════════════════════════════════════════════════════
+        # Penalise speed only when on/near the shape. Free to move fast in open space.
+        # Incentivises agents to slow down and hold position once they reach the shape.
+        speed_sq = jnp.sum(state.p_vel ** 2, axis=1)  # [n_a]
+        settling = proximity * speed_sq  # [n_a], gated by proximity
+
+        # ══════════════════════════════════════════════════════════════════════
         # Combined reward
         # ══════════════════════════════════════════════════════════════════════
         reward = (0.20 * proximity
                 + 0.60 * proximity * territory_score
                 - 0.15 * crowding
-                - 0.05 * n_touching)
+                - 0.05 * n_touching
+                - 0.10 * settling)
         return reward
 
     def _reward_single(self, i: int, state: AssemblyState) -> chex.Array:
@@ -863,11 +890,16 @@ class AssemblyEnv(MultiAgentEnv):
         is_touching = (agent_dists < 2.0 * self.size_a) & (jnp.arange(n_a) != i)
         n_touching = jnp.sum(is_touching.astype(jnp.float32))
 
+        # ── Settling penalty ─────────────────────────────────────────────
+        speed_sq = jnp.sum(state.p_vel[i] ** 2)
+        settling = proximity * speed_sq
+
         # ── Combined reward ──────────────────────────────────────────────
         reward = (0.20 * proximity
                 + 0.60 * proximity * territory_score
                 - 0.15 * crowding
-                - 0.05 * n_touching)
+                - 0.05 * n_touching
+                - 0.10 * settling)
         return reward
 
     # ────────────────────────────────────────────────────────────────────────

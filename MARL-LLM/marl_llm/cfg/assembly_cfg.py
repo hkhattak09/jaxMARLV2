@@ -161,6 +161,10 @@ parser.add_argument("--grid_obs_fraction", type=float, default=None, help='Fract
 parser.add_argument("--d_sen", type=float, default=0.3, help='Agent sensing radius. Must be >= thinnest_feature_width/2 for the global medial axis signal to work. Default 0.2.')
 parser.add_argument("--r_avoid", type=float, default=0.10, help='Personal space radius. Spacing violation when dist < 2*r_avoid. Coverage when agent within r_avoid of cell. Recommended: 3*size_a ≈ 0.105 → 0.10.')
 
+# Physics damping parameters
+parser.add_argument("--c_drag", type=float, default=1.5, help='Aerodynamic drag coefficient. F_drag = -c_drag * v. Per-step speed retention ≈ (1 - c_drag*dt/4)^4. Default 1.5 → ~86%% retention.')
+parser.add_argument("--c_ball", type=float, default=30.0, help='Agent-agent collision dashpot coefficient. Damps relative velocity along collision normal. Default 30 (damping ratio ~0.34 with k_ball=2000).')
+
 # Agent behavior configuration
 parser.add_argument("--agent_strategy", type=str, default='input', help="Agent control strategy: input/random/rule")
 parser.add_argument("--is_collected", type=bool, default=False, help="Collect expert data for imitation learning")
@@ -171,7 +175,7 @@ parser.add_argument("--results_file", type=type(results_file), default=results_f
 # Basic training setup
 parser.add_argument("--env_name", default="assembly", type=str,help="Environment name identifier")
 parser.add_argument("--seed", default=226, type=int, help="Random seed for reproducibility")
-parser.add_argument("--n_rollout_threads", default=1, type=int,help="Number of parallel environment threads")
+parser.add_argument("--n_rollout_threads", default=4, type=int,help="Number of parallel environments (vmap). More envs = more diverse shapes per episode.")
 parser.add_argument("--n_training_threads", default=5, type=int,help="Number of CPU threads for training")
 
 # Training schedule and memory
@@ -195,9 +199,14 @@ parser.set_defaults(use_ctm_actor=True)
 #   none       — prior ignored (baseline CTM or MLP)
 #   regularize — prior used as MSE loss regularizer on actor output (original behaviour)
 #   seed       — prior seeds CTM state_trace via learned seed_mlp (CTM only)
+#   seed+reg   — seed + regularization with cosine decay (warmup: teach CTM to read the seed)
 parser.add_argument("--prior_mode", type=str, default="none",
-                    choices=["none", "regularize", "seed"],
-                    help="How to use the Reynolds prior: none | regularize | seed (CTM only)")
+                    choices=["none", "regularize", "seed", "seed+reg"],
+                    help="How to use the Reynolds prior: none | regularize | seed | seed+reg (CTM only)")
+parser.add_argument("--prior_warmup_episodes", type=int, default=500,
+                    help="Episodes over which prior regularization decays to 0 (seed+reg mode). Cosine schedule.")
+parser.add_argument("--prior_reg_initial_weight", type=float, default=0.5,
+                    help="Initial regularization weight for seed+reg mode. Decays to 0 over warmup_episodes.")
 
 # CTM architecture hyperparameters
 parser.add_argument("--ctm_d_model", type=int, default=128, help="CTM neuron population size")

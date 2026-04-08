@@ -342,6 +342,8 @@ def run_eval():
         grid_obs_fraction=cfg.grid_obs_fraction,
         d_sen=cfg.d_sen,
         r_avoid=cfg.r_avoid,
+        c_drag=cfg.c_drag,
+        c_ball=cfg.c_ball,
     )
     env = JaxAssemblyAdapterGPU(
         jax_env,

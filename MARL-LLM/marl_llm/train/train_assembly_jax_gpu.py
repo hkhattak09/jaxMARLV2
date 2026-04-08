@@ -28,6 +28,7 @@ print(f"[JAX Memory] Limited to 15% of GPU memory (~2.1GB on T4)")
 import matplotlib
 matplotlib.use('Agg')  # headless backend — must be set before any other matplotlib import
 import matplotlib.pyplot as plt
+import math
 import torch
 import jax.numpy as jnp
 import time
@@ -344,6 +345,8 @@ def run(cfg):
         grid_obs_fraction=cfg.grid_obs_fraction,
         d_sen=cfg.d_sen,
         r_avoid=cfg.r_avoid,
+        c_drag=cfg.c_drag,
+        c_ball=cfg.c_ball,
     )
     # GPU adapter returns PyTorch CUDA tensors via DLPack
     env = JaxAssemblyAdapterGPU(
@@ -465,7 +468,7 @@ def run(cfg):
         # Initialize actor hidden states once at episode start (stateful rollout).
         # CTM dynamics carry forward across all episode steps; prior seeds only the first step.
         if cfg.use_ctm_actor:
-            if cfg.prior_mode == 'seed':
+            if cfg.prior_mode in ('seed', 'seed+reg'):
                 prior_gpu = env.compute_prior()
                 hidden_states = maddpg.agents[0].policy.get_prior_seeded_hidden_state(
                     obs_gpu.t(), prior_gpu.t()
@@ -552,6 +555,13 @@ def run(cfg):
         total_reg_loss = 0.0
         update_count = 0
 
+        # Compute prior regularization weight (cosine decay for seed+reg mode)
+        if cfg.prior_mode == 'seed+reg' and ep_index < cfg.prior_warmup_episodes:
+            prior_reg_weight = cfg.prior_reg_initial_weight * 0.5 * (
+                1.0 + math.cos(math.pi * ep_index / cfg.prior_warmup_episodes))
+        else:
+            prior_reg_weight = None  # not used or warmup complete
+
         if episode_buffer is not None and len(episode_buffer) > 0:
             # Sequence-based update for stateful CTM + recurrent critic
             for _ in range(cfg.updates_per_episode):
@@ -564,6 +574,7 @@ def run(cfg):
                         agent_i=a_i,
                         prior_seq=prior_seq if cfg.prior_mode != 'none' else None,
                         alpha=env.alpha,
+                        reg_weight=prior_reg_weight,
                         burn_in_length=cfg.burn_in_length,
                         logger=logger,
                     )
@@ -662,7 +673,10 @@ def run(cfg):
             print(f"ENVIRONMENT METRICS (last 10 eps):")
             print(f"  - Sensing Coverage: {sc_mean:.3f}(std:{sc_std:.3f}) | Dist Uniformity: {uni_mean:.3f}(std:{uni_std:.3f}) | Voronoi Uniformity: {vor_mean:.3f}(std:{vor_std:.3f})")
             print(f"  - R-Avoid Violations (pairs/ep/env): {avg_r_avoid_violations_10:.1f} | Spring Collisions (pairs/ep/env): {avg_spring_collisions_10:.1f}")
-            print(f"LOSSES (last 10 eps):   VF: {avg_vf_loss_10:7.4f} | Policy: {avg_pol_loss_10:7.4f} | Reg: {avg_reg_loss_10:7.4f}")
+            loss_line = f"LOSSES (last 10 eps):   VF: {avg_vf_loss_10:7.4f} | Policy: {avg_pol_loss_10:7.4f} | Reg: {avg_reg_loss_10:7.4f}"
+            if prior_reg_weight is not None:
+                loss_line += f" | PriorRegW: {prior_reg_weight:.4f}"
+            print(loss_line)
             print(f"TIMING (last 10 eps):   Rollout: {avg_rollout_time_10:6.2f} | Policy Exec: {avg_policy_time_10:6.2f} | Env Step: {avg_env_time_10:6.2f} | Training: {avg_training_time_10:6.2f}")
             print(f"{sep}\n")
 

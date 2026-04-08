@@ -21,8 +21,8 @@ class MADDPG(object):
                 'seed'       — prior seeds the CTM state_trace at the start of each
                                actor-update forward pass (CTM only; error if MLP).
         """
-        if prior_mode == 'seed' and not use_ctm_actor:
-            raise ValueError("prior_mode='seed' requires use_ctm_actor=True — MLP has no hidden state to seed.")
+        if prior_mode in ('seed', 'seed+reg') and not use_ctm_actor:
+            raise ValueError(f"prior_mode='{prior_mode}' requires use_ctm_actor=True — MLP has no hidden state to seed.")
         self.nagents = len(alg_types)
         self.alg_types = alg_types
         self.epsilon = epsilon
@@ -287,8 +287,8 @@ class MADDPG(object):
         return vf_loss.item(), pol_loss.item(), (0.3 * alpha * regularization_term).item()
 
     def update_sequence(self, obs_seq, acs_seq, rews_seq, next_obs_seq, dones_seq,
-                        agent_i, prior_seq=None, alpha=0.5, burn_in_length=16,
-                        logger=None):
+                        agent_i, prior_seq=None, alpha=0.5, reg_weight=None,
+                        burn_in_length=16, logger=None):
         """
         Sequence-based update with R2D2-style burn-in for recurrent critic.
 
@@ -428,7 +428,7 @@ class MADDPG(object):
                 agent_obs_t = obs_train[t][:, agent_i * obs_dim : (agent_i + 1) * obs_dim]
 
                 if self.use_ctm_actor:
-                    if self.prior_mode == 'seed' and prior_train is not None:
+                    if self.prior_mode in ('seed', 'seed+reg') and prior_train is not None:
                         prior_agent_t = prior_train[t][:, agent_i * action_dim : (agent_i + 1) * action_dim]
                         actor_h = curr_agent.policy.get_prior_seeded_hidden_state(agent_obs_t, prior_agent_t)
                     curr_pol_out, actor_h = curr_agent.policy(agent_obs_t, actor_h)
@@ -446,8 +446,14 @@ class MADDPG(object):
                 Q, actor_critic_h = curr_agent.critic(vf_in, actor_critic_h)
                 total_pol_loss = total_pol_loss + (-Q.mean())
 
-                # Regularization towards prior (only for prior_mode='regularize')
-                if self.prior_mode == 'regularize' and prior_train is not None:
+                # Regularization towards prior:
+                #   'regularize' — always on with fixed weight 0.3*alpha
+                #   'seed+reg'  — uses decaying reg_weight (cosine schedule from training loop)
+                do_reg = (
+                    (self.prior_mode == 'regularize') or
+                    (self.prior_mode == 'seed+reg' and reg_weight is not None and reg_weight > 1e-8)
+                )
+                if do_reg and prior_train is not None:
                     prior_t = prior_train[t]
                     mask = (prior_t.abs() < 1e-2).all(dim=1)
                     valid = ~mask
@@ -455,16 +461,30 @@ class MADDPG(object):
                         total_reg = total_reg + MSELoss(all_pol_acs[valid], prior_t[valid])
 
             total_pol_loss = total_pol_loss / train_len
-            if self.prior_mode == 'regularize' and prior_train is not None:
+
+            # Apply regularization with appropriate weight
+            do_reg = (
+                (self.prior_mode == 'regularize') or
+                (self.prior_mode == 'seed+reg' and reg_weight is not None and reg_weight > 1e-8)
+            )
+            if do_reg and prior_train is not None:
                 total_reg = total_reg / train_len
-                total_pol_loss = total_pol_loss + 0.3 * alpha * total_reg
+                if self.prior_mode == 'seed+reg':
+                    effective_weight = reg_weight
+                else:
+                    effective_weight = 0.3 * alpha
+                total_pol_loss = total_pol_loss + effective_weight * total_reg
 
             total_pol_loss.backward()
             torch.nn.utils.clip_grad_norm_(curr_agent.policy.parameters(), 0.5)
             curr_agent.policy_optimizer.step()
 
             pol_loss_val = total_pol_loss.item()
-            reg_loss_val = (0.3 * alpha * total_reg).item() if self.prior_mode == 'regularize' else 0.0
+            if do_reg and prior_train is not None:
+                effective_weight = reg_weight if self.prior_mode == 'seed+reg' else 0.3 * alpha
+                reg_loss_val = (effective_weight * total_reg).item()
+            else:
+                reg_loss_val = 0.0
 
         # Log metrics
         if logger is not None:

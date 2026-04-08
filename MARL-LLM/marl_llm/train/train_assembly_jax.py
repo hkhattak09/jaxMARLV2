@@ -147,6 +147,8 @@ def run(cfg):
     jax_env = AssemblyEnv(
         results_file=cfg.results_file,
         n_a=cfg.n_a,
+        c_drag=cfg.c_drag,
+        c_ball=cfg.c_ball,
     )
     # n_rollout_threads controls how many envs run in parallel via vmap
     env = JaxAssemblyAdapter(
