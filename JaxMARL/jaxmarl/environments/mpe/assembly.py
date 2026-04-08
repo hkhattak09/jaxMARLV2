@@ -777,9 +777,9 @@ class AssemblyEnv(MultiAgentEnv):
         """Fully vectorized rewards for ALL agents at once.
 
         Three continuous components:
-        1. proximity  — continuous attraction toward shape (replaces binary in_flag)
-        2. crowding   — all-pairs continuous density penalty (replaces K-limited too_close)
-        3. territory  — per-agent Voronoi territory balance (replaces binary is_uniform)
+        1. proximity         — continuous attraction toward shape (pull from outside)
+        2. coverage_score    — physical Voronoi territory balance (inside AND sensed)
+        3. crowding          — all-pairs continuous density penalty
 
         No vmap - uses broadcasting and batched operations.
         Returns [n_a] array.
@@ -810,23 +810,31 @@ class AssemblyEnv(MultiAgentEnv):
         crowding = jnp.sum(overlap, axis=1)  # [n_a]
 
         # ══════════════════════════════════════════════════════════════════════
-        # Component 3: Territory Balance (direct Voronoi proxy)
+        # Component 3: Physical Voronoi Coverage Score
+        #
+        # Replaces geometric Voronoi territory. An agent earns credit for a cell
+        # only if it is BOTH the nearest agent to that cell AND within d_sen of it.
+        # This enforces physical presence — boundary agents cannot claim interior
+        # cells they are not actually sensing. Naturally incentivises medial-axis
+        # placement: agents that move inward sense more exclusive cells.
         # ══════════════════════════════════════════════════════════════════════
-        # Which agent is closest to each shape cell? (god-view, full a2g_dist)
-        a2g_masked = jnp.where(state.valid_mask[None, :], cached.a2g_dist, jnp.inf)
-        nearest_agent = jnp.argmin(a2g_masked, axis=0)  # [n_g_max]
-
-        # Count cells "owned" by each agent
-        agent_ids = jnp.arange(n_a)[:, None]  # [n_a, 1]
-        owns = (agent_ids == nearest_agent[None, :]) & state.valid_mask[None, :]  # [n_a, n_g_max]
-        territory = jnp.sum(owns, axis=1).astype(jnp.float32)  # [n_a]
-
-        # Ideal: equal share
         n_valid = jnp.sum(state.valid_mask).astype(jnp.float32)
-        ideal = n_valid / n_a
+        ideal   = n_valid / n_a
 
-        # Score: 1.0 at ideal, linear falloff, 0.0 when >=50% deviation
-        territory_score = jnp.clip(1.0 - jnp.abs(territory - ideal) / (0.5 * ideal + 1e-8), 0.0, 1.0)
+        a2g_masked    = jnp.where(state.valid_mask[None, :], cached.a2g_dist, jnp.inf)
+        nearest_agent = jnp.argmin(a2g_masked, axis=0)                         # [n_g_max]
+        agent_ids     = jnp.arange(n_a)[:, None]                               # [n_a, 1]
+        is_mine       = (agent_ids == nearest_agent[None, :])                   # [n_a, n_g_max]
+        covers_cell   = cached.a2g_dist < self.d_sen                            # [n_a, n_g_max]
+        exclusive_coverage = jnp.sum(
+            is_mine & covers_cell & state.valid_mask[None, :], axis=1
+        ).astype(jnp.float32)                                                   # [n_a]
+
+        # Score: 1.0 at ideal share, linear falloff, 0.0 at >=50% deviation
+        coverage_score = jnp.clip(
+            1.0 - jnp.abs(exclusive_coverage - ideal) / (0.5 * ideal + 1e-8),
+            0.0, 1.0,
+        )                                                                        # [n_a]
 
         # ══════════════════════════════════════════════════════════════════════
         # Physical contact count (safety penalty)
@@ -835,19 +843,18 @@ class AssemblyEnv(MultiAgentEnv):
         n_touching = jnp.sum(is_touching.astype(jnp.float32), axis=1)  # [n_a]
 
         # ══════════════════════════════════════════════════════════════════════
-        # Component 5: Settling penalty (velocity near shape)
+        # Settling penalty (velocity near shape)
         # ══════════════════════════════════════════════════════════════════════
         # Penalise speed only when on/near the shape. Free to move fast in open space.
-        # Incentivises agents to slow down and hold position once they reach the shape.
         speed_sq = jnp.sum(state.p_vel ** 2, axis=1)  # [n_a]
-        settling = proximity * speed_sq  # [n_a], gated by proximity
+        settling = proximity * speed_sq                # [n_a], gated by proximity
 
         # ══════════════════════════════════════════════════════════════════════
         # Combined reward
         # ══════════════════════════════════════════════════════════════════════
-        reward = (0.20 * proximity
-                + 0.60 * proximity * territory_score
-                - 0.15 * crowding
+        reward = (0.20 * proximity        # pull agents toward shape from outside
+                + 0.60 * coverage_score   # physical territory balance (replaces geometric Voronoi)
+                - 0.25 * crowding         # increased from 0.15 — violations were 2.5× too high
                 - 0.05 * n_touching
                 - 0.10 * settling)
         return reward
@@ -875,16 +882,23 @@ class AssemblyEnv(MultiAgentEnv):
         overlap = raw_overlap ** 2
         crowding = jnp.sum(overlap)
 
-        # ── Component 3: Territory Balance ───────────────────────────────
+        # ── Component 3: Physical Voronoi Coverage Score ─────────────────
+        # Mirrors _rewards_vectorized: credit only for cells nearest to i
+        # AND within d_sen (physical presence enforced).
         a2g = state.grid_center.T[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
         a2g_dist = jnp.linalg.norm(a2g, axis=-1)  # [n_a, n_g_max]
         a2g_masked = jnp.where(state.valid_mask[None, :], a2g_dist, jnp.inf)
         nearest_agent = jnp.argmin(a2g_masked, axis=0)  # [n_g_max]
 
-        territory = jnp.sum((nearest_agent == i) & state.valid_mask).astype(jnp.float32)
         n_valid = jnp.sum(state.valid_mask).astype(jnp.float32)
-        ideal = n_valid / n_a
-        territory_score = jnp.clip(1.0 - jnp.abs(territory - ideal) / (0.5 * ideal + 1e-8), 0.0, 1.0)
+        ideal   = n_valid / n_a
+        is_mine     = (nearest_agent == i) & state.valid_mask          # [n_g_max]
+        covers_cell = a2g_dist[i] < self.d_sen                         # [n_g_max]
+        exclusive_coverage = jnp.sum(is_mine & covers_cell).astype(jnp.float32)
+        coverage_score = jnp.clip(
+            1.0 - jnp.abs(exclusive_coverage - ideal) / (0.5 * ideal + 1e-8),
+            0.0, 1.0,
+        )
 
         # ── Physical contact ─────────────────────────────────────────────
         is_touching = (agent_dists < 2.0 * self.size_a) & (jnp.arange(n_a) != i)
@@ -896,8 +910,8 @@ class AssemblyEnv(MultiAgentEnv):
 
         # ── Combined reward ──────────────────────────────────────────────
         reward = (0.20 * proximity
-                + 0.60 * proximity * territory_score
-                - 0.15 * crowding
+                + 0.60 * coverage_score
+                - 0.25 * crowding
                 - 0.05 * n_touching
                 - 0.10 * settling)
         return reward
