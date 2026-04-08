@@ -757,125 +757,118 @@ class AssemblyEnv(MultiAgentEnv):
     
     def _rewards_vectorized(self, state: AssemblyState, cached: CachedDistances) -> chex.Array:
         """Fully vectorized rewards for ALL agents at once.
-        
+
+        Three continuous components:
+        1. proximity  — continuous attraction toward shape (replaces binary in_flag)
+        2. crowding   — all-pairs continuous density penalty (replaces K-limited too_close)
+        3. territory  — per-agent Voronoi territory balance (replaces binary is_uniform)
+
         No vmap - uses broadcasting and batched operations.
         Returns [n_a] array.
         """
         n_a = self.n_a
-        in_flag = cached.in_flag  # [n_a]
-        
-        # ══════════════════════════════════════════════════════════════════════
-        # too_close: any neighbor within 2*r_avoid (spacing violation) AND within d_sen
-        # ══════════════════════════════════════════════════════════════════════
-        nei_dists = cached.nei_dists  # [n_a, K]
-        in_nei_range = nei_dists < self.d_sen  # [n_a, K]
-        too_close = jnp.any(in_nei_range & (nei_dists < 2.0 * self.r_avoid), axis=1)  # [n_a]
 
         # ══════════════════════════════════════════════════════════════════════
-        # is_uniform: sensed unoccupied cells are uniformly distributed
+        # Component 1: Shape Proximity (continuous attraction)
         # ══════════════════════════════════════════════════════════════════════
+        dist = cached.nearest_grid_dist  # [n_a]
+        cell_thresh = jnp.sqrt(2.0) * state.l_cell / 2.0  # half-diagonal of grid cell
 
-        # Grid relative positions for each agent: [n_a, n_g_max, 2]
-        grid_pos = state.grid_center.T  # [n_g_max, 2]
-        grid_rel = grid_pos[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
+        # Broad pull: attracts agents toward shape from up to d_sen away
+        broad = jnp.clip(1.0 - dist / self.d_sen, 0.0, 1.0)
+        # Sharp on-cell bonus: high reward for sitting on a cell
+        sharp = jnp.clip(1.0 - dist / cell_thresh, 0.0, 1.0)
 
-        # in_sensor: [n_a, n_g_max]
-        in_sensor = (cached.a2g_dist < self.d_sen) & state.valid_mask[None, :]
-
-        # is_nearby: agents within d_sen + r_avoid (filter for occupancy computation)
-        is_nearby = cached.agent_dists < (self.d_sen + self.r_avoid)
-
-        # Cell occupied if any nearby agent is within r_avoid
-        cell_agent_close = cached.a2g_dist < self.r_avoid  # [n_a, n_g_max]
-        is_occupied_by_nearby = jnp.matmul(
-            is_nearby.astype(jnp.float32),
-            cell_agent_close.astype(jnp.float32)
-        ) > 0  # [n_a, n_g_max]
-
-        is_occupied = in_flag[:, None] & is_occupied_by_nearby  # [n_a, n_g_max]
-        is_sensed_unoccupied = in_sensor & ~is_occupied  # [n_a, n_g_max]
-
-        # psi = rho_cos_dec for all agents/cells: [n_a, n_g_max]
-        psi = self._rho_cos_dec(cached.a2g_dist, self.d_sen)
-        psi_valid = jnp.where(is_sensed_unoccupied, psi, 0.0)  # [n_a, n_g_max]
-
-        # v_exp for each agent: [n_a, 2]
-        numerator = jnp.sum(psi_valid[:, :, None] * grid_rel, axis=1)  # [n_a, 2]
-        denominator = jnp.sum(psi_valid, axis=1, keepdims=True) + 1e-8  # [n_a, 1]
-        v_exp = numerator / denominator  # [n_a, 2]
-        v_exp_norm = jnp.linalg.norm(v_exp, axis=1)  # [n_a]
-
-        any_sensed = jnp.any(is_sensed_unoccupied, axis=1)  # [n_a]
-        # No unoccupied cells visible → cluster is fully packed, not uniform
-        is_uniform = in_flag & jnp.where(any_sensed, v_exp_norm < 0.05, False)  # [n_a]
+        proximity = 0.3 * broad + 0.7 * sharp  # [n_a], range [0, 1]
 
         # ══════════════════════════════════════════════════════════════════════
-        # is_touching: physical body contact (dist < 2*size_a = 0.07)
+        # Component 2: Crowding Penalty (all-pairs, continuous, density-aware)
         # ══════════════════════════════════════════════════════════════════════
-        is_touching = (cached.agent_dists < 2.0 * self.size_a) & ~jnp.eye(self.n_a, dtype=bool)
+        dists_excl = jnp.where(jnp.eye(n_a, dtype=bool), jnp.inf, cached.agent_dists)
+
+        # Quadratic overlap: smooth at boundary, scales with proximity AND density
+        raw_overlap = jnp.maximum(0.0, 2.0 * self.r_avoid - dists_excl) / (2.0 * self.r_avoid)
+        overlap = raw_overlap ** 2  # [n_a, n_a], smooth gradient at boundary
+        crowding = jnp.sum(overlap, axis=1)  # [n_a]
+
+        # ══════════════════════════════════════════════════════════════════════
+        # Component 3: Territory Balance (direct Voronoi proxy)
+        # ══════════════════════════════════════════════════════════════════════
+        # Which agent is closest to each shape cell? (god-view, full a2g_dist)
+        a2g_masked = jnp.where(state.valid_mask[None, :], cached.a2g_dist, jnp.inf)
+        nearest_agent = jnp.argmin(a2g_masked, axis=0)  # [n_g_max]
+
+        # Count cells "owned" by each agent
+        agent_ids = jnp.arange(n_a)[:, None]  # [n_a, 1]
+        owns = (agent_ids == nearest_agent[None, :]) & state.valid_mask[None, :]  # [n_a, n_g_max]
+        territory = jnp.sum(owns, axis=1).astype(jnp.float32)  # [n_a]
+
+        # Ideal: equal share
+        n_valid = jnp.sum(state.valid_mask).astype(jnp.float32)
+        ideal = n_valid / n_a
+
+        # Score: 1.0 at ideal, linear falloff, 0.0 when >=50% deviation
+        territory_score = jnp.clip(1.0 - jnp.abs(territory - ideal) / (0.5 * ideal + 1e-8), 0.0, 1.0)
+
+        # ══════════════════════════════════════════════════════════════════════
+        # Physical contact count (safety penalty)
+        # ══════════════════════════════════════════════════════════════════════
+        is_touching = (cached.agent_dists < 2.0 * self.size_a) & ~jnp.eye(n_a, dtype=bool)
         n_touching = jnp.sum(is_touching.astype(jnp.float32), axis=1)  # [n_a]
 
-        # Final reward: outside penalty + stepping stone (in_flag) + full conditions + physical contact penalty
-        outside_penalty = -0.03 * (~in_flag).astype(jnp.float32)
-        base = (outside_penalty +
-                0.1 * in_flag.astype(jnp.float32) +
-                0.9 * (in_flag & ~too_close & is_uniform).astype(jnp.float32))
-        return base - 0.07 * n_touching
+        # ══════════════════════════════════════════════════════════════════════
+        # Combined reward
+        # ══════════════════════════════════════════════════════════════════════
+        reward = (0.20 * proximity
+                + 0.60 * proximity * territory_score
+                - 0.15 * crowding
+                - 0.05 * n_touching)
+        return reward
 
     def _reward_single(self, i: int, state: AssemblyState) -> chex.Array:
-        # ── in_flag ──────────────────────────────────────────────────────
+        """Reference single-agent reward. Matches _rewards_vectorized logic."""
+        n_a = self.n_a
+
+        # ── Component 1: Shape Proximity ─────────────────────────────────
         grid_rel  = state.grid_center.T - state.p_pos[i]   # [n_g_max, 2]
         grid_dist = jnp.linalg.norm(grid_rel, axis=-1)      # [n_g_max]
         grid_dist_masked = jnp.where(state.valid_mask, grid_dist, jnp.inf)
-        min_dist  = jnp.min(grid_dist_masked)
-        in_flag   = min_dist < (jnp.sqrt(2.0) * state.l_cell / 2.0)
+        dist = jnp.min(grid_dist_masked)
+        cell_thresh = jnp.sqrt(2.0) * state.l_cell / 2.0
 
-        # ── too_close: spacing violation (dist < 2*r_avoid) ─────────────────
-        agent_dists      = jnp.linalg.norm(state.p_pos - state.p_pos[i], axis=-1)  # [n_a]
-        agent_dists_excl = jnp.where(jnp.arange(self.n_a) == i, jnp.inf, agent_dists)
+        broad = jnp.clip(1.0 - dist / self.d_sen, 0.0, 1.0)
+        sharp = jnp.clip(1.0 - dist / cell_thresh, 0.0, 1.0)
+        proximity = 0.3 * broad + 0.7 * sharp
 
-        # Top topo_nei_max nearest (same set as neighbor_index)
-        sorted_nei_idx = jnp.argsort(agent_dists_excl)[:self.topo_nei_max]   # [K]
-        nei_dists_topo = agent_dists_excl[sorted_nei_idx]                     # [K]
-        in_nei_range   = nei_dists_topo < self.d_sen                          # [K]
-        too_close      = jnp.any(in_nei_range & (nei_dists_topo < 2.0 * self.r_avoid))
+        # ── Component 2: Crowding Penalty (all-pairs) ────────────────────
+        agent_dists = jnp.linalg.norm(state.p_pos - state.p_pos[i], axis=-1)  # [n_a]
+        agent_dists_excl = jnp.where(jnp.arange(n_a) == i, jnp.inf, agent_dists)
 
-        # ── is_uniform: sensed unoccupied cells uniformly distributed ────────
-        in_sensor  = (grid_dist < self.d_sen) & state.valid_mask
+        raw_overlap = jnp.maximum(0.0, 2.0 * self.r_avoid - agent_dists_excl) / (2.0 * self.r_avoid)
+        overlap = raw_overlap ** 2
+        crowding = jnp.sum(overlap)
 
-        is_nearby  = agent_dists < (self.d_sen + self.r_avoid)
-        a2g        = state.grid_center.T[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
-        a2g_dist   = jnp.linalg.norm(a2g, axis=-1)
-        is_occupied_by_nearby = jnp.any(
-            is_nearby[:, None] & (a2g_dist < self.r_avoid), axis=0
-        )
-        is_occupied           = in_flag & is_occupied_by_nearby
-        is_sensed_unoccupied  = in_sensor & ~is_occupied  # [n_g_max]
+        # ── Component 3: Territory Balance ───────────────────────────────
+        a2g = state.grid_center.T[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
+        a2g_dist = jnp.linalg.norm(a2g, axis=-1)  # [n_a, n_g_max]
+        a2g_masked = jnp.where(state.valid_mask[None, :], a2g_dist, jnp.inf)
+        nearest_agent = jnp.argmin(a2g_masked, axis=0)  # [n_g_max]
 
-        # psi = rho_cos_dec(dist, delta=0, r=d_sen)
-        psi       = self._rho_cos_dec(grid_dist, self.d_sen)  # [n_g_max]
-        psi_valid = jnp.where(is_sensed_unoccupied, psi, 0.0)
+        territory = jnp.sum((nearest_agent == i) & state.valid_mask).astype(jnp.float32)
+        n_valid = jnp.sum(state.valid_mask).astype(jnp.float32)
+        ideal = n_valid / n_a
+        territory_score = jnp.clip(1.0 - jnp.abs(territory - ideal) / (0.5 * ideal + 1e-8), 0.0, 1.0)
 
-        numerator   = jnp.sum(psi_valid[:, None] * grid_rel, axis=0)  # [2]
-        denominator = jnp.sum(psi_valid) + 1e-8
-        v_exp       = numerator / denominator                           # [2]
-        v_exp_norm  = jnp.linalg.norm(v_exp)
+        # ── Physical contact ─────────────────────────────────────────────
+        is_touching = (agent_dists < 2.0 * self.size_a) & (jnp.arange(n_a) != i)
+        n_touching = jnp.sum(is_touching.astype(jnp.float32))
 
-        any_sensed = jnp.any(is_sensed_unoccupied)
-        # No unoccupied cells visible → cluster is fully packed, not uniform
-        is_uniform = in_flag & jnp.where(any_sensed, v_exp_norm < 0.05, False)
-
-        # ── is_touching: physical body contact (dist < 2*size_a = 0.07) ──────
-        is_touching = agent_dists < 2.0 * self.size_a  # [n_a] (includes self, but self=0 < threshold)
-        is_touching = is_touching & (jnp.arange(self.n_a) != i)  # exclude self
-        n_touching  = jnp.sum(is_touching.astype(jnp.float32))
-
-        # Final reward: outside penalty + stepping stone + full conditions + physical contact penalty
-        outside_penalty = -0.05 * (~in_flag).astype(jnp.float32)
-        base = (outside_penalty +
-                0.1 * in_flag.astype(jnp.float32) +
-                0.9 * (in_flag & ~too_close & is_uniform).astype(jnp.float32))
-        return base - 0.07 * n_touching
+        # ── Combined reward ──────────────────────────────────────────────
+        reward = (0.20 * proximity
+                + 0.60 * proximity * territory_score
+                - 0.15 * crowding
+                - 0.05 * n_touching)
+        return reward
 
     # ────────────────────────────────────────────────────────────────────────
     # Helpers
@@ -1072,15 +1065,14 @@ class AssemblyEnv(MultiAgentEnv):
         nei_vel          = state.p_vel[sorted_nei_idx]                         # [K, 2]
 
         # ── Repulsion: repulsion_strength=3.0 ────────────────────────────
-        # Fires when dist < 4*r_avoid (wider bubble than reward's 2*r_avoid).
-        # Prior teaches "spread wide"; reward only punishes "dangerously close".
+        # Fires when dist < 2*r_avoid (matches reward's spacing violation threshold).
         # Direction from neighbour toward self (pointing away from each neighbour)
         dir_away      = pos_i - nei_pos                          # [K, 2]
         safe_nei_dist = jnp.maximum(nei_dists, 1e-8)
         unit_away     = dir_away / safe_nei_dist[:, None]        # [K, 2]
         rep_factor    = jnp.where(
-            (nei_dists > 0) & (nei_dists < 4.0 * self.r_avoid),
-            3.0 * (4.0 * self.r_avoid / safe_nei_dist - 1.0),
+            (nei_dists > 0) & (nei_dists < 2.0 * self.r_avoid),
+            3.0 * (2.0 * self.r_avoid / safe_nei_dist - 1.0),
             0.0,
         )  # [K]
         repulsion = jnp.sum(rep_factor[:, None] * unit_away, axis=0)  # [2]
@@ -1151,11 +1143,10 @@ class AssemblyEnv(MultiAgentEnv):
         safe_nei_dist = jnp.maximum(nei_dists, 1e-8)  # [n_a, K]
         unit_away = dir_away / safe_nei_dist[:, :, None]  # [n_a, K, 2]
         
-        # Repulsion factor: fires when dist < 4*r_avoid (wider bubble than reward's 2*r_avoid).
-        # Prior teaches "spread wide"; reward only punishes "dangerously close".
+        # Repulsion factor: fires when dist < 2*r_avoid (matches reward's spacing violation threshold).
         rep_factor = jnp.where(
-            (nei_dists > 0) & (nei_dists < 4.0 * self.r_avoid),
-            3.0 * (4.0 * self.r_avoid / safe_nei_dist - 1.0),
+            (nei_dists > 0) & (nei_dists < 2.0 * self.r_avoid),
+            3.0 * (2.0 * self.r_avoid / safe_nei_dist - 1.0),
             0.0
         )  # [n_a, K]
         
