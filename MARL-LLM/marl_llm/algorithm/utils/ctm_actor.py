@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from marl_llm.models.ctm_rl import ContinuousThoughtMachineRL
+from models.ctm_rl import ContinuousThoughtMachineRL
 
 
 class CTMActor(nn.Module):
