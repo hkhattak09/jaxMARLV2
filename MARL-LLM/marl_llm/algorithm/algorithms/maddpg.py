@@ -87,7 +87,7 @@ class MADDPG(object):
         batch = next_obs_all.shape[0]
         obs_dim = next_obs_all.shape[1] // self.n_agents
         # (batch, n_agents*obs_dim) → (batch*n_agents, obs_dim)
-        obs_flat = next_obs_all.view(batch * self.n_agents, obs_dim)
+        obs_flat = next_obs_all.reshape(batch * self.n_agents, obs_dim)
 
         if self.use_ctm_actor:
             hidden = self.agents[agent_i].target_policy.get_initial_hidden_state(
@@ -101,7 +101,7 @@ class MADDPG(object):
         actions = torch.clamp(actions + noise, -1.0, 1.0)
 
         # (batch*n_agents, action_dim) → (batch, n_agents*action_dim)
-        return actions.view(batch, self.n_agents * actions.shape[1])
+        return actions.reshape(batch, self.n_agents * actions.shape[1])
 
     def scale_noise(self, scale, new_epsilon):
         """

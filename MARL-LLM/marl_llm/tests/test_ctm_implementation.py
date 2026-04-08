@@ -250,11 +250,11 @@ class TestCTMDDPGAgent:
         assert isinstance(agent.policy, CTMActor)
         assert isinstance(agent.target_policy, CTMActor)
 
-    def test_critic_is_mlp(self):
-        from algorithm.utils.networks import MLPNetwork
+    def test_critic_is_aggregating(self):
+        from algorithm.utils.networks import AggregatingCritic
         agent = make_ctm_agent()
-        assert isinstance(agent.critic, MLPNetwork)
-        assert isinstance(agent.target_critic, MLPNetwork)
+        assert isinstance(agent.critic, AggregatingCritic)
+        assert isinstance(agent.target_critic, AggregatingCritic)
 
     def test_target_policy_equals_policy_after_init(self):
         """
@@ -332,8 +332,9 @@ class TestCTMDDPGAgent:
     def test_get_params_keys(self):
         agent = make_ctm_agent()
         params = agent.get_params()
-        expected = {'policy', 'critic', 'target_policy', 'target_critic',
-                    'policy_optimizer', 'critic_optimizer'}
+        expected = {'policy', 'critic', 'critic2', 'target_policy',
+                    'target_critic', 'target_critic2',
+                    'policy_optimizer', 'critic_optimizer', 'critic2_optimizer'}
         assert set(params.keys()) == expected
 
     def test_save_load_roundtrip(self):
