@@ -407,7 +407,8 @@ class MADDPG(object):
                 for t in range(burn_in_length):
                     vf_in = torch.cat((obs_burn[t], acs_burn[t]), dim=1)
                     _, actor_critic_h = curr_agent.critic(vf_in, actor_critic_h)
-            actor_critic_h = tuple(h.detach() for h in actor_critic_h)
+            if actor_critic_h is not None:
+                actor_critic_h = tuple(h.detach() for h in actor_critic_h)
 
             # Burn-in for CTM actor hidden state (if using CTM)
             if self.use_ctm_actor:
@@ -416,7 +417,8 @@ class MADDPG(object):
                     for t in range(burn_in_length):
                         agent_obs_t = obs_burn[t][:, agent_i * obs_dim : (agent_i + 1) * obs_dim]
                         _, actor_h = curr_agent.policy(agent_obs_t, actor_h)
-                actor_h = tuple(h.detach() for h in actor_h)
+                if actor_h is not None:
+                    actor_h = tuple(h.detach() for h in actor_h)
 
             # Training: recompute agent_i's actions, evaluate Q
             total_pol_loss = torch.tensor(0.0, device=device)
