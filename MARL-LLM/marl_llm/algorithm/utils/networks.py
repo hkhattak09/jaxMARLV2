@@ -65,21 +65,26 @@ class AggregatingCritic(nn.Module):
             nn.LeakyReLU(),
         )
 
-        self.lstm = nn.LSTM(input_size=embed_dim, hidden_size=lstm_hidden_dim,
-                            num_layers=1, batch_first=True)
+        self.use_lstm = lstm_hidden_dim > 0
+        if self.use_lstm:
+            self.lstm = nn.LSTM(input_size=embed_dim, hidden_size=lstm_hidden_dim,
+                                num_layers=1, batch_first=True)
 
+        head_input_dim = lstm_hidden_dim if self.use_lstm else embed_dim
         self.head = nn.Sequential(
-            nn.Linear(lstm_hidden_dim, hidden_dim),
+            nn.Linear(head_input_dim, hidden_dim),
             nn.LeakyReLU(),
             nn.Linear(hidden_dim, 1),
         )
 
     def get_initial_hidden(self, batch_size, device):
-        """Return zero-initialized LSTM hidden state.
+        """Return zero-initialized LSTM hidden state, or None if no LSTM.
 
         Returns:
-            (h_0, c_0): each (1, batch_size, lstm_hidden_dim)
+            (h_0, c_0): each (1, batch_size, lstm_hidden_dim), or None
         """
+        if not self.use_lstm:
+            return None
         h_0 = torch.zeros(1, batch_size, self.lstm_hidden_dim, device=device)
         c_0 = torch.zeros(1, batch_size, self.lstm_hidden_dim, device=device)
         return (h_0, c_0)
@@ -89,10 +94,10 @@ class AggregatingCritic(nn.Module):
         Args:
             X: (batch, n_agents*obs_dim + n_agents*act_dim)
                Packed as [obs_all | act_all] — matches torch.cat((obs, acs), dim=1).
-            hidden: (h_0, c_0) each (1, batch, lstm_hidden_dim), or None for fresh state.
+            hidden: (h_0, c_0) each (1, batch, lstm_hidden_dim), or None.
         Returns:
             Q: (batch, 1)
-            new_hidden: (h_n, c_n) each (1, batch, lstm_hidden_dim)
+            new_hidden: (h_n, c_n) each (1, batch, lstm_hidden_dim), or None
         """
         batch = X.shape[0]
         obs_all = X[:, :self.n_agents * self.obs_dim]
@@ -105,12 +110,11 @@ class AggregatingCritic(nn.Module):
         embeds = self.encoder(x)    # (B, N, embed_dim)
         agg = embeds.mean(dim=1)    # (B, embed_dim)
 
-        # LSTM expects (batch, seq_len, input_size) with batch_first=True
-        # We treat each timestep as seq_len=1 (single-step processing)
-        if hidden is None:
-            hidden = self.get_initial_hidden(batch, X.device)
-
-        lstm_out, new_hidden = self.lstm(agg.unsqueeze(1), hidden)  # (B, 1, lstm_hidden)
-        lstm_out = lstm_out.squeeze(1)                               # (B, lstm_hidden)
-
-        return self.head(lstm_out), new_hidden  # (B, 1), ((1,B,H), (1,B,H))
+        if self.use_lstm:
+            if hidden is None:
+                hidden = self.get_initial_hidden(batch, X.device)
+            lstm_out, new_hidden = self.lstm(agg.unsqueeze(1), hidden)  # (B, 1, lstm_hidden)
+            lstm_out = lstm_out.squeeze(1)                               # (B, lstm_hidden)
+            return self.head(lstm_out), new_hidden
+        else:
+            return self.head(agg), None
