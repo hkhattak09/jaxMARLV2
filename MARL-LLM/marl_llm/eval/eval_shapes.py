@@ -145,16 +145,16 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
             obs = env.reset_eval(shape_idx)
             ep_reward = 0.0
             ep_spring_collisions = 0.0
-            prev_prior_eval = None  # one-step-lag prior for seed mode
 
             with torch.no_grad():
                 for step in range(cfg.episode_length):
                     # Stateless rollout: fresh hidden state every step.
-                    # Seed mode: one-step-lag prior seeds CTM (zeros at t=0).
+                    # Seed mode: compute synchronous prior from current state.
                     if maddpg.use_ctm_actor:
-                        if maddpg.prior_mode == 'seed' and prev_prior_eval is not None:
+                        if maddpg.prior_mode == 'seed':
+                            prior_gpu = env.compute_prior()
                             eval_hidden = maddpg.agents[0].policy.get_prior_seeded_hidden_state(
-                                obs.t(), prev_prior_eval.t()
+                                obs.t(), prior_gpu.t()
                             )
                         else:
                             eval_hidden = maddpg.agents[0].policy.get_initial_hidden_state(
@@ -166,8 +166,7 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
                     actions_stacked = torch.column_stack(actions)  # (2, n_a)
 
                     # Step environment
-                    obs, rewards, dones, _, prior_gpu = env.step(actions_stacked.t().detach())
-                    prev_prior_eval = prior_gpu.detach()
+                    obs, rewards, dones, _, _ = env.step(actions_stacked.t().detach())
 
                     # Accumulate reward (rewards is (1, n_a) GPU tensor)
                     ep_reward += rewards.mean().item()

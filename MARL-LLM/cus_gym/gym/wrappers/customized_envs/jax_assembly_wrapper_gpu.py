@@ -98,6 +98,7 @@ class JaxAssemblyAdapterGPU:
         if n_envs == 1:
             self._jit_reset = jax.jit(jax_env.reset)
             self._jit_step = jax.jit(jax_env.step_env_array)  # Array-based step
+            self._jit_compute_prior = jax.jit(jax_env.compute_prior)
             
             # Simple array reshape (no dict conversion needed!)
             @jax.jit
@@ -115,6 +116,7 @@ class JaxAssemblyAdapterGPU:
         else:
             self._jit_reset = jax.jit(jax.vmap(jax_env.reset))
             self._jit_step = jax.jit(jax.vmap(jax_env.step_env_array))  # Array-based step
+            self._jit_compute_prior = jax.jit(jax.vmap(jax_env.compute_prior))
             
             # Simple array reshape (no dict conversion needed!)
             @jax.jit
@@ -256,6 +258,22 @@ class JaxAssemblyAdapterGPU:
         prior_torch = torch_from_dlpack(prior_jax)
 
         return obs_torch, rew_torch, done_torch, {}, prior_torch
+
+    def compute_prior(self) -> torch.Tensor:
+        """Compute Reynolds flocking prior from current state without stepping.
+
+        Returns the same prior that step() would return, but computed from the
+        current state so it can be used synchronously before maddpg.step().
+
+        Returns:
+            prior_torch: (2, n_envs*n_a)  torch.cuda.FloatTensor
+        """
+        prior_jax = self._jit_compute_prior(self._states)  # [n_a, 2] or [N, n_a, 2]
+        if self.n_envs == 1:
+            prior_jax_t = prior_jax.T  # [2, n_a]
+        else:
+            prior_jax_t = prior_jax.reshape(self.n_envs * self._n_a_per_env, 2).T  # [2, N*n_a]
+        return torch_from_dlpack(prior_jax_t)
 
     def render(self, *args, **kwargs):
         """No-op — JAX env has no renderer yet."""

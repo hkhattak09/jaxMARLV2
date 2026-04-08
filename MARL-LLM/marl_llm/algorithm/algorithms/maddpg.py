@@ -94,6 +94,10 @@ class MADDPG(object):
         else:
             actions = self.agents[agent_i].target_policy(obs_flat)
 
+        # TD3 target policy smoothing: add clipped noise to prevent exploiting Q-function peaks
+        noise = torch.clamp(torch.randn_like(actions) * 0.2, -0.5, 0.5)
+        actions = torch.clamp(actions + noise, -1.0, 1.0)
+
         # (batch*n_agents, action_dim) → (batch, n_agents*action_dim)
         return actions.view(batch, self.n_agents * actions.shape[1])
 
@@ -201,76 +205,81 @@ class MADDPG(object):
 
         vf_loss = vf_loss1  # used for logging below
 
-        ######################### Update Actor (Option A) #########################
-        # Recompute only agent_i's actions through the shared policy; use stored
-        # buffer actions for all other slots. This is 24× cheaper than Option B
-        # while still being correct: gradient flows only through agent_i's slot,
-        # which is sufficient since all 24 agents share the same policy weights.
-        curr_agent.policy_optimizer.zero_grad()
+        ######################### Update Actor (Option A, delayed) #########################
+        # TD3 delayed policy updates: only update actor every 2 critic steps.
+        # Lets the critic stabilise before the actor chases it.
+        pol_loss = torch.tensor(0.0)
+        regularization_term = torch.tensor(0.0)
 
-        batch_size = obs.shape[0]
-        obs_dim = obs.shape[1] // self.n_agents
-        action_dim = acs.shape[1] // self.n_agents
+        if self.niter % 2 == 0:
+            # Recompute only agent_i's actions through the shared policy; use stored
+            # buffer actions for all other slots. This is 24× cheaper than Option B
+            # while still being correct: gradient flows only through agent_i's slot,
+            # which is sufficient since all 24 agents share the same policy weights.
+            curr_agent.policy_optimizer.zero_grad()
 
-        # Extract agent_i's obs slice: (batch, obs_dim)
-        agent_obs = obs[:, agent_i * obs_dim : (agent_i + 1) * obs_dim]
+            batch_size = obs.shape[0]
+            obs_dim = obs.shape[1] // self.n_agents
+            action_dim = acs.shape[1] // self.n_agents
 
-        if self.use_ctm_actor:
-            if self.prior_mode == 'seed' and acs_prior is not None:
-                # Seed mode: initialise state_trace from (obs, prior) via learned seed_mlp.
-                # acs_prior is joint (batch, n_agents*action_dim); extract agent_i's slice.
-                prior_agent_i = acs_prior[:, agent_i * action_dim : (agent_i + 1) * action_dim]
-                hidden = curr_agent.policy.get_prior_seeded_hidden_state(agent_obs, prior_agent_i)
+            # Extract agent_i's obs slice: (batch, obs_dim)
+            agent_obs = obs[:, agent_i * obs_dim : (agent_i + 1) * obs_dim]
+
+            if self.use_ctm_actor:
+                if self.prior_mode == 'seed' and acs_prior is not None:
+                    # Seed mode: initialise state_trace from (obs, prior) via learned seed_mlp.
+                    # acs_prior is joint (batch, n_agents*action_dim); extract agent_i's slice.
+                    prior_agent_i = acs_prior[:, agent_i * action_dim : (agent_i + 1) * action_dim]
+                    hidden = curr_agent.policy.get_prior_seeded_hidden_state(agent_obs, prior_agent_i)
+                else:
+                    hidden = curr_agent.policy.get_initial_hidden_state(batch_size, obs.device)
+                curr_pol_out, _ = curr_agent.policy(agent_obs, hidden)
             else:
-                hidden = curr_agent.policy.get_initial_hidden_state(batch_size, obs.device)
-            curr_pol_out, _ = curr_agent.policy(agent_obs, hidden)
-        else:
-            curr_pol_out = curr_agent.policy(agent_obs)  # (batch, action_dim)
+                curr_pol_out = curr_agent.policy(agent_obs)  # (batch, action_dim)
 
-        # Substitute agent_i's slot; use stored actions for all other agents
-        all_pol_acs = torch.cat([
-            acs[:, :agent_i * action_dim].detach(),
-            curr_pol_out,
-            acs[:, (agent_i + 1) * action_dim:].detach(),
-        ], dim=1)  # (batch, n_agents * action_dim)
+            # Substitute agent_i's slot; use stored actions for all other agents
+            all_pol_acs = torch.cat([
+                acs[:, :agent_i * action_dim].detach(),
+                curr_pol_out,
+                acs[:, (agent_i + 1) * action_dim:].detach(),
+            ], dim=1)  # (batch, n_agents * action_dim)
 
-        # Actor loss: maximize Q-value (negative for gradient ascent)
-        vf_in = torch.cat((obs, all_pol_acs), dim=1)
-        pol_loss = -curr_agent.critic(vf_in).mean()
+            # Actor loss: maximize Q-value (negative for gradient ascent)
+            vf_in = torch.cat((obs, all_pol_acs), dim=1)
+            pol_loss = -curr_agent.critic(vf_in).mean()
 
-        # Regularization towards prior actions (only for prior_mode='regularize')
-        regularization_term = torch.tensor(0.0, requires_grad=True)
-        if self.prior_mode == 'regularize' and acs_prior is not None:
-            mse_loss = torch.nn.MSELoss()
+            # Regularization towards prior actions (only for prior_mode='regularize')
+            regularization_term = torch.tensor(0.0, requires_grad=True)
+            if self.prior_mode == 'regularize' and acs_prior is not None:
+                mse_loss = torch.nn.MSELoss()
 
-            # Filter out near-zero prior actions (likely invalid/padding)
-            mask = (acs_prior.abs() < 1e-2).all(dim=1)
-            valid_mask = ~mask
-            filtered_all_pol_acs = all_pol_acs[valid_mask]
-            filtered_acs_prior = acs_prior[valid_mask]
+                # Filter out near-zero prior actions (likely invalid/padding)
+                mask = (acs_prior.abs() < 1e-2).all(dim=1)
+                valid_mask = ~mask
+                filtered_all_pol_acs = all_pol_acs[valid_mask]
+                filtered_acs_prior = acs_prior[valid_mask]
 
-            # Compute regularization loss only for valid prior actions
-            if filtered_all_pol_acs.numel() > 0 and filtered_acs_prior.numel() > 0:
-                regularization_term = mse_loss(filtered_all_pol_acs, filtered_acs_prior)
+                # Compute regularization loss only for valid prior actions
+                if filtered_all_pol_acs.numel() > 0 and filtered_acs_prior.numel() > 0:
+                    regularization_term = mse_loss(filtered_all_pol_acs, filtered_acs_prior)
 
-            pol_loss = pol_loss + 0.3 * alpha * regularization_term
+                pol_loss = pol_loss + 0.3 * alpha * regularization_term
 
-        # Backward pass for actor
-        pol_loss.backward()     
-                                
-        if parallel:
-            average_gradients(curr_agent.policy)
-        torch.nn.utils.clip_grad_norm_(curr_agent.policy.parameters(), 0.5)
-        curr_agent.policy_optimizer.step() 
-        
+            # Backward pass for actor
+            pol_loss.backward()
+            if parallel:
+                average_gradients(curr_agent.policy)
+            torch.nn.utils.clip_grad_norm_(curr_agent.policy.parameters(), 0.5)
+            curr_agent.policy_optimizer.step()
+
         # Log metrics if logger is provided
         if logger is not None:
             logger.add_scalars('agent%i/losses' % agent_i, {
-                'vf_loss': vf_loss, 
-                'pol_loss': pol_loss, 
+                'vf_loss': vf_loss,
+                'pol_loss': pol_loss,
                 'regularization_loss': 0.5 * alpha * regularization_term
             }, self.niter)
-        
+
         return vf_loss.item(), pol_loss.item(), (0.3 * alpha * regularization_term).item()
 
     def update_all_targets(self):    

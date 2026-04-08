@@ -352,7 +352,20 @@ class AssemblyEnv(MultiAgentEnv):
         prior = self._robot_policy_vectorized(new_state, cached)  # [n_a, 2]
 
         return obs, new_state, rew, done, prior
-    
+
+    def compute_prior(self, state: AssemblyState) -> chex.Array:
+        """Compute Reynolds flocking prior from current state without stepping.
+
+        Identical to the prior returned by step_env_array, but computed from
+        the state that is passed in rather than the post-step state. Use this
+        to get the synchronous prior for the current observation before acting.
+
+        Returns:
+            prior: [n_a, 2] clipped to [-1, 1]
+        """
+        cached = self._compute_cached_distances(state)
+        return self._robot_policy_vectorized(state, cached)
+
     def _compute_cached_distances(self, state: AssemblyState) -> CachedDistances:
         """Compute all distance metrics ONCE per step.
         

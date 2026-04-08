@@ -96,15 +96,15 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
                 ep_spring_collisions = 0.0
                 is_last_ep = (ep_i == episodes_per_shape - 1)
                 state_history = [] if is_last_ep else None
-                prev_prior_eval = None  # one-step-lag prior for seed mode
 
                 for _ in range(cfg.episode_length):
                     # Stateless rollout: fresh hidden state every step.
-                    # Seed mode: one-step-lag prior seeds CTM (zeros at t=0).
+                    # Seed mode: compute synchronous prior from current state.
                     if maddpg.use_ctm_actor:
-                        if maddpg.prior_mode == 'seed' and prev_prior_eval is not None:
+                        if maddpg.prior_mode == 'seed':
+                            prior_gpu = env.compute_prior()
                             eval_hidden = maddpg.agents[0].policy.get_prior_seeded_hidden_state(
-                                obs_gpu.t(), prev_prior_eval.t()
+                                obs_gpu.t(), prior_gpu.t()
                             )
                         else:
                             eval_hidden = maddpg.agents[0].policy.get_initial_hidden_state(
@@ -114,8 +114,7 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
                         eval_hidden = None
                     torch_agent_actions, _, _ = maddpg.step(obs_gpu, start_stop_num, explore=False, hidden_states=eval_hidden)
                     agent_actions_gpu = torch.column_stack(torch_agent_actions)
-                    obs_gpu, rewards_gpu, _, _, prior_gpu = env.step(agent_actions_gpu.t().detach())
-                    prev_prior_eval = prior_gpu.detach()
+                    obs_gpu, rewards_gpu, _, _, _ = env.step(agent_actions_gpu.t().detach())
                     ep_reward += rewards_gpu.cpu().mean().item()
                     ep_spring_collisions += env.springboard_collision_count()
 
@@ -238,15 +237,15 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
             ep_spring_collisions = 0.0
             is_last_ep = (ep_i == cfg.eval_episodes - 1)
             state_history = [] if is_last_ep else None
-            prev_prior_eval = None  # one-step-lag prior for seed mode
 
             for _ in range(cfg.episode_length):
                 # Stateless rollout: fresh hidden state every step.
-                # Seed mode: one-step-lag prior seeds CTM (zeros at t=0).
+                # Seed mode: compute synchronous prior from current state.
                 if maddpg.use_ctm_actor:
-                    if maddpg.prior_mode == 'seed' and prev_prior_eval is not None:
+                    if maddpg.prior_mode == 'seed':
+                        prior_gpu = env.compute_prior()
                         eval_hidden = maddpg.agents[0].policy.get_prior_seeded_hidden_state(
-                            obs_gpu.t(), prev_prior_eval.t()
+                            obs_gpu.t(), prior_gpu.t()
                         )
                     else:
                         eval_hidden = maddpg.agents[0].policy.get_initial_hidden_state(
@@ -257,8 +256,7 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
                 torch_agent_actions, _, _ = maddpg.step(obs_gpu, start_stop_num, explore=False, hidden_states=eval_hidden)
                 agent_actions_gpu = torch.column_stack(torch_agent_actions)  # (2, N*n_a)
                 # Transpose for env, detach for DLPack
-                obs_gpu, rewards_gpu, _, _, prior_gpu = env.step(agent_actions_gpu.t().detach())
-                prev_prior_eval = prior_gpu.detach()
+                obs_gpu, rewards_gpu, _, _, _ = env.step(agent_actions_gpu.t().detach())
                 ep_reward += rewards_gpu.cpu().mean().item()
                 ep_spring_collisions += env.springboard_collision_count()
 
@@ -437,9 +435,6 @@ def run(cfg):
         next_obs_list = []
         dones_list = []
         prior_list = []
-        # One-step-lag prior for seed mode: prior from t-1 seeds the CTM at t.
-        # Shape: (2, N*n_a) GPU tensor or None at t=0.
-        prev_prior_gpu = None
         # Violation accumulators: stay as JAX arrays to avoid per-step device sync
         r_avoid_violation_sum = jnp.zeros(())
         spring_collision_sum = jnp.zeros(())
@@ -455,14 +450,14 @@ def run(cfg):
             # obs_gpu is already a torch.cuda tensor (via DLPack)
             t0 = time.time()
             # Stateless rollout: reinitialise hidden states fresh every step.
-            # Seed mode: use one-step-lag prior (prior from t-1 seeds CTM at t).
-            # At t=0, prev_prior_gpu is None so we fall back to zero-init.
+            # Seed mode: compute synchronous prior from current state before acting.
             if cfg.use_ctm_actor:
-                if cfg.prior_mode == 'seed' and prev_prior_gpu is not None:
-                    # obs_gpu: (obs_dim, N*n_a) → obs_gpu.t(): (N*n_a, obs_dim)
-                    # prev_prior_gpu: (2, N*n_a) → .t(): (N*n_a, 2)
+                if cfg.prior_mode == 'seed':
+                    # obs_gpu: (obs_dim, N*n_a) → .t(): (N*n_a, obs_dim)
+                    # prior_gpu: (2, N*n_a) → .t(): (N*n_a, 2)
+                    prior_gpu = env.compute_prior()
                     hidden_states = maddpg.agents[0].policy.get_prior_seeded_hidden_state(
-                        obs_gpu.t(), prev_prior_gpu.t()
+                        obs_gpu.t(), prior_gpu.t()
                     )
                 else:
                     hidden_states = maddpg.agents[0].policy.get_initial_hidden_state(
@@ -491,8 +486,6 @@ def run(cfg):
             r_avoid_violation_sum = r_avoid_violation_sum + env.r_avoid_violation_count_jax()
             spring_collision_sum = spring_collision_sum + env.springboard_collision_count_jax()
 
-            # Carry prior forward for one-step-lag seeding at next timestep
-            prev_prior_gpu = agent_actions_prior_gpu.detach()
             obs_gpu = next_obs_gpu  # Stay on GPU for next step
 
         # Single bulk GPU→CPU transfer at episode end

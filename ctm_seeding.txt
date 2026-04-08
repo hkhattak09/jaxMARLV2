@@ -1,0 +1,627 @@
+! python jaxMARLV2/MARL-LLM/marl_llm/train/train_assembly_jax_gpu.py --n_episodes 500 --eval_interval 100 --n_a 20 --prior_mode seed
+
+[JAX Memory] Limited to 15% of GPU memory (~2.1GB on T4)
+Load config parameters takes  0.0016984939575195312
+Using GPU: Tesla T4
+Actor type: CTM
+Using neuron select type: first-last
+Synch representation size action: 0
+Synch representation size out: 136
+Using neuron select type: first-last
+Synch representation size action: 0
+Synch representation size out: 136
+Training Starts (GPU-optimized mode)...
+
+====================================================================================================
+Episode     0/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean: -0.0084 | Std:  0.1414 | Uniformity:  0.922
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.088(std:0.000) | Dist Uniformity: 0.587(std:0.000) | Voronoi Uniformity: 0.233(std:0.000)
+  - R-Avoid Violations (pairs/ep/env): 199.0 | Spring Collisions (pairs/ep/env): 7.0
+LOSSES (last 10 eps):   VF:  0.0000 | Policy:  0.0000 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   6.64 | Policy Exec:   1.30 | Env Step:   4.91 | Training:   0.03
+====================================================================================================
+
+
+====================================================================================================
+Episode    10/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean: -0.0016 | Std:  0.1465 | Uniformity:  0.923
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.112(std:0.095) | Dist Uniformity: 0.611(std:0.085) | Voronoi Uniformity: 0.296(std:0.066)
+  - R-Avoid Violations (pairs/ep/env): 690.3 | Spring Collisions (pairs/ep/env): 24.1
+LOSSES (last 10 eps):   VF:  0.0012 | Policy:  0.0075 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.34 | Policy Exec:   0.89 | Env Step:   0.34 | Training:   1.99
+====================================================================================================
+
+
+====================================================================================================
+Episode    20/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean: -0.0081 | Std:  0.1406 | Uniformity:  0.965
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.065(std:0.122) | Dist Uniformity: 0.502(std:0.123) | Voronoi Uniformity: 0.258(std:0.070)
+  - R-Avoid Violations (pairs/ep/env): 3576.5 | Spring Collisions (pairs/ep/env): 163.6
+LOSSES (last 10 eps):   VF:  0.0004 | Policy:  0.0149 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.34 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.05
+====================================================================================================
+
+
+====================================================================================================
+Episode    30/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0057 | Std:  0.1611 | Uniformity:  0.947
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.102(std:0.114) | Dist Uniformity: 0.536(std:0.095) | Voronoi Uniformity: 0.284(std:0.070)
+  - R-Avoid Violations (pairs/ep/env): 2190.8 | Spring Collisions (pairs/ep/env): 82.4
+LOSSES (last 10 eps):   VF:  0.0003 | Policy:  0.0166 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.35 | Policy Exec:   0.89 | Env Step:   0.34 | Training:   2.07
+====================================================================================================
+
+
+====================================================================================================
+Episode    40/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0251 | Std:  0.2115 | Uniformity:  0.890
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.154(std:0.117) | Dist Uniformity: 0.545(std:0.091) | Voronoi Uniformity: 0.279(std:0.065)
+  - R-Avoid Violations (pairs/ep/env): 1156.6 | Spring Collisions (pairs/ep/env): 32.8
+LOSSES (last 10 eps):   VF:  0.0004 | Policy:  0.0058 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.33 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.10
+====================================================================================================
+
+
+====================================================================================================
+Episode    50/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0221 | Std:  0.1977 | Uniformity:  0.955
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.093(std:0.141) | Dist Uniformity: 0.502(std:0.101) | Voronoi Uniformity: 0.244(std:0.077)
+  - R-Avoid Violations (pairs/ep/env): 1957.7 | Spring Collisions (pairs/ep/env): 83.5
+LOSSES (last 10 eps):   VF:  0.0005 | Policy: -0.0009 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.32 | Policy Exec:   0.87 | Env Step:   0.34 | Training:   2.07
+====================================================================================================
+
+
+====================================================================================================
+Episode    60/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0493 | Std:  0.2465 | Uniformity:  0.961
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.235(std:0.118) | Dist Uniformity: 0.515(std:0.082) | Voronoi Uniformity: 0.315(std:0.077)
+  - R-Avoid Violations (pairs/ep/env): 1588.6 | Spring Collisions (pairs/ep/env): 57.3
+LOSSES (last 10 eps):   VF:  0.0009 | Policy: -0.0325 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.34 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.09
+====================================================================================================
+
+
+====================================================================================================
+Episode    70/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.0808 | Std:  0.2969 | Uniformity:  0.962
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.296(std:0.224) | Dist Uniformity: 0.463(std:0.081) | Voronoi Uniformity: 0.293(std:0.071)
+  - R-Avoid Violations (pairs/ep/env): 3479.3 | Spring Collisions (pairs/ep/env): 174.4
+LOSSES (last 10 eps):   VF:  0.0013 | Policy: -0.0720 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.33 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode    80/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1425 | Std:  0.3347 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.515(std:0.266) | Dist Uniformity: 0.598(std:0.130) | Voronoi Uniformity: 0.376(std:0.122)
+  - R-Avoid Violations (pairs/ep/env): 2074.5 | Spring Collisions (pairs/ep/env): 107.6
+LOSSES (last 10 eps):   VF:  0.0021 | Policy: -0.1527 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.34 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode    90/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2258 | Std:  0.3728 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.673(std:0.276) | Dist Uniformity: 0.609(std:0.144) | Voronoi Uniformity: 0.476(std:0.133)
+  - R-Avoid Violations (pairs/ep/env): 1541.8 | Spring Collisions (pairs/ep/env): 62.3
+LOSSES (last 10 eps):   VF:  0.0037 | Policy: -0.2888 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.31 | Policy Exec:   0.86 | Env Step:   0.33 | Training:   2.09
+====================================================================================================
+
+
+====================================================================================================
+Episode   100/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2761 | Std:  0.4228 | Uniformity:  0.991
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.716(std:0.200) | Dist Uniformity: 0.680(std:0.096) | Voronoi Uniformity: 0.467(std:0.139)
+  - R-Avoid Violations (pairs/ep/env): 541.9 | Spring Collisions (pairs/ep/env): 7.6
+LOSSES (last 10 eps):   VF:  0.0063 | Policy: -0.4735 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.36 | Policy Exec:   0.90 | Env Step:   0.35 | Training:   2.08
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_100.gif  (100 frames @ 12fps)
+[EVAL] ep 100 | reward: 0.5253 | sensing_coverage: 0.8673 | voronoi_uniformity: 0.6131 | neighbor_dist: 0.2529 | r_avoid_violations: 2.7 | spring_collisions: 6.0
+
+====================================================================================================
+Episode   110/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2467 | Std:  0.4030 | Uniformity:  0.987
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.701(std:0.255) | Dist Uniformity: 0.652(std:0.115) | Voronoi Uniformity: 0.496(std:0.171)
+  - R-Avoid Violations (pairs/ep/env): 1615.4 | Spring Collisions (pairs/ep/env): 60.6
+LOSSES (last 10 eps):   VF:  0.0084 | Policy: -0.6907 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.35 | Policy Exec:   0.89 | Env Step:   0.34 | Training:   2.14
+====================================================================================================
+
+
+====================================================================================================
+Episode   120/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2466 | Std:  0.4098 | Uniformity:  0.989
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.614(std:0.197) | Dist Uniformity: 0.572(std:0.099) | Voronoi Uniformity: 0.422(std:0.131)
+  - R-Avoid Violations (pairs/ep/env): 1929.4 | Spring Collisions (pairs/ep/env): 64.0
+LOSSES (last 10 eps):   VF:  0.0117 | Policy: -0.9380 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.35 | Policy Exec:   0.89 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   130/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2826 | Std:  0.4445 | Uniformity:  0.992
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.762(std:0.172) | Dist Uniformity: 0.674(std:0.082) | Voronoi Uniformity: 0.476(std:0.116)
+  - R-Avoid Violations (pairs/ep/env): 1149.0 | Spring Collisions (pairs/ep/env): 26.1
+LOSSES (last 10 eps):   VF:  0.0169 | Policy: -1.2124 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.41 | Policy Exec:   0.93 | Env Step:   0.36 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   140/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2816 | Std:  0.4215 | Uniformity:  0.985
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.604(std:0.246) | Dist Uniformity: 0.617(std:0.144) | Voronoi Uniformity: 0.395(std:0.111)
+  - R-Avoid Violations (pairs/ep/env): 1642.6 | Spring Collisions (pairs/ep/env): 46.5
+LOSSES (last 10 eps):   VF:  0.0194 | Policy: -1.5110 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.37 | Policy Exec:   0.91 | Env Step:   0.35 | Training:   2.11
+====================================================================================================
+
+
+====================================================================================================
+Episode   150/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2913 | Std:  0.4431 | Uniformity:  0.991
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.676(std:0.167) | Dist Uniformity: 0.588(std:0.111) | Voronoi Uniformity: 0.433(std:0.082)
+  - R-Avoid Violations (pairs/ep/env): 1170.6 | Spring Collisions (pairs/ep/env): 41.8
+LOSSES (last 10 eps):   VF:  0.0272 | Policy: -1.8538 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.33 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   160/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2057 | Std:  0.4083 | Uniformity:  0.983
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.570(std:0.145) | Dist Uniformity: 0.601(std:0.097) | Voronoi Uniformity: 0.374(std:0.067)
+  - R-Avoid Violations (pairs/ep/env): 1479.7 | Spring Collisions (pairs/ep/env): 48.8
+LOSSES (last 10 eps):   VF:  0.0345 | Policy: -2.1474 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.34 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   170/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2164 | Std:  0.4124 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.527(std:0.189) | Dist Uniformity: 0.642(std:0.066) | Voronoi Uniformity: 0.361(std:0.068)
+  - R-Avoid Violations (pairs/ep/env): 643.6 | Spring Collisions (pairs/ep/env): 18.9
+LOSSES (last 10 eps):   VF:  0.0393 | Policy: -2.4236 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.37 | Policy Exec:   0.91 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   180/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2411 | Std:  0.4235 | Uniformity:  0.953
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.639(std:0.252) | Dist Uniformity: 0.562(std:0.153) | Voronoi Uniformity: 0.424(std:0.144)
+  - R-Avoid Violations (pairs/ep/env): 1785.0 | Spring Collisions (pairs/ep/env): 101.3
+LOSSES (last 10 eps):   VF:  0.0466 | Policy: -2.6694 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.35 | Policy Exec:   0.89 | Env Step:   0.35 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   190/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2563 | Std:  0.4094 | Uniformity:  0.989
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.632(std:0.238) | Dist Uniformity: 0.567(std:0.127) | Voronoi Uniformity: 0.418(std:0.105)
+  - R-Avoid Violations (pairs/ep/env): 1008.3 | Spring Collisions (pairs/ep/env): 41.2
+LOSSES (last 10 eps):   VF:  0.0554 | Policy: -2.8215 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.32 | Policy Exec:   0.86 | Env Step:   0.34 | Training:   2.09
+====================================================================================================
+
+
+====================================================================================================
+Episode   200/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1955 | Std:  0.3764 | Uniformity:  0.934
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.479(std:0.251) | Dist Uniformity: 0.465(std:0.111) | Voronoi Uniformity: 0.354(std:0.101)
+  - R-Avoid Violations (pairs/ep/env): 3314.2 | Spring Collisions (pairs/ep/env): 232.1
+LOSSES (last 10 eps):   VF:  0.0593 | Policy: -2.8486 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.35 | Policy Exec:   0.89 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_200.gif  (100 frames @ 12fps)
+[EVAL] ep 200 | reward: 0.2428 | sensing_coverage: 0.6984 | voronoi_uniformity: 0.4336 | neighbor_dist: 0.2265 | r_avoid_violations: 14.0 | spring_collisions: 170.0
+
+====================================================================================================
+Episode   210/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2191 | Std:  0.3628 | Uniformity:  0.986
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.475(std:0.261) | Dist Uniformity: 0.559(std:0.094) | Voronoi Uniformity: 0.377(std:0.152)
+  - R-Avoid Violations (pairs/ep/env): 2975.1 | Spring Collisions (pairs/ep/env): 177.4
+LOSSES (last 10 eps):   VF:  0.0577 | Policy: -2.8736 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.35 | Policy Exec:   0.89 | Env Step:   0.34 | Training:   2.13
+====================================================================================================
+
+
+====================================================================================================
+Episode   220/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3207 | Std:  0.4546 | Uniformity:  0.992
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.721(std:0.215) | Dist Uniformity: 0.571(std:0.094) | Voronoi Uniformity: 0.487(std:0.107)
+  - R-Avoid Violations (pairs/ep/env): 890.4 | Spring Collisions (pairs/ep/env): 45.0
+LOSSES (last 10 eps):   VF:  0.0644 | Policy: -3.0012 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.33 | Policy Exec:   0.87 | Env Step:   0.34 | Training:   2.09
+====================================================================================================
+
+
+====================================================================================================
+Episode   230/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3398 | Std:  0.4568 | Uniformity:  0.992
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.732(std:0.157) | Dist Uniformity: 0.563(std:0.123) | Voronoi Uniformity: 0.451(std:0.101)
+  - R-Avoid Violations (pairs/ep/env): 1202.1 | Spring Collisions (pairs/ep/env): 55.9
+LOSSES (last 10 eps):   VF:  0.0782 | Policy: -3.1814 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.32 | Policy Exec:   0.87 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   240/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2788 | Std:  0.4502 | Uniformity:  0.990
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.568(std:0.221) | Dist Uniformity: 0.556(std:0.097) | Voronoi Uniformity: 0.397(std:0.097)
+  - R-Avoid Violations (pairs/ep/env): 1797.7 | Spring Collisions (pairs/ep/env): 131.6
+LOSSES (last 10 eps):   VF:  0.0772 | Policy: -3.3315 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.33 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.09
+====================================================================================================
+
+
+====================================================================================================
+Episode   250/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3224 | Std:  0.4477 | Uniformity:  0.992
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.684(std:0.172) | Dist Uniformity: 0.633(std:0.114) | Voronoi Uniformity: 0.447(std:0.109)
+  - R-Avoid Violations (pairs/ep/env): 1745.7 | Spring Collisions (pairs/ep/env): 57.3
+LOSSES (last 10 eps):   VF:  0.0940 | Policy: -3.4498 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.33 | Policy Exec:   0.87 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   260/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3441 | Std:  0.4597 | Uniformity:  0.993
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.770(std:0.100) | Dist Uniformity: 0.609(std:0.097) | Voronoi Uniformity: 0.489(std:0.094)
+  - R-Avoid Violations (pairs/ep/env): 2323.9 | Spring Collisions (pairs/ep/env): 101.6
+LOSSES (last 10 eps):   VF:  0.1064 | Policy: -3.6709 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.35 | Policy Exec:   0.88 | Env Step:   0.35 | Training:   2.09
+====================================================================================================
+
+
+====================================================================================================
+Episode   270/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3461 | Std:  0.4660 | Uniformity:  0.993
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.702(std:0.111) | Dist Uniformity: 0.612(std:0.079) | Voronoi Uniformity: 0.452(std:0.063)
+  - R-Avoid Violations (pairs/ep/env): 1106.3 | Spring Collisions (pairs/ep/env): 41.1
+LOSSES (last 10 eps):   VF:  0.1160 | Policy: -3.9778 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.32 | Policy Exec:   0.87 | Env Step:   0.34 | Training:   2.09
+====================================================================================================
+
+
+====================================================================================================
+Episode   280/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2790 | Std:  0.4313 | Uniformity:  0.992
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.667(std:0.185) | Dist Uniformity: 0.651(std:0.065) | Voronoi Uniformity: 0.441(std:0.103)
+  - R-Avoid Violations (pairs/ep/env): 1368.1 | Spring Collisions (pairs/ep/env): 32.4
+LOSSES (last 10 eps):   VF:  0.1434 | Policy: -4.2170 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.31 | Policy Exec:   0.86 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   290/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3267 | Std:  0.4320 | Uniformity:  0.992
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.699(std:0.148) | Dist Uniformity: 0.611(std:0.057) | Voronoi Uniformity: 0.468(std:0.102)
+  - R-Avoid Violations (pairs/ep/env): 860.2 | Spring Collisions (pairs/ep/env): 15.1
+LOSSES (last 10 eps):   VF:  0.1527 | Policy: -4.4982 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.34 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   300/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3205 | Std:  0.4226 | Uniformity:  0.992
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.645(std:0.201) | Dist Uniformity: 0.620(std:0.085) | Voronoi Uniformity: 0.448(std:0.125)
+  - R-Avoid Violations (pairs/ep/env): 1216.5 | Spring Collisions (pairs/ep/env): 15.9
+LOSSES (last 10 eps):   VF:  0.1790 | Policy: -4.7708 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.34 | Policy Exec:   0.89 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_300.gif  (100 frames @ 12fps)
+[EVAL] ep 300 | reward: 0.2754 | sensing_coverage: 0.6151 | voronoi_uniformity: 0.3823 | neighbor_dist: 0.2969 | r_avoid_violations: 2.3 | spring_collisions: 7.7
+
+====================================================================================================
+Episode   310/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3406 | Std:  0.4635 | Uniformity:  0.993
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.658(std:0.135) | Dist Uniformity: 0.655(std:0.075) | Voronoi Uniformity: 0.426(std:0.068)
+  - R-Avoid Violations (pairs/ep/env): 1894.9 | Spring Collisions (pairs/ep/env): 88.3
+LOSSES (last 10 eps):   VF:  0.1730 | Policy: -5.0960 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.32 | Policy Exec:   0.87 | Env Step:   0.34 | Training:   2.14
+====================================================================================================
+
+
+====================================================================================================
+Episode   320/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2513 | Std:  0.4089 | Uniformity:  0.991
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.588(std:0.177) | Dist Uniformity: 0.618(std:0.113) | Voronoi Uniformity: 0.403(std:0.091)
+  - R-Avoid Violations (pairs/ep/env): 2608.6 | Spring Collisions (pairs/ep/env): 93.0
+LOSSES (last 10 eps):   VF:  0.1754 | Policy: -5.2411 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.34 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   330/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2770 | Std:  0.4083 | Uniformity:  0.992
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.691(std:0.151) | Dist Uniformity: 0.631(std:0.096) | Voronoi Uniformity: 0.454(std:0.103)
+  - R-Avoid Violations (pairs/ep/env): 1349.7 | Spring Collisions (pairs/ep/env): 33.4
+LOSSES (last 10 eps):   VF:  0.1826 | Policy: -5.2806 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.33 | Policy Exec:   0.87 | Env Step:   0.34 | Training:   2.06
+====================================================================================================
+
+
+====================================================================================================
+Episode   340/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.1939 | Std:  0.3688 | Uniformity:  0.988
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.566(std:0.202) | Dist Uniformity: 0.642(std:0.059) | Voronoi Uniformity: 0.383(std:0.088)
+  - R-Avoid Violations (pairs/ep/env): 1674.5 | Spring Collisions (pairs/ep/env): 60.0
+LOSSES (last 10 eps):   VF:  0.1910 | Policy: -5.2953 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.33 | Policy Exec:   0.87 | Env Step:   0.34 | Training:   2.10
+====================================================================================================
+
+
+====================================================================================================
+Episode   350/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3116 | Std:  0.4359 | Uniformity:  0.993
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.685(std:0.197) | Dist Uniformity: 0.619(std:0.096) | Voronoi Uniformity: 0.451(std:0.111)
+  - R-Avoid Violations (pairs/ep/env): 1379.4 | Spring Collisions (pairs/ep/env): 35.9
+LOSSES (last 10 eps):   VF:  0.1991 | Policy: -5.4045 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.32 | Policy Exec:   0.87 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   360/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2780 | Std:  0.4261 | Uniformity:  0.990
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.572(std:0.224) | Dist Uniformity: 0.622(std:0.069) | Voronoi Uniformity: 0.432(std:0.128)
+  - R-Avoid Violations (pairs/ep/env): 1180.9 | Spring Collisions (pairs/ep/env): 24.4
+LOSSES (last 10 eps):   VF:  0.1980 | Policy: -5.4329 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.33 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   370/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3341 | Std:  0.4455 | Uniformity:  0.993
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.760(std:0.134) | Dist Uniformity: 0.602(std:0.093) | Voronoi Uniformity: 0.496(std:0.101)
+  - R-Avoid Violations (pairs/ep/env): 968.8 | Spring Collisions (pairs/ep/env): 18.8
+LOSSES (last 10 eps):   VF:  0.2133 | Policy: -5.3774 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.32 | Policy Exec:   0.86 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   380/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3091 | Std:  0.4364 | Uniformity:  0.992
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.670(std:0.181) | Dist Uniformity: 0.585(std:0.097) | Voronoi Uniformity: 0.467(std:0.114)
+  - R-Avoid Violations (pairs/ep/env): 1047.1 | Spring Collisions (pairs/ep/env): 27.2
+LOSSES (last 10 eps):   VF:  0.2194 | Policy: -5.5295 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.34 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   390/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.2760 | Std:  0.4274 | Uniformity:  0.991
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.719(std:0.179) | Dist Uniformity: 0.657(std:0.059) | Voronoi Uniformity: 0.464(std:0.126)
+  - R-Avoid Violations (pairs/ep/env): 1110.7 | Spring Collisions (pairs/ep/env): 39.0
+LOSSES (last 10 eps):   VF:  0.2144 | Policy: -5.5525 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.33 | Policy Exec:   0.87 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   400/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3792 | Std:  0.4515 | Uniformity:  0.993
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.792(std:0.168) | Dist Uniformity: 0.628(std:0.102) | Voronoi Uniformity: 0.559(std:0.166)
+  - R-Avoid Violations (pairs/ep/env): 999.2 | Spring Collisions (pairs/ep/env): 38.8
+LOSSES (last 10 eps):   VF:  0.2282 | Policy: -5.5682 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.34 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+[EVAL] GIF saved → eval_gifs/eval_400.gif  (100 frames @ 12fps)
+[EVAL] ep 400 | reward: 0.4276 | sensing_coverage: 0.8929 | voronoi_uniformity: 0.6272 | neighbor_dist: 0.2426 | r_avoid_violations: 7.0 | spring_collisions: 28.7
+
+====================================================================================================
+Episode   410/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3422 | Std:  0.4551 | Uniformity:  0.993
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.759(std:0.116) | Dist Uniformity: 0.584(std:0.098) | Voronoi Uniformity: 0.489(std:0.072)
+  - R-Avoid Violations (pairs/ep/env): 1198.0 | Spring Collisions (pairs/ep/env): 59.5
+LOSSES (last 10 eps):   VF:  0.2371 | Policy: -5.6809 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.31 | Policy Exec:   0.86 | Env Step:   0.34 | Training:   2.14
+====================================================================================================
+
+
+====================================================================================================
+Episode   420/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.4212 | Std:  0.4650 | Uniformity:  0.994
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.883(std:0.087) | Dist Uniformity: 0.674(std:0.054) | Voronoi Uniformity: 0.605(std:0.096)
+  - R-Avoid Violations (pairs/ep/env): 881.9 | Spring Collisions (pairs/ep/env): 19.3
+LOSSES (last 10 eps):   VF:  0.2611 | Policy: -5.8669 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.35 | Policy Exec:   0.89 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   430/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3538 | Std:  0.4352 | Uniformity:  0.993
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.778(std:0.112) | Dist Uniformity: 0.615(std:0.072) | Voronoi Uniformity: 0.504(std:0.095)
+  - R-Avoid Violations (pairs/ep/env): 928.5 | Spring Collisions (pairs/ep/env): 21.2
+LOSSES (last 10 eps):   VF:  0.2483 | Policy: -6.1338 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.34 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.06
+====================================================================================================
+
+
+====================================================================================================
+Episode   440/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3706 | Std:  0.4439 | Uniformity:  0.994
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.772(std:0.152) | Dist Uniformity: 0.636(std:0.113) | Voronoi Uniformity: 0.533(std:0.118)
+  - R-Avoid Violations (pairs/ep/env): 968.7 | Spring Collisions (pairs/ep/env): 19.8
+LOSSES (last 10 eps):   VF:  0.2809 | Policy: -6.4178 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.35 | Policy Exec:   0.89 | Env Step:   0.34 | Training:   2.09
+====================================================================================================
+
+
+====================================================================================================
+Episode   450/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3321 | Std:  0.4278 | Uniformity:  0.993
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.693(std:0.154) | Dist Uniformity: 0.637(std:0.087) | Voronoi Uniformity: 0.487(std:0.119)
+  - R-Avoid Violations (pairs/ep/env): 1132.0 | Spring Collisions (pairs/ep/env): 18.7
+LOSSES (last 10 eps):   VF:  0.3004 | Policy: -6.6014 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.30 | Policy Exec:   0.85 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   460/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3858 | Std:  0.4268 | Uniformity:  0.994
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.751(std:0.147) | Dist Uniformity: 0.711(std:0.077) | Voronoi Uniformity: 0.526(std:0.127)
+  - R-Avoid Violations (pairs/ep/env): 1067.5 | Spring Collisions (pairs/ep/env): 19.1
+LOSSES (last 10 eps):   VF:  0.3008 | Policy: -6.7563 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.34 | Policy Exec:   0.88 | Env Step:   0.34 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   470/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3481 | Std:  0.4204 | Uniformity:  0.993
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.745(std:0.211) | Dist Uniformity: 0.681(std:0.052) | Voronoi Uniformity: 0.525(std:0.145)
+  - R-Avoid Violations (pairs/ep/env): 1217.3 | Spring Collisions (pairs/ep/env): 18.2
+LOSSES (last 10 eps):   VF:  0.3231 | Policy: -6.9624 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.36 | Policy Exec:   0.90 | Env Step:   0.35 | Training:   2.08
+====================================================================================================
+
+
+====================================================================================================
+Episode   480/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.3583 | Std:  0.4182 | Uniformity:  0.993
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.746(std:0.147) | Dist Uniformity: 0.699(std:0.039) | Voronoi Uniformity: 0.510(std:0.098)
+  - R-Avoid Violations (pairs/ep/env): 1147.2 | Spring Collisions (pairs/ep/env): 17.9
+LOSSES (last 10 eps):   VF:  0.3457 | Policy: -6.9487 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.35 | Policy Exec:   0.89 | Env Step:   0.35 | Training:   2.09
+====================================================================================================
+
+
+====================================================================================================
+Episode   490/  500 | Agents: 20 | Envs: 1
+====================================================================================================
+REWARDS (last 10 eps):  Mean:  0.4145 | Std:  0.4259 | Uniformity:  0.995
+ENVIRONMENT METRICS (last 10 eps):
+  - Sensing Coverage: 0.880(std:0.094) | Dist Uniformity: 0.712(std:0.072) | Voronoi Uniformity: 0.610(std:0.120)
+  - R-Avoid Violations (pairs/ep/env): 1450.0 | Spring Collisions (pairs/ep/env): 23.0
+LOSSES (last 10 eps):   VF:  0.3435 | Policy: -7.1531 | Reg:  0.0000
+TIMING (last 10 eps):   Rollout:   1.39 | Policy Exec:   0.92 | Env Step:   0.35 | Training:   2.09
+====================================================================================================
+
+
+================================================================================
+FINAL EVALUATION - Testing on each shape
+================================================================================
+[EVAL] GIF saved → models/assembly/2026-04-08-05-18-52/final_eval/shape_0.gif  (100 frames @ 12fps)
+Shape 0: reward=0.4120 | sensing_coverage=0.8109 | uniformity=0.7238 | voronoi=0.5113 | neighbor_dist=0.3011 | r_avoid_violations=2.0 | spring_collisions=7.3
