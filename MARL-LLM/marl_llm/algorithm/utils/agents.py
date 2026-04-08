@@ -12,7 +12,7 @@ class DDPGAgent(object):
     critic, exploration noise)
     """
     def __init__(self, dim_input_policy, dim_output_policy, n_agents,
-                 lr_actor, lr_critic, hidden_dim=64,
+                 lr_actor, lr_critic, hidden_dim=64, lstm_hidden_dim=64,
                  discrete_action=False, device='cpu', epsilon=0.1, noise=0.1):
         """
         Inputs:
@@ -29,10 +29,10 @@ class DDPGAgent(object):
                                         constrain_out=True,
                                         discrete_action=discrete_action)
 
-        self.critic = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180)
-        self.target_critic = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180)
-        self.critic2 = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180)
-        self.target_critic2 = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180)
+        self.critic = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180, lstm_hidden_dim=lstm_hidden_dim)
+        self.target_critic = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180, lstm_hidden_dim=lstm_hidden_dim)
+        self.critic2 = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180, lstm_hidden_dim=lstm_hidden_dim)
+        self.target_critic2 = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180, lstm_hidden_dim=lstm_hidden_dim)
 
         hard_update(self.target_policy, self.policy)
         hard_update(self.target_critic, self.critic)

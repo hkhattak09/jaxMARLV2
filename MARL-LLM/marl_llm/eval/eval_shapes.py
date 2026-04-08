@@ -147,22 +147,24 @@ def _evaluate_single_model(weights_path, model_output_dir, env, num_shapes, star
             ep_spring_collisions = 0.0
 
             with torch.no_grad():
-                for step in range(cfg.episode_length):
-                    # Stateless rollout: fresh hidden state every step.
-                    # Seed mode: compute synchronous prior from current state.
-                    if maddpg.use_ctm_actor:
-                        if maddpg.prior_mode == 'seed':
-                            prior_gpu = env.compute_prior()
-                            eval_hidden = maddpg.agents[0].policy.get_prior_seeded_hidden_state(
-                                obs.t(), prior_gpu.t()
-                            )
-                        else:
-                            eval_hidden = maddpg.agents[0].policy.get_initial_hidden_state(
-                                env.n_a, torch_device
-                            )
+                # Initialize actor hidden states once at episode start (stateful eval).
+                if maddpg.use_ctm_actor:
+                    if maddpg.prior_mode == 'seed':
+                        prior_gpu = env.compute_prior()
+                        eval_hidden = maddpg.agents[0].policy.get_prior_seeded_hidden_state(
+                            obs.t(), prior_gpu.t()
+                        )
                     else:
-                        eval_hidden = None
-                    actions, _, _ = maddpg.step(obs, start_stop_num, explore=False, hidden_states=eval_hidden)
+                        eval_hidden = maddpg.agents[0].policy.get_initial_hidden_state(
+                            env.n_a, torch_device
+                        )
+                else:
+                    eval_hidden = None
+
+                for step in range(cfg.episode_length):
+                    actions, _, new_eval_hidden = maddpg.step(obs, start_stop_num, explore=False, hidden_states=eval_hidden)
+                    if maddpg.use_ctm_actor:
+                        eval_hidden = new_eval_hidden  # carry forward across episode steps
                     actions_stacked = torch.column_stack(actions)  # (2, n_a)
 
                     # Step environment

@@ -29,30 +29,34 @@ class MLPNetwork(nn.Module):
 
 class AggregatingCritic(nn.Module):
     """
-    Permutation-equivariant centralised critic for homogeneous multi-agent teams.
+    Permutation-equivariant centralised critic with optional LSTM for temporal reasoning.
 
-    Each agent's (obs_i, action_i) is passed through a shared encoder independently,
-    the resulting embeddings are mean-aggregated across agents, then a small head MLP
-    produces the Q-value.
+    Architecture:
+        encoder: (obs_i, act_i) → hidden_dim → embed_dim   [shared, per-agent, independent]
+        mean aggregate → embed_dim                           [permutation equivariant]
+        LSTM: embed_dim → lstm_hidden_dim                    [temporal reasoning, optional]
+        head: lstm_hidden_dim (or embed_dim) → hidden_dim → 1
 
-    Why this works better than a flat MLP over the concatenated joint input:
-      - The encoder sees 194-dim inputs (same scale as the old per-agent critic),
-        not 4,656-dim inputs — the learning problem is tractable.
-      - Mean aggregation is permutation equivariant: Q does not change if agents are
-        reordered, which is the correct inductive bias for a homogeneous cooperative team.
-      - Parameter count is independent of n_agents (shared encoder weights).
+    The LSTM processes the aggregated team summary over time, enabling the critic
+    to track how team state evolves across episode steps. This follows R-MADDPG's
+    finding that a recurrent critic is critical for partial observability.
+
+    Permutation equivariance is preserved because aggregation happens before recurrence.
 
     Interface:
-        forward(X) where X = torch.cat([obs_all, act_all], dim=1)
-                   i.e. (batch, n_agents*obs_dim + n_agents*act_dim)
-        — matches the existing maddpg.py call pattern with no changes needed there.
+        forward(X, hidden=None) → (Q, new_hidden)
+        where X = torch.cat([obs_all, act_all], dim=1)
+              hidden = (h_0, c_0) each (1, batch, lstm_hidden_dim), or None
     """
 
-    def __init__(self, n_agents, obs_dim, act_dim, hidden_dim=128, embed_dim=64):
+    def __init__(self, n_agents, obs_dim, act_dim, hidden_dim=128, embed_dim=64,
+                 lstm_hidden_dim=64):
         super().__init__()
         self.n_agents = n_agents
         self.obs_dim = obs_dim
         self.act_dim = act_dim
+        self.embed_dim = embed_dim
+        self.lstm_hidden_dim = lstm_hidden_dim
 
         self.encoder = nn.Sequential(
             nn.Linear(obs_dim + act_dim, hidden_dim),
@@ -60,19 +64,35 @@ class AggregatingCritic(nn.Module):
             nn.Linear(hidden_dim, embed_dim),
             nn.LeakyReLU(),
         )
+
+        self.lstm = nn.LSTM(input_size=embed_dim, hidden_size=lstm_hidden_dim,
+                            num_layers=1, batch_first=True)
+
         self.head = nn.Sequential(
-            nn.Linear(embed_dim, hidden_dim),
+            nn.Linear(lstm_hidden_dim, hidden_dim),
             nn.LeakyReLU(),
             nn.Linear(hidden_dim, 1),
         )
 
-    def forward(self, X):
+    def get_initial_hidden(self, batch_size, device):
+        """Return zero-initialized LSTM hidden state.
+
+        Returns:
+            (h_0, c_0): each (1, batch_size, lstm_hidden_dim)
+        """
+        h_0 = torch.zeros(1, batch_size, self.lstm_hidden_dim, device=device)
+        c_0 = torch.zeros(1, batch_size, self.lstm_hidden_dim, device=device)
+        return (h_0, c_0)
+
+    def forward(self, X, hidden=None):
         """
         Args:
             X: (batch, n_agents*obs_dim + n_agents*act_dim)
                Packed as [obs_all | act_all] — matches torch.cat((obs, acs), dim=1).
+            hidden: (h_0, c_0) each (1, batch, lstm_hidden_dim), or None for fresh state.
         Returns:
             Q: (batch, 1)
+            new_hidden: (h_n, c_n) each (1, batch, lstm_hidden_dim)
         """
         batch = X.shape[0]
         obs_all = X[:, :self.n_agents * self.obs_dim]
@@ -84,4 +104,13 @@ class AggregatingCritic(nn.Module):
 
         embeds = self.encoder(x)    # (B, N, embed_dim)
         agg = embeds.mean(dim=1)    # (B, embed_dim)
-        return self.head(agg)       # (B, 1)
+
+        # LSTM expects (batch, seq_len, input_size) with batch_first=True
+        # We treat each timestep as seq_len=1 (single-step processing)
+        if hidden is None:
+            hidden = self.get_initial_hidden(batch, X.device)
+
+        lstm_out, new_hidden = self.lstm(agg.unsqueeze(1), hidden)  # (B, 1, lstm_hidden)
+        lstm_out = lstm_out.squeeze(1)                               # (B, lstm_hidden)
+
+        return self.head(lstm_out), new_hidden  # (B, 1), ((1,B,H), (1,B,H))

@@ -22,7 +22,7 @@ class CTMDDPGAgent(DDPGAgent):
     """
 
     def __init__(self, dim_input_policy, dim_output_policy, n_agents,
-                 lr_actor, lr_critic, hidden_dim=64,
+                 lr_actor, lr_critic, hidden_dim=64, lstm_hidden_dim=64,
                  discrete_action=False, device='cpu', epsilon=0.1, noise=0.1,
                  ctm_config=None):
         # Intentionally skip DDPGAgent.__init__ — it would create MLP policy networks
@@ -40,10 +40,10 @@ class CTMDDPGAgent(DDPGAgent):
             **ctm_config,
         )
 
-        self.critic = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180)
-        self.target_critic = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180)
-        self.critic2 = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180)
-        self.target_critic2 = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180)
+        self.critic = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180, lstm_hidden_dim=lstm_hidden_dim)
+        self.target_critic = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180, lstm_hidden_dim=lstm_hidden_dim)
+        self.critic2 = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180, lstm_hidden_dim=lstm_hidden_dim)
+        self.target_critic2 = AggregatingCritic(n_agents, dim_input_policy, dim_output_policy, hidden_dim=180, lstm_hidden_dim=lstm_hidden_dim)
 
         # Materialize nn.LazyLinear layers in CTMActor before hard_update.
         # LazyLinear weights don't exist until the first forward pass — copying

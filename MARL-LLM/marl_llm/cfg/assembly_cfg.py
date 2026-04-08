@@ -203,12 +203,28 @@ parser.add_argument("--prior_mode", type=str, default="none",
 parser.add_argument("--ctm_d_model", type=int, default=128, help="CTM neuron population size")
 parser.add_argument("--ctm_memory_length", type=int, default=16, help="CTM FIFO memory window length in steps")
 parser.add_argument("--ctm_n_synch_out", type=int, default=16, help="Number of neurons used for synchronisation output (output size = n*(n+1)/2 = 136)")
-parser.add_argument("--ctm_iterations", type=int, default=4, help="CTM inner loop iterations per forward call (overwrites 4/16 = 25pct of memory per step)")
+parser.add_argument("--ctm_iterations", type=int, default=1, help="CTM inner loop iterations per forward call (stateful mode: 1 tick per env step, hidden states carried across episode)")
 parser.add_argument("--ctm_synapse_depth", type=int, default=1, help="CTM synapse network depth (1 = 2-block MLP with GLU+LayerNorm)")
 parser.add_argument("--ctm_deep_nlms", action='store_true', help="Use deep NLMs — adds hidden layer per neuron (not recommended, 68x more compute)")
 parser.add_argument("--ctm_do_layernorm_nlm", type=bool, default=True, help="Apply LayerNorm after NLMs for training stability")
 parser.add_argument("--ctm_memory_hidden_dims", type=int, default=64, help="Hidden dim for deep NLMs (only used if ctm_deep_nlms is set)")
 ## ==================== End of CTM Actor Configuration ====================
+
+## ==================== Stateful / Recurrent Training ====================
+# Episode-sequence replay buffer and recurrent update parameters.
+# These are used when training with stateful CTM actor + recurrent critic.
+# The old --batch_size (512) is still used by MLP+ReplayBufferAgent random-transition sampling.
+parser.add_argument("--sequence_length", type=int, default=32,
+                    help="Length of sampled sequences from episode buffer for training")
+parser.add_argument("--burn_in_length", type=int, default=16,
+                    help="Prefix of each sequence replayed without gradient to reconstruct hidden states (R2D2-style)")
+parser.add_argument("--lstm_hidden_dim", type=int, default=64,
+                    help="Hidden size for critic LSTM (after mean aggregation)")
+parser.add_argument("--num_sequences", type=int, default=16,
+                    help="Number of sequences per training batch (replaces batch_size for episode buffer)")
+parser.add_argument("--updates_per_episode", type=int, default=8,
+                    help="Number of gradient updates per completed episode")
+## ==================== End of Stateful / Recurrent Training ====================
 
 # Exploration and regularization
 parser.add_argument("--epsilon", default=0.1, type=float,help="Epsilon for epsilon-greedy exploration")

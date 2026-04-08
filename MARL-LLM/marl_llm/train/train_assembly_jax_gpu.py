@@ -50,7 +50,7 @@ for p in [_MARL_LLM_PATH, _JAXMARL_PATH, _CUS_GYM_PATH]:
 # ───────────────────────────────────────────────────────────────────────────
 
 from cfg.assembly_cfg import gpsargs as args
-from algorithm.utils import ReplayBufferAgent
+from algorithm.utils import ReplayBufferAgent, EpisodeSequenceBuffer
 from algorithm.algorithms import MADDPG
 from jaxmarl.environments.mpe.assembly import AssemblyEnv
 from gym.wrappers.customized_envs.jax_assembly_wrapper_gpu import JaxAssemblyAdapterGPU
@@ -97,22 +97,24 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
                 is_last_ep = (ep_i == episodes_per_shape - 1)
                 state_history = [] if is_last_ep else None
 
-                for _ in range(cfg.episode_length):
-                    # Stateless rollout: fresh hidden state every step.
-                    # Seed mode: compute synchronous prior from current state.
-                    if maddpg.use_ctm_actor:
-                        if maddpg.prior_mode == 'seed':
-                            prior_gpu = env.compute_prior()
-                            eval_hidden = maddpg.agents[0].policy.get_prior_seeded_hidden_state(
-                                obs_gpu.t(), prior_gpu.t()
-                            )
-                        else:
-                            eval_hidden = maddpg.agents[0].policy.get_initial_hidden_state(
-                                env.n_a, torch.device('cuda')
-                            )
+                # Initialize actor hidden states once at episode start (stateful eval).
+                if maddpg.use_ctm_actor:
+                    if maddpg.prior_mode == 'seed':
+                        prior_gpu = env.compute_prior()
+                        eval_hidden = maddpg.agents[0].policy.get_prior_seeded_hidden_state(
+                            obs_gpu.t(), prior_gpu.t()
+                        )
                     else:
-                        eval_hidden = None
-                    torch_agent_actions, _, _ = maddpg.step(obs_gpu, start_stop_num, explore=False, hidden_states=eval_hidden)
+                        eval_hidden = maddpg.agents[0].policy.get_initial_hidden_state(
+                            env.n_a, torch.device('cuda')
+                        )
+                else:
+                    eval_hidden = None
+
+                for _ in range(cfg.episode_length):
+                    torch_agent_actions, _, new_eval_hidden = maddpg.step(obs_gpu, start_stop_num, explore=False, hidden_states=eval_hidden)
+                    if maddpg.use_ctm_actor:
+                        eval_hidden = new_eval_hidden  # carry forward across episode steps
                     agent_actions_gpu = torch.column_stack(torch_agent_actions)
                     obs_gpu, rewards_gpu, _, _, _ = env.step(agent_actions_gpu.t().detach())
                     ep_reward += rewards_gpu.cpu().mean().item()
@@ -238,22 +240,24 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
             is_last_ep = (ep_i == cfg.eval_episodes - 1)
             state_history = [] if is_last_ep else None
 
-            for _ in range(cfg.episode_length):
-                # Stateless rollout: fresh hidden state every step.
-                # Seed mode: compute synchronous prior from current state.
-                if maddpg.use_ctm_actor:
-                    if maddpg.prior_mode == 'seed':
-                        prior_gpu = env.compute_prior()
-                        eval_hidden = maddpg.agents[0].policy.get_prior_seeded_hidden_state(
-                            obs_gpu.t(), prior_gpu.t()
-                        )
-                    else:
-                        eval_hidden = maddpg.agents[0].policy.get_initial_hidden_state(
-                            env.n_a, torch.device('cuda')
-                        )
+            # Initialize actor hidden states once at episode start (stateful eval).
+            if maddpg.use_ctm_actor:
+                if maddpg.prior_mode == 'seed':
+                    prior_gpu = env.compute_prior()
+                    eval_hidden = maddpg.agents[0].policy.get_prior_seeded_hidden_state(
+                        obs_gpu.t(), prior_gpu.t()
+                    )
                 else:
-                    eval_hidden = None
-                torch_agent_actions, _, _ = maddpg.step(obs_gpu, start_stop_num, explore=False, hidden_states=eval_hidden)
+                    eval_hidden = maddpg.agents[0].policy.get_initial_hidden_state(
+                        env.n_a, torch.device('cuda')
+                    )
+            else:
+                eval_hidden = None
+
+            for _ in range(cfg.episode_length):
+                torch_agent_actions, _, new_eval_hidden = maddpg.step(obs_gpu, start_stop_num, explore=False, hidden_states=eval_hidden)
+                if maddpg.use_ctm_actor:
+                    eval_hidden = new_eval_hidden  # carry forward across episode steps
                 agent_actions_gpu = torch.column_stack(torch_agent_actions)  # (2, N*n_a)
                 # Transpose for env, detach for DLPack
                 obs_gpu, rewards_gpu, _, _, _ = env.step(agent_actions_gpu.t().detach())
@@ -372,6 +376,7 @@ def run(cfg):
         lr_actor=cfg.lr_actor,
         lr_critic=cfg.lr_critic,
         hidden_dim=cfg.hidden_dim,
+        lstm_hidden_dim=cfg.lstm_hidden_dim,
         device="gpu",  # Force GPU for both rollout and training
         epsilon=cfg.epsilon,
         noise=cfg.noise_scale,
@@ -381,15 +386,29 @@ def run(cfg):
         prior_mode=cfg.prior_mode,
     )
 
-    # Replay buffer (stores on CPU, samples to GPU for training)
-    agent_buffer = [
-        ReplayBufferAgent(
-            cfg.buffer_length,
-            env.num_agents,
-            state_dim=env.observation_space.shape[0],
+    # Create buffer based on training mode
+    if cfg.use_ctm_actor:
+        # Episode-sequence buffer for stateful CTM + recurrent critic
+        episode_buffer = EpisodeSequenceBuffer(
+            max_episodes=cfg.buffer_length // cfg.episode_length,
+            episode_length=cfg.episode_length,
+            num_agents=env.num_agents,
+            obs_dim=env.observation_space.shape[0],
             action_dim=env.action_space.shape[0],
+            sequence_length=cfg.sequence_length,
         )
-    ]
+        agent_buffer = None
+    else:
+        # Random-transition replay buffer for MLP actors
+        episode_buffer = None
+        agent_buffer = [
+            ReplayBufferAgent(
+                cfg.buffer_length,
+                env.num_agents,
+                state_dim=env.observation_space.shape[0],
+                action_dim=env.action_space.shape[0],
+            )
+        ]
 
     # Initialize all networks on GPU in training mode
     maddpg.prep_training(device="gpu")
@@ -442,30 +461,31 @@ def run(cfg):
         start_time_1 = time.time()
         policy_time = 0.0
         env_time = 0.0
-        
+
+        # Initialize actor hidden states once at episode start (stateful rollout).
+        # CTM dynamics carry forward across all episode steps; prior seeds only the first step.
+        if cfg.use_ctm_actor:
+            if cfg.prior_mode == 'seed':
+                prior_gpu = env.compute_prior()
+                hidden_states = maddpg.agents[0].policy.get_prior_seeded_hidden_state(
+                    obs_gpu.t(), prior_gpu.t()
+                )
+            else:
+                hidden_states = maddpg.agents[0].policy.get_initial_hidden_state(
+                    cfg.n_rollout_threads * cfg.n_a, torch.device('cuda')
+                )
+        else:
+            hidden_states = None
+
         for et_index in range(cfg.episode_length):
             if ep_index % 500 == 0:
                 env.render()
 
             # obs_gpu is already a torch.cuda tensor (via DLPack)
             t0 = time.time()
-            # Stateless rollout: reinitialise hidden states fresh every step.
-            # Seed mode: compute synchronous prior from current state before acting.
+            torch_agent_actions, _, new_hidden_states = maddpg.step(obs_gpu, start_stop_num, explore=True, hidden_states=hidden_states)
             if cfg.use_ctm_actor:
-                if cfg.prior_mode == 'seed':
-                    # obs_gpu: (obs_dim, N*n_a) → .t(): (N*n_a, obs_dim)
-                    # prior_gpu: (2, N*n_a) → .t(): (N*n_a, 2)
-                    prior_gpu = env.compute_prior()
-                    hidden_states = maddpg.agents[0].policy.get_prior_seeded_hidden_state(
-                        obs_gpu.t(), prior_gpu.t()
-                    )
-                else:
-                    hidden_states = maddpg.agents[0].policy.get_initial_hidden_state(
-                        cfg.n_rollout_threads * cfg.n_a, torch.device('cuda')
-                    )
-            else:
-                hidden_states = None
-            torch_agent_actions, _, _ = maddpg.step(obs_gpu, start_stop_num, explore=True, hidden_states=hidden_states)
+                hidden_states = new_hidden_states  # carry forward across episode steps
             agent_actions_gpu = torch.column_stack(torch_agent_actions)  # (2, N*n_a) GPU
             policy_time += time.time() - t0
 
@@ -501,13 +521,21 @@ def run(cfg):
         episode_spring_collisions = float(spring_collision_sum) / cfg.n_rollout_threads
         transfer_time = time.time() - t0
 
-        # Push all transitions to buffer
-        for t in range(cfg.episode_length):
-            agent_buffer[0].push(
-                obs_batch[t], actions_batch[t], rewards_batch[t],
-                next_obs_batch[t], dones_batch[t],
-                actions_prior_orig=prior_batch[t],
+        # Push to appropriate buffer
+        if episode_buffer is not None:
+            # Store complete episode for sequence-based training
+            episode_buffer.push_episode(
+                obs_batch, actions_batch, rewards_batch,
+                next_obs_batch, dones_batch, prior_batch,
             )
+        else:
+            # Store individual transitions for random sampling
+            for t in range(cfg.episode_length):
+                agent_buffer[0].push(
+                    obs_batch[t], actions_batch[t], rewards_batch[t],
+                    next_obs_batch[t], dones_batch[t],
+                    actions_prior_orig=prior_batch[t],
+                )
 
         episode_reward_mean_bar = rewards_batch.mean() * cfg.episode_length
         episode_reward_std_bar = rewards_batch.std()  # Don't scale std - it's reported directly
@@ -524,26 +552,49 @@ def run(cfg):
         total_reg_loss = 0.0
         update_count = 0
 
-        for _ in range(10):
-            for a_i in range(maddpg.nagents):
-                if len(agent_buffer[a_i]) >= cfg.batch_size:
-                    sample = agent_buffer[a_i].sample(
-                        cfg.batch_size,
-                        to_gpu=True,  # Sample from CPU buffer to GPU
-                        is_prior=True,
-                    )
-                    obs_sample, acs_sample, rews_sample, next_obs_sample, dones_sample, acs_prior_sample, _ = sample
+        if episode_buffer is not None and len(episode_buffer) > 0:
+            # Sequence-based update for stateful CTM + recurrent critic
+            for _ in range(cfg.updates_per_episode):
+                for a_i in range(maddpg.nagents):
+                    sample = episode_buffer.sample(cfg.num_sequences, to_gpu=True)
+                    obs_seq, acs_seq, rews_seq, next_obs_seq, dones_seq, prior_seq = sample
 
-                    vf_loss, pol_loss, reg_loss = maddpg.update(
-                        obs_sample, acs_sample, rews_sample, next_obs_sample,
-                        dones_sample, a_i, acs_prior_sample, env.alpha, logger=logger,
+                    vf_loss, pol_loss, reg_loss = maddpg.update_sequence(
+                        obs_seq, acs_seq, rews_seq, next_obs_seq, dones_seq,
+                        agent_i=a_i,
+                        prior_seq=prior_seq if cfg.prior_mode != 'none' else None,
+                        alpha=env.alpha,
+                        burn_in_length=cfg.burn_in_length,
+                        logger=logger,
                     )
                     total_vf_loss += vf_loss
                     total_pol_loss += pol_loss
                     total_reg_loss += reg_loss
                     update_count += 1
 
-            maddpg.update_all_targets()
+                maddpg.update_all_targets()
+        else:
+            # Random-transition update for MLP actors
+            for _ in range(10):
+                for a_i in range(maddpg.nagents):
+                    if len(agent_buffer[a_i]) >= cfg.batch_size:
+                        sample = agent_buffer[a_i].sample(
+                            cfg.batch_size,
+                            to_gpu=True,
+                            is_prior=True,
+                        )
+                        obs_sample, acs_sample, rews_sample, next_obs_sample, dones_sample, acs_prior_sample, _ = sample
+
+                        vf_loss, pol_loss, reg_loss = maddpg.update(
+                            obs_sample, acs_sample, rews_sample, next_obs_sample,
+                            dones_sample, a_i, acs_prior_sample, env.alpha, logger=logger,
+                        )
+                        total_vf_loss += vf_loss
+                        total_pol_loss += pol_loss
+                        total_reg_loss += reg_loss
+                        update_count += 1
+
+                maddpg.update_all_targets()
 
         maddpg.noise = max(0.5, maddpg.noise - cfg.noise_scale / cfg.n_episodes)
         avg_vf_loss = total_vf_loss / max(update_count, 1)
