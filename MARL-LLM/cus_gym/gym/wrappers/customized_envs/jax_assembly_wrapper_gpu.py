@@ -304,6 +304,11 @@ class JaxAssemblyAdapterGPU:
             return float(self.env.r_avoid_violation_count(self._states))
         return float(jnp.mean(jax.vmap(self.env.r_avoid_violation_count)(self._states)))
 
+    def agents_in_shape(self) -> float:
+        if self.n_envs == 1:
+            return float(self.env.agents_in_shape(self._states))
+        return float(jnp.mean(jax.vmap(self.env.agents_in_shape)(self._states)))
+
     def springboard_collision_count(self) -> float:
         """Number of unique agent pairs in physical body contact this step (averaged over envs).
 

@@ -84,6 +84,7 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
         for shape_idx in range(num_shapes):
             shape_reward = 0.0
             shape_coverage = 0.0
+            shape_agents_in_shape = 0.0
             shape_uniformity = 0.0
             shape_voronoi = 0.0
             shape_neighbor_dist = 0.0
@@ -126,6 +127,7 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
 
                 shape_reward               += ep_reward / cfg.episode_length
                 shape_coverage             += env.sensing_coverage()
+                shape_agents_in_shape      += env.agents_in_shape()
                 shape_uniformity           += env.distribution_uniformity()
                 shape_voronoi              += env.voronoi_based_uniformity()
                 shape_neighbor_dist        += env.mean_neighbor_distance()
@@ -141,6 +143,7 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
             # Average over episodes
             mean_reward              = shape_reward              / episodes_per_shape
             mean_coverage            = shape_coverage            / episodes_per_shape
+            mean_agents_in_shape     = shape_agents_in_shape     / episodes_per_shape
             mean_uniformity          = shape_uniformity          / episodes_per_shape
             mean_voronoi             = shape_voronoi             / episodes_per_shape
             mean_neighbor_dist       = shape_neighbor_dist       / episodes_per_shape
@@ -151,6 +154,7 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
                 'shape':                shape_idx,
                 'reward':               mean_reward,
                 'coverage':             mean_coverage,
+                'agents_in_shape':      mean_agents_in_shape,
                 'uniformity':           mean_uniformity,
                 'voronoi':              mean_voronoi,
                 'neighbor_dist':        mean_neighbor_dist,
@@ -159,6 +163,7 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
             })
 
             print(f"Shape {shape_idx}: reward={mean_reward:.4f} | sensing_coverage={mean_coverage:.4f} | "
+                  f"agents_in_shape={mean_agents_in_shape:.3f} | "
                   f"uniformity={mean_uniformity:.4f} | voronoi={mean_voronoi:.4f} | "
                   f"neighbor_dist={mean_neighbor_dist:.4f} | r_avoid_violations={mean_r_avoid_violations:.1f} | "
                   f"spring_collisions={mean_spring_collisions:.1f}")
@@ -169,6 +174,7 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
                 {
                     "reward":              mean_reward,
                     "sensing_coverage":    mean_coverage,
+                    "agents_in_shape":     mean_agents_in_shape,
                     "uniformity":          mean_uniformity,
                     "voronoi":             mean_voronoi,
                     "neighbor_dist":       mean_neighbor_dist,
@@ -183,12 +189,13 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
     print("FINAL EVAL SUMMARY (averaged across all shapes):")
     avg_reward             = np.mean([r['reward']             for r in all_results])
     avg_coverage           = np.mean([r['coverage']           for r in all_results])
+    avg_agents_in_shape    = np.mean([r['agents_in_shape']    for r in all_results])
     avg_uniformity         = np.mean([r['uniformity']         for r in all_results])
     avg_voronoi            = np.mean([r['voronoi']            for r in all_results])
     avg_neighbor_dist      = np.mean([r['neighbor_dist']      for r in all_results])
     avg_r_avoid_violations = np.mean([r['r_avoid_violations'] for r in all_results])
     avg_spring_collisions  = np.mean([r['spring_collisions']  for r in all_results])
-    print(f"  Reward: {avg_reward:.4f} | Sensing Coverage: {avg_coverage:.4f} | "
+    print(f"  Reward: {avg_reward:.4f} | Sensing Coverage: {avg_coverage:.4f} | Agents In Shape: {avg_agents_in_shape:.3f} | "
           f"Uniformity: {avg_uniformity:.4f} | Voronoi: {avg_voronoi:.4f}")
     print(f"  Neighbor Dist: {avg_neighbor_dist:.4f} | R-Avoid Violations: {avg_r_avoid_violations:.1f} | "
           f"Spring Collisions: {avg_spring_collisions:.1f}")
@@ -200,6 +207,7 @@ def run_final_eval(maddpg, env, cfg, logger, run_dir):
         {
             "reward":              avg_reward,
             "sensing_coverage":    avg_coverage,
+            "agents_in_shape":     avg_agents_in_shape,
             "uniformity":          avg_uniformity,
             "voronoi":             avg_voronoi,
             "neighbor_dist":       avg_neighbor_dist,
@@ -228,6 +236,7 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
 
     total_reward = 0.0
     total_coverage = 0.0
+    total_agents_in_shape = 0.0
     total_voronoi = 0.0
     total_neighbor_dist = 0.0
     total_r_avoid_violations = 0.0
@@ -271,6 +280,7 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
 
             total_reward               += ep_reward / cfg.episode_length
             total_coverage             += env.sensing_coverage()
+            total_agents_in_shape      += env.agents_in_shape()
             total_voronoi              += env.voronoi_based_uniformity()
             total_neighbor_dist        += env.mean_neighbor_distance()
             total_r_avoid_violations   += env.r_avoid_violation_count()
@@ -284,6 +294,7 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
 
     mean_reward              = total_reward              / cfg.eval_episodes
     mean_coverage            = total_coverage            / cfg.eval_episodes
+    mean_agents_in_shape     = total_agents_in_shape     / cfg.eval_episodes
     mean_voronoi             = total_voronoi              / cfg.eval_episodes
     mean_neighbor_dist       = total_neighbor_dist       / cfg.eval_episodes
     mean_r_avoid_violations  = total_r_avoid_violations  / cfg.eval_episodes
@@ -291,7 +302,8 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
 
     print(
         f"[EVAL] ep {ep_index} | reward: {mean_reward:.4f} | "
-        f"sensing_coverage: {mean_coverage:.4f} | voronoi_uniformity: {mean_voronoi:.4f} | "
+        f"sensing_coverage: {mean_coverage:.4f} | agents_in_shape: {mean_agents_in_shape:.3f} | "
+        f"voronoi_uniformity: {mean_voronoi:.4f} | "
         f"neighbor_dist: {mean_neighbor_dist:.4f} | r_avoid_violations: {mean_r_avoid_violations:.1f} | "
         f"spring_collisions: {mean_spring_collisions:.1f}"
     )
@@ -300,6 +312,7 @@ def run_eval(maddpg, env, cfg, ep_index, logger):
         {
             "reward":               mean_reward,
             "sensing_coverage":     mean_coverage,
+            "agents_in_shape":      mean_agents_in_shape,
             "voronoi_uniformity":   mean_voronoi,
             "neighbor_dist":        mean_neighbor_dist,
             "r_avoid_violations":   mean_r_avoid_violations,
@@ -419,6 +432,7 @@ def run(cfg):
     # Metric history for 10-episode rolling statistics
     metric_history = {
         "sensing_coverage": [],
+        "agents_in_shape": [],
         "uniformity": [],
         "voronoi": [],
         "r_avoid_violations": [],
@@ -619,6 +633,7 @@ def run(cfg):
         ########################### Logging and Checkpointing ###########################
         # Compute end-of-episode metrics
         coverage = env.sensing_coverage()
+        agents_in_shape = env.agents_in_shape()
         uniformity = env.distribution_uniformity()
         voronoi_uniformity = env.voronoi_based_uniformity()
         avg_reward = episode_reward_mean_bar / cfg.episode_length
@@ -626,6 +641,7 @@ def run(cfg):
         
         # Track metrics for rolling statistics
         metric_history["sensing_coverage"].append(coverage)
+        metric_history["agents_in_shape"].append(agents_in_shape)
         metric_history["uniformity"].append(uniformity)
         metric_history["voronoi"].append(voronoi_uniformity)
         metric_history["r_avoid_violations"].append(episode_r_avoid_violations)
@@ -648,6 +664,7 @@ def run(cfg):
         if ep_index % 10 == 0:
             # Compute mean and std over last 10 episodes (or fewer if just starting)
             sc_mean, sc_std = np.mean(metric_history["sensing_coverage"]), np.std(metric_history["sensing_coverage"])
+            ais_mean = np.mean(metric_history["agents_in_shape"])
             uni_mean, uni_std = np.mean(metric_history["uniformity"]), np.std(metric_history["uniformity"])
             vor_mean, vor_std = np.mean(metric_history["voronoi"]), np.std(metric_history["voronoi"])
             avg_r_avoid_violations_10 = np.mean(metric_history["r_avoid_violations"])
@@ -671,7 +688,7 @@ def run(cfg):
             print(sep)
             print(f"REWARDS (last 10 eps):  Mean: {avg_reward_10:7.4f} | Std: {avg_reward_std_10:7.4f} | Uniformity: {avg_reward_uniformity_10:6.3f}")
             print(f"ENVIRONMENT METRICS (last 10 eps):")
-            print(f"  - Sensing Coverage: {sc_mean:.3f}(std:{sc_std:.3f}) | Dist Uniformity: {uni_mean:.3f}(std:{uni_std:.3f}) | Voronoi Uniformity: {vor_mean:.3f}(std:{vor_std:.3f})")
+            print(f"  - Sensing Coverage: {sc_mean:.3f}(std:{sc_std:.3f}) | Agents In Shape: {ais_mean:.3f} | Dist Uniformity: {uni_mean:.3f}(std:{uni_std:.3f}) | Voronoi Uniformity: {vor_mean:.3f}(std:{vor_std:.3f})")
             print(f"  - R-Avoid Violations (pairs/ep/env): {avg_r_avoid_violations_10:.1f} | Spring Collisions (pairs/ep/env): {avg_spring_collisions_10:.1f}")
             loss_line = f"LOSSES (last 10 eps):   VF: {avg_vf_loss_10:7.4f} | Policy: {avg_pol_loss_10:7.4f} | Reg: {avg_reg_loss_10:7.4f}"
             if prior_reg_weight is not None:
@@ -686,6 +703,7 @@ def run(cfg):
                 {
                     "episode_reward": avg_reward,
                     "sensing_coverage": coverage,
+                    "agents_in_shape": agents_in_shape,
                     "nn_uniformity": uniformity,
                     "voronoi_uniformity": voronoi_uniformity,
                     "vf_loss": avg_vf_loss,

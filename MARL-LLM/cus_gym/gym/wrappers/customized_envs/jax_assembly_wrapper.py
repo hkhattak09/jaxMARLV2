@@ -229,6 +229,11 @@ class JaxAssemblyAdapter:
             return float(self.env.voronoi_based_uniformity(self._states))
         return float(jnp.mean(jax.vmap(self.env.voronoi_based_uniformity)(self._states)))
 
+    def agents_in_shape(self) -> float:
+        if self.n_envs == 1:
+            return float(self.env.agents_in_shape(self._states))
+        return float(jnp.mean(jax.vmap(self.env.agents_in_shape)(self._states)))
+
     def springboard_collision_count(self) -> float:
         """Number of unique agent pairs in physical body contact this step (averaged over envs).
 

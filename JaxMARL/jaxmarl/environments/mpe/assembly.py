@@ -1038,6 +1038,26 @@ class AssemblyEnv(MultiAgentEnv):
 
 
     @partial(jax.jit, static_argnums=[0])
+    def agents_in_shape(self, state: AssemblyState) -> chex.Array:
+        """Fraction of agents physically inside the shape.
+
+        An agent is counted as "in shape" when its nearest valid grid cell is
+        within l_cell/2 — i.e., the agent is overlapping a cell square.
+        This is stricter than d_sen and excludes agents hovering just outside
+        the shape boundary. Returns a value in [0, 1].
+        """
+        a2g = state.grid_center.T[None, :, :] - state.p_pos[:, None, :]  # [n_a, n_g_max, 2]
+        a2g_dist = jnp.linalg.norm(a2g, axis=-1)                          # [n_a, n_g_max]
+
+        # Mask padding cells with inf so they don't attract agents
+        a2g_dist_masked = jnp.where(state.valid_mask[None, :], a2g_dist, jnp.inf)  # [n_a, n_g_max]
+
+        # Agent is in shape if nearest valid cell is within half a cell width
+        min_dist_to_shape = jnp.min(a2g_dist_masked, axis=1)  # [n_a]
+        in_shape = (min_dist_to_shape < state.l_cell * 0.5).astype(jnp.float32)
+        return jnp.mean(in_shape)
+
+    @partial(jax.jit, static_argnums=[0])
     def springboard_collision_count(self, state: AssemblyState) -> chex.Array:
         """Count unique agent pairs currently in physical body contact (spring force active).
 
