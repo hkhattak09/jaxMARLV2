@@ -802,8 +802,10 @@ class AssemblyEnv(MultiAgentEnv):
         is_touching = (cached.agent_dists < 2.0 * self.size_a) & ~jnp.eye(self.n_a, dtype=bool)
         n_touching = jnp.sum(is_touching.astype(jnp.float32), axis=1)  # [n_a]
 
-        # Final reward: stepping stone (in_flag) + full conditions + physical contact penalty
-        base = (0.1 * in_flag.astype(jnp.float32) +
+        # Final reward: outside penalty + stepping stone (in_flag) + full conditions + physical contact penalty
+        outside_penalty = -0.03 * (~in_flag).astype(jnp.float32)
+        base = (outside_penalty +
+                0.1 * in_flag.astype(jnp.float32) +
                 0.9 * (in_flag & ~too_close & is_uniform).astype(jnp.float32))
         return base - 0.07 * n_touching
 
@@ -855,8 +857,10 @@ class AssemblyEnv(MultiAgentEnv):
         is_touching = is_touching & (jnp.arange(self.n_a) != i)  # exclude self
         n_touching  = jnp.sum(is_touching.astype(jnp.float32))
 
-        # Final reward: stepping stone + full conditions + physical contact penalty
-        base = (0.1 * in_flag.astype(jnp.float32) +
+        # Final reward: outside penalty + stepping stone + full conditions + physical contact penalty
+        outside_penalty = -0.05 * (~in_flag).astype(jnp.float32)
+        base = (outside_penalty +
+                0.1 * in_flag.astype(jnp.float32) +
                 0.9 * (in_flag & ~too_close & is_uniform).astype(jnp.float32))
         return base - 0.07 * n_touching
 
