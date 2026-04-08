@@ -49,8 +49,7 @@ from algorithm.algorithms.maddpg import MADDPG
 # ═══════════════════════════════════════════════════════════════════════════
 OBS_DIM      = 12    # observation vector length
 ACTION_DIM   = 2     # action vector length
-CRITIC_DIM   = OBS_DIM + ACTION_DIM
-N_AGENTS     = 4     # agents per env
+N_AGENTS     = 4     # agents per env (for step() slicing)
 N_ENVS       = 2     # parallel envs
 BATCH_SIZE   = 8
 
@@ -76,7 +75,7 @@ def make_ctm_agent():
     return CTMDDPGAgent(
         dim_input_policy  = OBS_DIM,
         dim_output_policy = ACTION_DIM,
-        dim_input_critic  = CRITIC_DIM,
+        n_agents          = 1,
         lr_actor          = 1e-4,
         lr_critic         = 1e-3,
         hidden_dim        = 32,
@@ -85,17 +84,23 @@ def make_ctm_agent():
 
 
 def make_maddpg_ctm():
-    """Single shared agent (nagents=1) covering all N_AGENTS positions."""
+    """Single shared agent (nagents=1) covering all N_AGENTS positions.
+
+    n_agents=1 for MADDPG and critic so update() treats each row as one agent's obs.
+    The multi-agent critic (n_agents>1) is tested in test_agent_lstm_param.py and
+    test_sequence_update.py. This file tests CTM actor functionality.
+    """
     agent_init_params = [dict(
         dim_input_policy  = OBS_DIM,
         dim_output_policy = ACTION_DIM,
-        dim_input_critic  = CRITIC_DIM,
+        n_agents          = 1,
     )]
     return MADDPG(
         agent_init_params = agent_init_params,
         alg_types         = ['MADDPG'],
         epsilon           = 0.1,
         noise             = 0.1,
+        n_agents          = 1,
         use_ctm_actor     = True,
         ctm_config        = CTM_CFG,
     )
@@ -105,13 +110,14 @@ def make_maddpg_mlp():
     agent_init_params = [dict(
         dim_input_policy  = OBS_DIM,
         dim_output_policy = ACTION_DIM,
-        dim_input_critic  = CRITIC_DIM,
+        n_agents          = 1,
     )]
     return MADDPG(
         agent_init_params = agent_init_params,
         alg_types         = ['MADDPG'],
         epsilon           = 0.1,
         noise             = 0.1,
+        n_agents          = 1,
         use_ctm_actor     = False,
     )
 

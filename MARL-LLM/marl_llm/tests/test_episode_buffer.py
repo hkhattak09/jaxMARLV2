@@ -228,7 +228,9 @@ class TestAverageRewards:
         buf.push_episode(obs, acs, rews, next_obs, dones, prior)
         result = buf.get_average_rewards(1)
         assert len(result) == 1
-        assert isinstance(result[0], float)
+        print(f"\n[DIAG test_with_data] result={result}, type={type(result[0])}, val={result[0]}")
+        assert isinstance(result[0], (float, np.floating)), \
+            f"Expected float, got {type(result[0])}: {result[0]}"
 
 
 if __name__ == "__main__":

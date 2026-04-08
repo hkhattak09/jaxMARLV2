@@ -154,10 +154,20 @@ class TestUpdateSequenceIntegration:
         sample = buf.sample(4, to_gpu=False)
         obs_seq, acs_seq, rews_seq, next_obs_seq, dones_seq, prior_seq = sample
 
-        vf_loss, pol_loss, reg_loss = maddpg.update_sequence(
-            obs_seq, acs_seq, rews_seq, next_obs_seq, dones_seq,
-            agent_i=0, burn_in_length=BURN_IN_LENGTH,
-        )
+        try:
+            vf_loss, pol_loss, reg_loss = maddpg.update_sequence(
+                obs_seq, acs_seq, rews_seq, next_obs_seq, dones_seq,
+                agent_i=0, burn_in_length=BURN_IN_LENGTH,
+            )
+        except Exception as e:
+            print(f"\n[DIAG test_update_sequence_with_buffer_sample]")
+            print(f"  error: {type(e).__name__}: {e}")
+            print(f"  obs_seq={obs_seq.shape}, acs_seq={acs_seq.shape}, rews={rews_seq.shape}")
+            print(f"  next_obs={next_obs_seq.shape}, dones={dones_seq.shape}")
+            print(f"  n_agents={maddpg.n_agents}, nagents={maddpg.nagents}")
+            print(f"  critic={maddpg.agents[0].critic}")
+            import traceback; traceback.print_exc()
+            raise
         assert isinstance(vf_loss, float)
         assert isinstance(pol_loss, float)
 
@@ -174,11 +184,18 @@ class TestUpdateSequenceIntegration:
         sample = buf.sample(4, to_gpu=False)
         obs_seq, acs_seq, rews_seq, next_obs_seq, dones_seq, prior_seq = sample
 
-        vf_loss, pol_loss, reg_loss = maddpg.update_sequence(
-            obs_seq, acs_seq, rews_seq, next_obs_seq, dones_seq,
-            agent_i=0, prior_seq=prior_seq, alpha=0.5,
-            burn_in_length=BURN_IN_LENGTH,
-        )
+        try:
+            vf_loss, pol_loss, reg_loss = maddpg.update_sequence(
+                obs_seq, acs_seq, rews_seq, next_obs_seq, dones_seq,
+                agent_i=0, prior_seq=prior_seq, alpha=0.5,
+                burn_in_length=BURN_IN_LENGTH,
+            )
+        except Exception as e:
+            print(f"\n[DIAG test_update_sequence_with_prior]")
+            print(f"  error: {type(e).__name__}: {e}")
+            print(f"  obs_seq={obs_seq.shape}, acs_seq={acs_seq.shape}, prior={prior_seq.shape}")
+            import traceback; traceback.print_exc()
+            raise
         assert isinstance(reg_loss, float)
 
     def test_multiple_updates_per_episode(self):
@@ -191,15 +208,21 @@ class TestUpdateSequenceIntegration:
             buf.push_episode(obs, acs, rews, next_obs, dones, prior)
 
         updates_per_episode = 3
-        for _ in range(updates_per_episode):
-            for a_i in range(maddpg.nagents):
-                sample = buf.sample(4, to_gpu=False)
-                obs_seq, acs_seq, rews_seq, next_obs_seq, dones_seq, _ = sample
-                maddpg.update_sequence(
-                    obs_seq, acs_seq, rews_seq, next_obs_seq, dones_seq,
-                    agent_i=a_i, burn_in_length=BURN_IN_LENGTH,
-                )
-            maddpg.update_all_targets()
+        try:
+            for upd in range(updates_per_episode):
+                for a_i in range(maddpg.nagents):
+                    sample = buf.sample(4, to_gpu=False)
+                    obs_seq, acs_seq, rews_seq, next_obs_seq, dones_seq, _ = sample
+                    maddpg.update_sequence(
+                        obs_seq, acs_seq, rews_seq, next_obs_seq, dones_seq,
+                        agent_i=a_i, burn_in_length=BURN_IN_LENGTH,
+                    )
+                maddpg.update_all_targets()
+        except Exception as e:
+            print(f"\n[DIAG test_multiple_updates_per_episode]")
+            print(f"  error at upd={upd}, a_i={a_i}: {type(e).__name__}: {e}")
+            import traceback; traceback.print_exc()
+            raise
         # If we get here without error, the loop structure works
 
 

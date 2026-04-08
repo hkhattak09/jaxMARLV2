@@ -434,12 +434,19 @@ class TestFullHotPath:
 
         params_before = {n: p.clone() for n, p in maddpg.agents[0].critic.named_parameters()}
 
-        for _ in range(3):
-            sample = buf.sample(NUM_SEQ, to_gpu=False)
-            obs_s, acs_s, rews_s, next_obs_s, dones_s, _ = sample
-            maddpg.update_sequence(obs_s, acs_s, rews_s, next_obs_s, dones_s,
-                                   agent_i=0, burn_in_length=BURN_IN)
-            maddpg.update_all_targets()
+        try:
+            for i in range(3):
+                sample = buf.sample(NUM_SEQ, to_gpu=False)
+                obs_s, acs_s, rews_s, next_obs_s, dones_s, _ = sample
+                maddpg.update_sequence(obs_s, acs_s, rews_s, next_obs_s, dones_s,
+                                       agent_i=0, burn_in_length=BURN_IN)
+                maddpg.update_all_targets()
+        except Exception as e:
+            print(f"\n[DIAG test_buffer_to_update_full_pipeline]")
+            print(f"  error at iter {i}: {type(e).__name__}: {e}")
+            print(f"  obs_s={obs_s.shape}, acs_s={acs_s.shape}")
+            import traceback; traceback.print_exc()
+            raise
 
         changed = any(
             not torch.equal(p, params_before[n])
@@ -458,11 +465,18 @@ class TestFullHotPath:
         sample = buf.sample(NUM_SEQ, to_gpu=False)
         obs_s, acs_s, rews_s, next_obs_s, dones_s, _ = sample
 
-        for a_i in range(maddpg.nagents):
-            vf_loss, pol_loss, reg_loss = maddpg.update_sequence(
-                obs_s, acs_s, rews_s, next_obs_s, dones_s,
-                agent_i=a_i, burn_in_length=BURN_IN)
-            assert np.isfinite(vf_loss)
+        try:
+            for a_i in range(maddpg.nagents):
+                vf_loss, pol_loss, reg_loss = maddpg.update_sequence(
+                    obs_s, acs_s, rews_s, next_obs_s, dones_s,
+                    agent_i=a_i, burn_in_length=BURN_IN)
+                assert np.isfinite(vf_loss)
+        except Exception as e:
+            print(f"\n[DIAG test_multi_agent_update_loop]")
+            print(f"  error at a_i={a_i}: {type(e).__name__}: {e}")
+            print(f"  obs_s={obs_s.shape}, acs_s={acs_s.shape}")
+            import traceback; traceback.print_exc()
+            raise
 
         maddpg.update_all_targets()
 
@@ -640,9 +654,16 @@ class TestBufferUpdateGradientCompat:
         critic_params_before = {n: p.clone()
                                 for n, p in maddpg.agents[0].critic.named_parameters()}
 
-        vf_loss, _, _ = maddpg.update_sequence(
-            obs_s, acs_s, rews_s, next_obs_s, dones_s,
-            agent_i=0, burn_in_length=BURN_IN)
+        try:
+            vf_loss, _, _ = maddpg.update_sequence(
+                obs_s, acs_s, rews_s, next_obs_s, dones_s,
+                agent_i=0, burn_in_length=BURN_IN)
+        except Exception as e:
+            print(f"\n[DIAG test_buffer_sample_produces_gradient_in_critic]")
+            print(f"  error: {type(e).__name__}: {e}")
+            print(f"  obs_s={obs_s.shape}, acs_s={acs_s.shape}")
+            import traceback; traceback.print_exc()
+            raise
 
         assert np.isfinite(vf_loss)
         changed = any(
