@@ -351,11 +351,15 @@ class MADDPG(object):
                 _, tgt_critic_h = curr_agent.target_critic(trgt_vf_in, tgt_critic_h)
                 _, tgt_critic2_h = curr_agent.target_critic2(trgt_vf_in, tgt_critic2_h)
 
-        # Detach hidden states at the burn-in / training boundary
-        critic_h = tuple(h.detach() for h in critic_h)
-        critic2_h = tuple(h.detach() for h in critic2_h)
-        tgt_critic_h = tuple(h.detach() for h in tgt_critic_h)
-        tgt_critic2_h = tuple(h.detach() for h in tgt_critic2_h)
+        # Detach hidden states at the burn-in / training boundary (None when no LSTM)
+        if critic_h is not None:
+            critic_h = tuple(h.detach() for h in critic_h)
+        if critic2_h is not None:
+            critic2_h = tuple(h.detach() for h in critic2_h)
+        if tgt_critic_h is not None:
+            tgt_critic_h = tuple(h.detach() for h in tgt_critic_h)
+        if tgt_critic2_h is not None:
+            tgt_critic2_h = tuple(h.detach() for h in tgt_critic2_h)
 
         # ── Training: forward with gradient, accumulate TD losses ──
         total_vf_loss1 = torch.tensor(0.0, device=device)
