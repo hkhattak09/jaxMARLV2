@@ -1059,14 +1059,15 @@ class AssemblyEnv(MultiAgentEnv):
         nei_vel          = state.p_vel[sorted_nei_idx]                         # [K, 2]
 
         # ── Repulsion: repulsion_strength=3.0 ────────────────────────────
-        # Fires when dist < 2*r_avoid (personal space bubble overlap).
+        # Fires when dist < 4*r_avoid (wider bubble than reward's 2*r_avoid).
+        # Prior teaches "spread wide"; reward only punishes "dangerously close".
         # Direction from neighbour toward self (pointing away from each neighbour)
         dir_away      = pos_i - nei_pos                          # [K, 2]
         safe_nei_dist = jnp.maximum(nei_dists, 1e-8)
         unit_away     = dir_away / safe_nei_dist[:, None]        # [K, 2]
         rep_factor    = jnp.where(
-            (nei_dists > 0) & (nei_dists < 2.0 * self.r_avoid),
-            3.0 * (2.0 * self.r_avoid / safe_nei_dist - 1.0),
+            (nei_dists > 0) & (nei_dists < 4.0 * self.r_avoid),
+            3.0 * (4.0 * self.r_avoid / safe_nei_dist - 1.0),
             0.0,
         )  # [K]
         repulsion = jnp.sum(rep_factor[:, None] * unit_away, axis=0)  # [2]
@@ -1137,10 +1138,11 @@ class AssemblyEnv(MultiAgentEnv):
         safe_nei_dist = jnp.maximum(nei_dists, 1e-8)  # [n_a, K]
         unit_away = dir_away / safe_nei_dist[:, :, None]  # [n_a, K, 2]
         
-        # Repulsion factor: fires when dist < 2*r_avoid (personal space bubble overlap)
+        # Repulsion factor: fires when dist < 4*r_avoid (wider bubble than reward's 2*r_avoid).
+        # Prior teaches "spread wide"; reward only punishes "dangerously close".
         rep_factor = jnp.where(
-            (nei_dists > 0) & (nei_dists < 2.0 * self.r_avoid),
-            3.0 * (2.0 * self.r_avoid / safe_nei_dist - 1.0),
+            (nei_dists > 0) & (nei_dists < 4.0 * self.r_avoid),
+            3.0 * (4.0 * self.r_avoid / safe_nei_dist - 1.0),
             0.0
         )  # [n_a, K]
         
