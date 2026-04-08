@@ -200,7 +200,7 @@ parser.add_argument("--prior_mode", type=str, default="none",
                     help="How to use the Reynolds prior: none | regularize | seed (CTM only)")
 
 # CTM architecture hyperparameters
-parser.add_argument("--ctm_d_model", type=int, default=256, help="CTM neuron population size")
+parser.add_argument("--ctm_d_model", type=int, default=128, help="CTM neuron population size")
 parser.add_argument("--ctm_memory_length", type=int, default=16, help="CTM FIFO memory window length in steps")
 parser.add_argument("--ctm_n_synch_out", type=int, default=16, help="Number of neurons used for synchronisation output (output size = n*(n+1)/2 = 136)")
 parser.add_argument("--ctm_iterations", type=int, default=4, help="CTM inner loop iterations per forward call (overwrites 4/16 = 25pct of memory per step)")
