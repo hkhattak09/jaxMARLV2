@@ -2,8 +2,8 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-import optax
-import numpy as np
+import argparse
+import pickle
 
 import sys
 import os
@@ -15,10 +15,12 @@ if _REPO_ROOT not in sys.path:
 # We import the exact same environment setup as in training
 from jaxmarl.environments.smax import map_name_to_scenario, HeuristicEnemySMAX
 from jaxmarl.wrappers.baselines import SMAXLogWrapper
-# Note: we don't necessarily need the WorldState wrapper for evaluation if we just run random/heuristic,
-# but if we run the trained actor, we only need the actor observations anyway.
 
-import os
+MODEL_DIR = os.path.join(_REPO_ROOT, "model")
+MODEL_FILES = {
+    "gru": "smax_mappo_gru_actor.pkl",
+    "ctm": "smax_mappo_ctm_actor.pkl",
+}
 
 def _get_avail_actions(env, env_state):
     """Return available actions for either a single state or a batched state."""
@@ -36,19 +38,82 @@ def _build_render_actions(raw_state, all_agents, default_action):
     return {agent: int(prev_actions[i]) for i, agent in enumerate(all_agents)}
 
 
-def evaluate_and_render_random_episode(map_name="3m", seed=42, save_name="smax_random_eval.gif"):
+def _stack_agent_array(values_by_agent, agents):
+    return jnp.stack([values_by_agent[a] for a in agents])
+
+
+def _load_checkpoint(model_type):
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    ckpt_path = os.path.join(MODEL_DIR, MODEL_FILES[model_type])
+    if not os.path.exists(ckpt_path):
+        raise FileNotFoundError(
+            f"Checkpoint not found: {ckpt_path}. "
+            f"Train and save the {model_type.upper()} model first."
+        )
+    with open(ckpt_path, "rb") as f:
+        return pickle.load(f), ckpt_path
+
+
+def _build_actor_for_eval(model_type, config, env):
+    action_dim = env.action_space(env.agents[0]).n
+    obs_dim = env.observation_space(env.agents[0]).shape[0]
+    num_agents = env.num_agents
+
+    if model_type == "gru":
+        from train_mappo_gru import ActorRNN, ScannedRNN
+
+        actor_network = ActorRNN(action_dim, config=config)
+        hidden = ScannedRNN.initialize_carry(num_agents, config["GRU_HIDDEN_DIM"])
+        init_x = (
+            jnp.zeros((1, num_agents, obs_dim)),
+            jnp.zeros((1, num_agents)),
+            jnp.zeros((1, num_agents, action_dim)),
+        )
+        first_done = jnp.zeros((num_agents,), dtype=bool)
+    elif model_type == "ctm":
+        from train_mappo_ctm import ActorCTM, CTMCell
+
+        actor_network = ActorCTM(action_dim, config=config)
+        hidden = CTMCell.initialize_carry(num_agents, config["CTM_D_MODEL"], config["CTM_MEMORY_LENGTH"])
+        init_x = (
+            jnp.zeros((1, num_agents, obs_dim)),
+            jnp.zeros((1, num_agents)),
+            jnp.zeros((1, num_agents, action_dim)),
+        )
+        # Match CTM training startup behavior.
+        first_done = jnp.ones((num_agents,), dtype=bool)
+    else:
+        raise ValueError(f"Unsupported model_type={model_type}. Choose 'gru' or 'ctm'.")
+
+    return actor_network, hidden, init_x, first_done
+
+
+def evaluate_and_render_trained_episode(model_type, map_name=None, seed=42, save_name=None, stochastic=False):
     """
-    Runs a single episode using random actions and saves it to a GIF.
-    In the future, we will swap the random action sampling with the trained Actor network.
+    Runs a single episode with a trained GRU/CTM actor and saves it to a GIF.
     """
+    checkpoint, ckpt_path = _load_checkpoint(model_type)
+    config = checkpoint["config"]
+    actor_params = checkpoint["actor_params"]
+
+    if map_name is None:
+        map_name = config.get("MAP_NAME", "3m")
+    if save_name is None:
+        save_name = f"smax_{model_type}_eval.gif"
+
     # Ensure visualisations directory exists
     os.makedirs("./visualisations", exist_ok=True)
     save_path = os.path.join("./visualisations", save_name)
-    
+
+    print(f"Loaded {model_type.upper()} checkpoint: {ckpt_path}")
     print(f"Initializing {map_name} SMAX environment...")
     scenario = map_name_to_scenario(map_name)
-    env = HeuristicEnemySMAX(scenario=scenario, attack_mode="closest", walls_cause_death=True, see_enemy_actions=True)
+    env_kwargs = config.get("ENV_KWARGS", {})
+    env = HeuristicEnemySMAX(scenario=scenario, **env_kwargs)
     env = SMAXLogWrapper(env)
+
+    actor_network, hidden, init_x, done_batch = _build_actor_for_eval(model_type, config, env)
+    _ = actor_network.init(jax.random.PRNGKey(0), hidden, init_x)
     
     rng = jax.random.PRNGKey(seed)
     rng, reset_rng = jax.random.split(rng)
@@ -66,38 +131,34 @@ def evaluate_and_render_random_episode(map_name="3m", seed=42, save_name="smax_r
     done = False
     step = 0
     
-    print("Simulating episode...")
+    print("Simulating episode with trained policy...")
     while not done:
         rng, action_rng = jax.random.split(rng)
-        
-        # In a real eval script, this would be: 
-        # actions = actor_network.apply(...)
-        # For now, we just sample random valid actions to demonstrate rendering:
+
         avail_actions = _get_avail_actions(env, state.env_state)
-        # Random choice among valid actions
-        # For a single env, avail_actions is (num_allies, num_actions)
-        # We sample an action for each agent
-        def sample_valid_action(avail, key):
-            # Give tiny probability to unavailable actions so we avoid NaNs
-            probs = avail + 1e-8
-            probs = probs / probs.sum()
-            return jax.random.categorical(key, jnp.log(probs))
-            
-        keys = jax.random.split(action_rng, env.num_agents)
         if isinstance(avail_actions, dict):
-            actions = {
-                agent: sample_valid_action(avail_actions[agent], keys[i])
-                for i, agent in enumerate(env.agents)
-            }
+            avail_batch = _stack_agent_array(avail_actions, env.agents)
         else:
-            actions = {
-                agent: sample_valid_action(avail_actions[i], keys[i])
-                for i, agent in enumerate(env.agents)
-            }
+            avail_batch = avail_actions
+
+        obs_batch = _stack_agent_array(obs, env.agents)
+        ac_in = (obs_batch[jnp.newaxis, :], done_batch[jnp.newaxis, :], avail_batch[jnp.newaxis, :])
+        hidden, pi = actor_network.apply(actor_params, hidden, ac_in)
+
+        if stochastic:
+            action_batch = pi.sample(seed=action_rng).squeeze(0)
+        else:
+            action_batch = pi.mode().squeeze(0)
+
+        actions = {
+            agent: action_batch[i]
+            for i, agent in enumerate(env.agents)
+        }
         
         # Step
         rng, step_rng = jax.random.split(rng)
         obs, state, rewards, dones, infos = jax.jit(env.step)(step_rng, state, actions)
+        done_batch = jnp.array([dones[a] for a in env.agents], dtype=bool)
         
         raw_state = state.env_state.state
         render_actions = _build_render_actions(raw_state, all_render_agents, stop_action)
@@ -127,5 +188,23 @@ def evaluate_and_render_random_episode(map_name="3m", seed=42, save_name="smax_r
     plt.close(fig)
     print(f"Saved recording to {save_path}")
 
+
+def _parse_args():
+    parser = argparse.ArgumentParser(description="Evaluate saved SMAX GRU/CTM actor and render a GIF.")
+    parser.add_argument("--model_type", choices=["gru", "ctm"], required=True, help="Which saved model to evaluate.")
+    parser.add_argument("--map_name", type=str, default=None, help="SMAX map name. Defaults to map saved in checkpoint config.")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for environment/action sampling.")
+    parser.add_argument("--save_name", type=str, default=None, help="GIF output name in ./visualisations.")
+    parser.add_argument("--stochastic", action="store_true", help="Sample policy actions instead of greedy mode().")
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    evaluate_and_render_random_episode()
+    args = _parse_args()
+    evaluate_and_render_trained_episode(
+        model_type=args.model_type,
+        map_name=args.map_name,
+        seed=args.seed,
+        save_name=args.save_name,
+        stochastic=args.stochastic,
+    )

@@ -4,6 +4,7 @@ Colab-ready, dependency-light version (no Hydra/wandb).
 """
 import os
 import sys
+import pickle
 # Inject repo root into sys.path so 'jaxmarl' is always found regardless of CWD
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 if _REPO_ROOT not in sys.path:
@@ -449,6 +450,23 @@ if __name__ == "__main__":
     end_time = time.time()
     
     print(f"Training completed in {(end_time - start_time) / 60:.1f} minutes.")
+
+    model_dir = os.path.join(_REPO_ROOT, "model")
+    os.makedirs(model_dir, exist_ok=True)
+    model_path = os.path.join(model_dir, "smax_mappo_gru_actor.pkl")
+
+    final_runner_state = out["runner_state"][0]
+    final_train_states = final_runner_state[0]
+    final_actor_state = final_train_states[0]
+    actor_params = jax.device_get(final_actor_state.params)
+    checkpoint = {
+        "model_type": "gru",
+        "config": config,
+        "actor_params": actor_params,
+    }
+    with open(model_path, "wb") as f:
+        pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
+    print(f"Saved GRU actor checkpoint to {model_path}")
     
     # Can optionally save metrics
     # jnp.save("gru_baseline_metrics.npy", out["metric"])
