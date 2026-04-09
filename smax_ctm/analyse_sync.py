@@ -98,6 +98,15 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Continue stage-4 analyses with warnings when an event has insufficient samples.",
     )
+    parser.add_argument(
+        "--non-strict-outcomes",
+        action="store_true",
+        help=(
+            "Continue outcome diagnostics with a warning when all episodes share the same win label "
+            "(e.g. trained model wins every episode). Won-vs-lost comparison will be NaN; "
+            "sync-return correlation is still reported."
+        ),
+    )
     parser.add_argument("--stochastic", action="store_true", help="Sample actions instead of greedy mode().")
     parser.add_argument("--no-plots", action="store_true", help="Skip writing PNG plots.")
     return parser.parse_args()
@@ -137,6 +146,7 @@ def main() -> None:
     save_pickle(metrics, out_paths["sync_metrics_path"])
 
     strict_stage4 = not args.non_strict_stage4
+    strict_outcomes = not args.non_strict_outcomes
     print("Computing stage-4 event statistics...")
     event_stats = compute_event_statistics(
         metrics,
@@ -162,7 +172,7 @@ def main() -> None:
         metrics,
         collection,
         win_return_threshold=args.win_return_threshold,
-        strict=strict_stage4,
+        strict=strict_outcomes,
     )
     save_pickle(outcomes, out_paths["outcomes_path"])
 

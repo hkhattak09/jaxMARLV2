@@ -1,3 +1,4 @@
+import warnings
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -87,11 +88,17 @@ def compute_outcome_diagnostics(
     ret_vals = np.asarray([r["episode_return_mean"] for r in rows], dtype=np.float64)
     win_vals = np.asarray([r["episode_won"] for r in rows], dtype=bool)
 
-    if strict and np.all(win_vals == win_vals[0]):
-        raise ValueError(
-            "All episodes have the same win label; won-vs-lost trajectory analysis is undefined. "
-            "Collect a more diverse episode set or use a harder map."
+    if np.all(win_vals == win_vals[0]):
+        msg = (
+            "All episodes have the same win label "
+            f"({'all won' if win_vals[0] else 'all lost'}); "
+            "won-vs-lost comparison will be NaN. "
+            "Sync-return correlation is still reported. "
+            "Use a harder map or more episodes for won-vs-lost analysis."
         )
+        if strict:
+            raise ValueError(msg)
+        warnings.warn(msg, RuntimeWarning, stacklevel=2)
 
     won_sync = sync_vals[win_vals]
     lost_sync = sync_vals[~win_vals]
