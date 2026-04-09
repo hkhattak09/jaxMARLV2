@@ -2,12 +2,14 @@
 MAPPO GRU Baseline for SMAX
 Colab-ready, dependency-light version (no Hydra/wandb).
 """
+import os
+import sys
+# Inject repo root into sys.path so 'jaxmarl' is always found regardless of CWD
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 import jax
-import sys
-import os
-# Dynamically add the parent directory to Python's path so 'jaxmarl' is globally found
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import jax.numpy as jnp
 import flax.linen as nn
 from flax import struct
@@ -377,9 +379,12 @@ def make_train(config):
             )
             metric["loss"] = loss_info
             
-            # Extract basic metric for logging locally
-            returns = metric["returned_episode_returns"][:, :, 0][metric["returned_episode"][:, :, 0]].mean()
-            win_rate = metric["returned_won_episode"][:, :, 0][metric["returned_episode"][:, :, 0]].mean()
+            # JAX 0.7.x compatible logging: boolean masked indexing not allowed
+            # inside jit/scan. Use weighted sum instead.
+            mask = metric["returned_episode"][:, :, 0]  # (steps, envs) bool
+            ep_count = jnp.sum(mask) + 1e-8
+            returns = jnp.sum(metric["returned_episode_returns"][:, :, 0] * mask) / ep_count
+            win_rate = jnp.sum(metric["returned_won_episode"][:, :, 0] * mask) / ep_count
             
             def log_callback(r, w, s):
                 print(f"Step {s:8d} | Return: {r:10.2f} | Win Rate: {w:5.2f}")
