@@ -9,6 +9,9 @@ import pickle
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+_TEST_LOGGER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test&logger")
+if os.path.isdir(_TEST_LOGGER_DIR) and _TEST_LOGGER_DIR not in sys.path:
+    sys.path.insert(0, _TEST_LOGGER_DIR)
 
 import jax
 import jax.numpy as jnp
@@ -24,7 +27,7 @@ import distrax
 from functools import partial
 import time
 from ctm_jax import ScannedCTM, CTMCell
-from smax_ctm.step9_report import print_step9_summary
+from step9_report import print_step9_summary
 
 # You may need to adapt imports based on where this is running relative to JaxMARL
 from jaxmarl.wrappers.baselines import SMAXLogWrapper, JaxMARLWrapper
