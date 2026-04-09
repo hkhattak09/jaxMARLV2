@@ -4,6 +4,10 @@ Colab-ready, dependency-light version (no Hydra/wandb).
 """
 
 import jax
+import sys
+import os
+# Dynamically add the parent directory to Python's path so 'jaxmarl' is globally found
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import jax.numpy as jnp
 import flax.linen as nn
 from flax import struct
