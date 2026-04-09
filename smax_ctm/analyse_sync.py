@@ -10,9 +10,19 @@ if _REPO_ROOT not in sys.path:
 
 from smax_ctm.analysis.checkpoint import extract_ctm_and_head_params, load_ctm_checkpoint
 from smax_ctm.analysis.collector import collect_episodes
+from smax_ctm.analysis.event_stats import compute_event_statistics
 from smax_ctm.analysis.io_utils import prepare_output_dirs, save_pickle
+from smax_ctm.analysis.lag_analysis import compute_event_lag_profiles
 from smax_ctm.analysis.metrics import compute_pairwise_metrics
+from smax_ctm.analysis.outcomes import compute_outcome_diagnostics
+from smax_ctm.analysis.plotting_neurons import plot_neuron_activation_heatmap
 from smax_ctm.analysis.plotting import plot_pairwise_heatmap, plot_sync_timeseries
+from smax_ctm.analysis.plotting_stage4 import (
+    plot_event_delta_bars,
+    plot_event_lag_profiles,
+    plot_sync_vs_outcome,
+    plot_win_loss_sync_trajectories,
+)
 
 
 def _resolve_relative_to_script(path: str) -> str:
@@ -64,6 +74,30 @@ def parse_args() -> argparse.Namespace:
         default=2.5,
         help="Mean ally pair-distance threshold for grouping event.",
     )
+    parser.add_argument("--max-lag", type=int, default=12, help="Max lag for event-aligned analysis.")
+    parser.add_argument(
+        "--lead-window",
+        type=int,
+        default=3,
+        help="Lead/lag window size for predictive signal summary.",
+    )
+    parser.add_argument(
+        "--num-permutations",
+        type=int,
+        default=5000,
+        help="Permutation count for stage-4 significance tests.",
+    )
+    parser.add_argument(
+        "--win-return-threshold",
+        type=float,
+        default=0.0,
+        help="Fallback win classifier threshold on episode_return_mean.",
+    )
+    parser.add_argument(
+        "--non-strict-stage4",
+        action="store_true",
+        help="Continue stage-4 analyses with warnings when an event has insufficient samples.",
+    )
     parser.add_argument("--stochastic", action="store_true", help="Sample actions instead of greedy mode().")
     parser.add_argument("--no-plots", action="store_true", help="Skip writing PNG plots.")
     return parser.parse_args()
@@ -102,6 +136,36 @@ def main() -> None:
     metrics = compute_pairwise_metrics(collection)
     save_pickle(metrics, out_paths["sync_metrics_path"])
 
+    strict_stage4 = not args.non_strict_stage4
+    print("Computing stage-4 event statistics...")
+    event_stats = compute_event_statistics(
+        metrics,
+        num_permutations=args.num_permutations,
+        seed=args.seed,
+        strict=strict_stage4,
+    )
+    save_pickle(event_stats, out_paths["event_stats_path"])
+
+    print("Computing stage-4 lag profiles...")
+    lag_profiles = compute_event_lag_profiles(
+        metrics,
+        max_lag=args.max_lag,
+        lead_window=args.lead_window,
+        num_permutations=args.num_permutations,
+        seed=args.seed,
+        strict=strict_stage4,
+    )
+    save_pickle(lag_profiles, out_paths["lag_profiles_path"])
+
+    print("Computing outcome diagnostics...")
+    outcomes = compute_outcome_diagnostics(
+        metrics,
+        collection,
+        win_return_threshold=args.win_return_threshold,
+        strict=strict_stage4,
+    )
+    save_pickle(outcomes, out_paths["outcomes_path"])
+
     if metrics["metadata"]["undefined_corr_count"] > 0:
         print(
             "WARNING: "
@@ -114,14 +178,73 @@ def main() -> None:
         f"obs={metrics['global']['obs_corr_mean']:.4f}, "
         f"sync-obs={metrics['global']['sync_minus_obs_mean']:.4f}"
     )
+    print("Stage-4 event deltas (during - outside, permutation p):")
+    for event_name, entry in event_stats["events"].items():
+        if entry.get("status") != "ok":
+            print(f"  {event_name}: {entry.get('status')} | {entry.get('message')}")
+            continue
+        print(
+            f"  {event_name}: delta={entry['delta']:.4f}, "
+            f"perm_p={entry['perm_p_one_sided']:.4g}, "
+            f"n_during={entry['num_during']}, n_outside={entry['num_outside']}"
+        )
+    print("Stage-4 lag summaries (lead-lag delta, permutation p):")
+    for event_name, entry in lag_profiles["events"].items():
+        if entry.get("status") != "ok":
+            print(f"  {event_name}: {entry.get('status')} | {entry.get('message')}")
+            continue
+        print(
+            f"  {event_name}: lead-lag={entry['lead_minus_lag_delta']:.4f}, "
+            f"perm_p={entry['lead_minus_lag_perm_p_one_sided']:.4g}, "
+            f"events={entry['event_count']}"
+        )
+    print(
+        "Outcome summary: "
+        f"sync-return corr={outcomes['global']['sync_return_corr']:.4f}, "
+        f"won-minus-lost sync={outcomes['global']['won_minus_lost_sync']:.4f}, "
+        f"won={outcomes['global']['num_won']}, lost={outcomes['global']['num_lost']}"
+    )
 
     if not args.no_plots:
         print("Writing quick-look figures...")
         plot_sync_timeseries(metrics, out_paths["figures_dir"], max_episodes=min(3, args.num_episodes))
         plot_pairwise_heatmap(metrics, out_paths["figures_dir"], episode_index=0)
+        try:
+            plot_event_delta_bars(event_stats, out_paths["figures_dir"])
+        except ValueError as e:
+            if strict_stage4:
+                raise
+            print(f"WARNING: skipped event delta plot in non-strict mode: {e}")
+        try:
+            plot_event_lag_profiles(lag_profiles, out_paths["figures_dir"])
+        except ValueError as e:
+            if strict_stage4:
+                raise
+            print(f"WARNING: skipped lag profile plot in non-strict mode: {e}")
+        plot_sync_vs_outcome(outcomes, out_paths["figures_dir"])
+        try:
+            plot_win_loss_sync_trajectories(metrics, outcomes, out_paths["figures_dir"])
+        except ValueError as e:
+            if strict_stage4:
+                raise
+            print(f"WARNING: skipped won/lost trajectory plot in non-strict mode: {e}")
+        try:
+            plot_neuron_activation_heatmap(
+                collection,
+                out_paths["figures_dir"],
+                episode_index=0,
+                memory_reduction="last",
+            )
+        except (ValueError, KeyError, IndexError) as e:
+            if strict_stage4:
+                raise
+            print(f"WARNING: skipped neuron activation heatmap in non-strict mode: {e}")
 
     print(f"Saved traces: {out_paths['episode_traces_path']}")
     print(f"Saved metrics: {out_paths['sync_metrics_path']}")
+    print(f"Saved event stats: {out_paths['event_stats_path']}")
+    print(f"Saved lag profiles: {out_paths['lag_profiles_path']}")
+    print(f"Saved outcome diagnostics: {out_paths['outcomes_path']}")
     if not args.no_plots:
         print(f"Saved figures in: {out_paths['figures_dir']}")
 

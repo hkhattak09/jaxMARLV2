@@ -112,6 +112,11 @@ def compute_pairwise_metrics(collection: Dict[str, Any]) -> Dict[str, Any]:
                 "obs_corr_ts": obs_corr_ts,
                 "sync_pair_mean_ts": sync_pair_mean,
                 "obs_pair_mean_ts": obs_pair_mean,
+                "event_masks": {
+                    "focus_fire": focus_fire,
+                    "grouping": grouping,
+                    "enemy_kill": enemy_kill,
+                },
                 "event_conditional": {
                     "focus_fire": _event_conditional_mean(sync_pair_mean, focus_fire),
                     "grouping": _event_conditional_mean(sync_pair_mean, grouping),

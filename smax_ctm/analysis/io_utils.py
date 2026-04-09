@@ -31,4 +31,7 @@ def prepare_output_dirs(base_dir: str) -> Dict[str, str]:
         "figures_dir": figures_dir,
         "episode_traces_path": os.path.join(base_dir, "episode_traces.pkl"),
         "sync_metrics_path": os.path.join(base_dir, "sync_metrics.pkl"),
+        "event_stats_path": os.path.join(base_dir, "event_stats.pkl"),
+        "lag_profiles_path": os.path.join(base_dir, "event_lag_profiles.pkl"),
+        "outcomes_path": os.path.join(base_dir, "outcome_diagnostics.pkl"),
     }

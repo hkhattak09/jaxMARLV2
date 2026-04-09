@@ -40,6 +40,29 @@ def _extract_raw_smax_state(log_state: Any) -> Any:
     )
 
 
+def _extract_terminal_win_flag(infos: Dict[str, Any], agents: List[str]) -> Optional[bool]:
+    # Different wrappers may expose slightly different won keys.
+    candidate_keys = (
+        "won",
+        "won_episode",
+        "returned_won_episode",
+        "battle_won",
+    )
+    for agent in agents:
+        info = infos.get(agent, None)
+        if not isinstance(info, dict):
+            continue
+        for key in candidate_keys:
+            if key in info:
+                value = np.asarray(jax.device_get(info[key]))
+                if value.size != 1:
+                    raise ValueError(
+                        f"Expected scalar win flag for key '{key}', got shape {value.shape}"
+                    )
+                return bool(value.reshape(()).item())
+    return None
+
+
 def _pairwise_distances(xy: np.ndarray) -> np.ndarray:
     if xy.ndim != 2 or xy.shape[1] != 2:
         raise ValueError(f"Expected positions with shape (N, 2), got {xy.shape}")
@@ -145,6 +168,7 @@ def collect_episodes(
 
         done_batch = jnp.ones((env.num_agents,), dtype=bool)
         prev_enemy_alive: Optional[np.ndarray] = None
+        episode_won: Optional[bool] = None
         episode_return = np.zeros((env.num_agents,), dtype=np.float64)
         step_records: List[Dict[str, Any]] = []
 
@@ -224,6 +248,7 @@ def collect_episodes(
             done_batch = jnp.array([dones[a] for a in env.agents], dtype=bool)
             obs, state = next_obs, next_state
             if dones["__all__"]:
+                episode_won = _extract_terminal_win_flag(infos, env.agents)
                 break
 
         episodes.append(
@@ -232,6 +257,7 @@ def collect_episodes(
                 "num_steps": len(step_records),
                 "episode_return_per_agent": episode_return,
                 "episode_return_mean": float(np.mean(episode_return)),
+                "episode_won": episode_won,
                 "steps": step_records,
             }
         )
