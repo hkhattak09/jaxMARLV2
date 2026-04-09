@@ -12,9 +12,13 @@ class SuperLinear(nn.Module):
     in_dims: int
     out_dims: int
     N: int
+    do_norm: bool = False
     
     @nn.compact
     def __call__(self, x):
+        if self.do_norm:
+            x = nn.LayerNorm()(x)
+
         w1_init = nn.initializers.uniform(scale=1.0/jnp.sqrt(self.in_dims + self.out_dims))
         w1 = self.param('w1', w1_init, (self.in_dims, self.out_dims, self.N))
         
@@ -35,16 +39,32 @@ class NLM(nn.Module):
     memory_length: int
     memory_hidden_dims: int
     deep_nlms: bool
+    do_layernorm_nlm: bool = False
 
     @nn.compact
     def __call__(self, state_trace):
         if self.deep_nlms:
-            x = SuperLinear(in_dims=self.memory_length, out_dims=2*self.memory_hidden_dims, N=self.d_model)(state_trace)
+            x = SuperLinear(
+                in_dims=self.memory_length,
+                out_dims=2*self.memory_hidden_dims,
+                N=self.d_model,
+                do_norm=self.do_layernorm_nlm,
+            )(state_trace)
             x = glu(x, axis=-1)
-            x = SuperLinear(in_dims=self.memory_hidden_dims, out_dims=2, N=self.d_model)(x)
+            x = SuperLinear(
+                in_dims=self.memory_hidden_dims,
+                out_dims=2,
+                N=self.d_model,
+                do_norm=self.do_layernorm_nlm,
+            )(x)
             x = glu(x, axis=-1)
         else:
-            x = SuperLinear(in_dims=self.memory_length, out_dims=2, N=self.d_model)(state_trace)
+            x = SuperLinear(
+                in_dims=self.memory_length,
+                out_dims=2,
+                N=self.d_model,
+                do_norm=self.do_layernorm_nlm,
+            )(state_trace)
             x = glu(x, axis=-1)
             
         x = x.squeeze(-1)
@@ -80,9 +100,19 @@ class Synapses(nn.Module):
         x = nn.LayerNorm()(x)
         return x
 
-def compute_synchronisation(activated_state_trace, decay_params, n_synch_out, memory_length):
+def compute_synchronisation(activated_state_trace, decay_params, n_synch_out, memory_length, neuron_select_type='first-last'):
     S = jnp.transpose(activated_state_trace, (0, 2, 1))
-    S_sel = S[:, :, :n_synch_out]
+    if activated_state_trace.shape[1] < n_synch_out:
+        raise ValueError(
+            f"n_synch_out ({n_synch_out}) must be <= d_model ({activated_state_trace.shape[1]})"
+        )
+    if neuron_select_type != 'first-last':
+        raise ValueError(
+            f"Unsupported neuron_select_type for RL CTM port: {neuron_select_type}. Expected 'first-last'."
+        )
+
+    # RL reference uses the last n_synch_out neurons for output synchronisation.
+    S_sel = S[:, :, -n_synch_out:]
     
     triu_i, triu_j = jnp.triu_indices(n_synch_out)
     pairwise = S_sel[:, :, triu_i] * S_sel[:, :, triu_j]
@@ -105,6 +135,8 @@ class CTMCell(nn.Module):
     deep_nlms: bool
     memory_hidden_dims: int
     obs_dim: int
+    neuron_select_type: str = 'first-last'
+    do_layernorm_nlm: bool = False
 
     @staticmethod
     def initialize_carry(batch_size: int, d_model: int, memory_length: int):
@@ -140,7 +172,8 @@ class CTMCell(nn.Module):
                 d_model=self.d_model, 
                 memory_length=self.memory_length, 
                 memory_hidden_dims=self.memory_hidden_dims, 
-                deep_nlms=self.deep_nlms
+                deep_nlms=self.deep_nlms,
+                do_layernorm_nlm=self.do_layernorm_nlm,
             )(state_trace)
             
             activated_state_trace = jnp.concatenate([activated_state_trace[:, :, 1:], activated_state[:, :, None]], axis=-1)
@@ -149,7 +182,13 @@ class CTMCell(nn.Module):
         decay_params_init = nn.initializers.zeros_init()
         decay_params_out = self.param('decay_params_out', decay_params_init, (synch_size,))
         
-        synch = compute_synchronisation(activated_state_trace, decay_params_out, self.n_synch_out, self.memory_length)
+        synch = compute_synchronisation(
+            activated_state_trace,
+            decay_params_out,
+            self.n_synch_out,
+            self.memory_length,
+            neuron_select_type=self.neuron_select_type,
+        )
         
         new_carry = (state_trace, activated_state_trace)
         return new_carry, synch
@@ -175,5 +214,7 @@ class ScannedCTM(nn.Module):
             iterations=self.config["CTM_ITERATIONS"],
             deep_nlms=self.config["CTM_DEEP_NLMS"],
             memory_hidden_dims=self.config["CTM_NLM_HIDDEN_DIM"],
-            obs_dim=obs_dim
+            obs_dim=obs_dim,
+            neuron_select_type=self.config.get("CTM_NEURON_SELECT", "first-last"),
+            do_layernorm_nlm=self.config.get("CTM_DO_LAYERNORM_NLM", False),
         )(carry, x)

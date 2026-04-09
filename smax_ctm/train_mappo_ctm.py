@@ -23,6 +23,7 @@ import distrax
 from functools import partial
 import time
 from ctm_jax import ScannedCTM, CTMCell
+from smax_ctm.step9_report import print_step9_summary
 
 # You may need to adapt imports based on where this is running relative to JaxMARL
 from jaxmarl.wrappers.baselines import SMAXLogWrapper, JaxMARLWrapper
@@ -139,6 +140,8 @@ class ActorCTM(nn.Module):
         
         x_head = nn.Dense(self.config["CTM_ACTOR_HEAD_DIM"])(synch)
         x_head = nn.relu(x_head)
+        x_head = nn.Dense(self.config["CTM_ACTOR_HEAD_DIM"])(x_head)
+        x_head = nn.relu(x_head)
         x_head = nn.Dense(self.action_dim)(x_head)
         
         unavail_actions = 1 - avail_actions
@@ -194,6 +197,16 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     return {a: x[i] for i, a in enumerate(agent_list)}
 
 def make_train(config):
+    if config.get("CTM_NEURON_SELECT", "first-last") != "first-last":
+        raise ValueError(
+            f"Unsupported CTM_NEURON_SELECT={config.get('CTM_NEURON_SELECT')}. "
+            "This RL port currently supports only 'first-last'."
+        )
+    if config["CTM_N_SYNCH_OUT"] > config["CTM_D_MODEL"]:
+        raise ValueError(
+            f"CTM_N_SYNCH_OUT ({config['CTM_N_SYNCH_OUT']}) must be <= CTM_D_MODEL ({config['CTM_D_MODEL']})."
+        )
+
     scenario = map_name_to_scenario(config["MAP_NAME"])
     env = HeuristicEnemySMAX(scenario=scenario, **config["ENV_KWARGS"])
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
@@ -260,7 +273,8 @@ def make_train(config):
                 avail_actions = jax.vmap(env.get_avail_actions)(env_state.env_state)
                 avail_actions = jax.lax.stop_gradient(batchify(avail_actions, env.agents, config["NUM_ACTORS"]))
                 obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
-                ac_in = (obs_batch[np.newaxis, :], last_done[np.newaxis, :], avail_actions)
+                # ScannedCTM expects a time axis on all sequence inputs.
+                ac_in = (obs_batch[np.newaxis, :], last_done[np.newaxis, :], avail_actions[np.newaxis, :])
                 
                 ac_hstate, pi = actor_network.apply(train_states[0].params, hstates[0], ac_in)
                 action = pi.sample(seed=_rng)
@@ -363,6 +377,9 @@ def make_train(config):
                     actor_loss, actor_grads = actor_grad_fn(actor_train_state.params, ac_init_hstate, traj_batch, advantages)
                     critic_grad_fn = jax.value_and_grad(_critic_loss_fn, has_aux=True)
                     critic_loss, critic_grads = critic_grad_fn(critic_train_state.params, cr_init_hstate, traj_batch, targets)
+
+                    actor_grad_norm = optax.global_norm(actor_grads)
+                    critic_grad_norm = optax.global_norm(critic_grads)
                     
                     actor_train_state = actor_train_state.apply_gradients(grads=actor_grads)
                     critic_train_state = critic_train_state.apply_gradients(grads=critic_grads)
@@ -374,6 +391,8 @@ def make_train(config):
                         "value_loss": critic_loss[0],
                         "entropy": actor_loss[1][1],
                         "approx_kl": actor_loss[1][3],
+                        "actor_grad_norm": actor_grad_norm,
+                        "critic_grad_norm": critic_grad_norm,
                     }
                     return (actor_train_state, critic_train_state), loss_info
 
@@ -411,12 +430,46 @@ def make_train(config):
             ep_count = jnp.sum(mask) + 1e-8
             returns = jnp.sum(metric["returned_episode_returns"][:, :, 0] * mask) / ep_count
             win_rate = jnp.sum(metric["returned_won_episode"][:, :, 0] * mask) / ep_count
+
+            total_loss = loss_info["total_loss"]
+            entropy = loss_info["entropy"]
+            actor_grad_norm = loss_info["actor_grad_norm"]
+            critic_grad_norm = loss_info["critic_grad_norm"]
+            has_nan = (
+                jnp.isnan(total_loss)
+                | jnp.isnan(entropy)
+                | jnp.isnan(actor_grad_norm)
+                | jnp.isnan(critic_grad_norm)
+                | jnp.isnan(returns)
+                | jnp.isnan(win_rate)
+            )
+            entropy_low = entropy < 1e-3
             
-            def log_callback(r, w, s):
-                print(f"Step {s:8d} | Return: {r:10.2f} | Win Rate: {w:5.2f}")
+            def log_callback(r, w, s, tl, ent, agn, cgn, nan_flag, ent_low):
+                line = (
+                    f"Step {s:8d} | Return: {r:10.2f} | Win Rate: {w:5.2f} "
+                    f"| Loss: {tl:10.4f} | Ent: {ent:8.4f} "
+                    f"| GradN(actor/critic): {agn:8.4f}/{cgn:8.4f}"
+                )
+                if nan_flag:
+                    line += " | ALERT: NaN detected"
+                if ent_low:
+                    line += " | ALERT: entropy collapse risk"
+                print(line)
             
             step_count = update_steps * config["NUM_ENVS"] * config["NUM_STEPS"]
-            jax.experimental.io_callback(log_callback, None, returns, win_rate, step_count)
+            jax.debug.callback(
+                log_callback,
+                returns,
+                win_rate,
+                step_count,
+                total_loss,
+                entropy,
+                actor_grad_norm,
+                critic_grad_norm,
+                has_nan,
+                entropy_low,
+            )
             
             update_steps = update_steps + 1
             runner_state = (train_states, env_state, last_obs, last_done, hstates, update_state[-1])
@@ -427,7 +480,8 @@ def make_train(config):
             (actor_train_state, critic_train_state),
             env_state,
             obsv,
-            jnp.zeros((config["NUM_ACTORS"]), dtype=bool),
+            # Force reset-on-done once at rollout start so CTM uses learned start traces.
+            jnp.ones((config["NUM_ACTORS"]), dtype=bool),
             (ac_init_hstate, cr_init_hstate),
             _rng,
         )
@@ -462,6 +516,7 @@ if __name__ == "__main__":
         "CTM_MEMORY_LENGTH": 5,
         "CTM_DEEP_NLMS": True,
         "CTM_NLM_HIDDEN_DIM": 2,
+        "CTM_DO_LAYERNORM_NLM": False,
         "CTM_NEURON_SELECT": "first-last",
         "CTM_ACTOR_HEAD_DIM": 64,
         "ENV_NAME": "HeuristicEnemySMAX",
@@ -484,6 +539,7 @@ if __name__ == "__main__":
     end_time = time.time()
     
     print(f"Training completed in {(end_time - start_time) / 60:.1f} minutes.")
+    print_step9_summary(out["metric"])
     
     # Can optionally save metrics
     # jnp.save("gru_baseline_metrics.npy", out["metric"])
