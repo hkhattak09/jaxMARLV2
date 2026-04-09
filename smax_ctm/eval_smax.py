@@ -20,6 +20,14 @@ from jaxmarl.wrappers.baselines import SMAXLogWrapper
 
 import os
 
+def _get_avail_actions(env, env_state):
+    """Return available actions for either a single state or a batched state."""
+    try:
+        return env.get_avail_actions(env_state)
+    except (TypeError, ValueError):
+        return jax.vmap(env.get_avail_actions)(env_state)
+
+
 def evaluate_and_render_random_episode(map_name="3m", seed=42, save_name="smax_random_eval.gif"):
     """
     Runs a single episode using random actions and saves it to a GIF.
@@ -52,7 +60,7 @@ def evaluate_and_render_random_episode(map_name="3m", seed=42, save_name="smax_r
         # In a real eval script, this would be: 
         # actions = actor_network.apply(...)
         # For now, we just sample random valid actions to demonstrate rendering:
-        avail_actions = jax.vmap(env.get_avail_actions)(state.env_state)
+        avail_actions = _get_avail_actions(env, state.env_state)
         # Random choice among valid actions
         # For a single env, avail_actions is (num_allies, num_actions)
         # We sample an action for each agent
@@ -63,9 +71,16 @@ def evaluate_and_render_random_episode(map_name="3m", seed=42, save_name="smax_r
             return jax.random.categorical(key, jnp.log(probs))
             
         keys = jax.random.split(action_rng, env.num_agents)
-        actions_list = [sample_valid_action(avail_actions[i], keys[i]) for i in range(env.num_agents)]
-        
-        actions = {agent: actions_list[i] for i, agent in enumerate(env.agents)}
+        if isinstance(avail_actions, dict):
+            actions = {
+                agent: sample_valid_action(avail_actions[agent], keys[i])
+                for i, agent in enumerate(env.agents)
+            }
+        else:
+            actions = {
+                agent: sample_valid_action(avail_actions[i], keys[i])
+                for i, agent in enumerate(env.agents)
+            }
         
         # Step
         rng, step_rng = jax.random.split(rng)
