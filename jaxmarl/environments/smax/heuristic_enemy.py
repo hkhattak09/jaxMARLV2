@@ -1,11 +1,11 @@
 import jax.numpy as jnp
 import jax
-from flax.struct import dataclass
+from flax import struct
 import chex
 from functools import partial
 
 
-@dataclass
+@struct.dataclass
 class HeuristicPolicyState:
     default_target: chex.Array  # the place we are headed for
     last_attacked_enemy: int  # needed to remember where we attacked last

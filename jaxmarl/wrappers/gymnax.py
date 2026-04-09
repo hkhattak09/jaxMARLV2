@@ -19,7 +19,6 @@ class GymnaxToJaxMARL(object):
         
     @partial(jax.jit, static_argnums=(0,))
     def step(self, key, state, actions, params=None):
-        print('act', actions[self.agent])
         obs, state, reward, done, info = self._env.step(key, state, actions[self.agent].squeeze(), params)
         obs = {self.agent: obs}
         reward = {self.agent: reward}

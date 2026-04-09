@@ -1,7 +1,7 @@
 import dataclasses
 import jax.numpy as jnp
 import jax
-from jax.experimental import sparse
+from flax import struct
 from jaxmarl.environments.multi_agent_env import MultiAgentEnv
 from jaxmarl.environments.spaces import Box, Discrete
 from jaxmarl.environments.smax.distributions import (
@@ -10,7 +10,6 @@ from jaxmarl.environments.smax.distributions import (
 )
 import chex
 from typing import Tuple, Dict, Optional
-from flax.struct import dataclass
 from enum import IntEnum
 from functools import partial
 import io
@@ -31,7 +30,7 @@ class State:
     terminal: bool
 
 
-@dataclass
+@struct.dataclass
 class Scenario:
     unit_types: chex.Array
     num_allies: int

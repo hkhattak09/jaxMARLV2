@@ -10,11 +10,11 @@ import chex
 from typing import Dict, Optional, Tuple
 import jax.numpy as jnp
 import jax
-from flax.struct import dataclass
+from flax import struct
 from functools import partial
 
 
-@dataclass
+@struct.dataclass
 class State:
     # underlying jaxmarl env state
     state: ...
