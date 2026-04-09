@@ -1,10 +1,13 @@
-jax[cuda12]>=0.7.2
-torch
-chex>=0.1.86
-numpy
+# JAX and ML ecosystem
+jax[cuda12_pip]
+flax
+optax
+distrax
+chex
+
+# Environment
+gymnax
+
+# Viz and outputs
 matplotlib
-opencv-python
-pillow
-scipy
-tensorboardX
-huggingface_hub
+imageio

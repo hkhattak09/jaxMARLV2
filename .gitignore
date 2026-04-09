@@ -1,6 +1,7 @@
 continuous-thought-machines/
 memory/
 rmaddpg/
+old_implementation/
 .claude/worktrees/
 
 *.swp
