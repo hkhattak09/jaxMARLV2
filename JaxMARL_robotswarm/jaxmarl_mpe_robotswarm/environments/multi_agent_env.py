@@ -10,7 +10,7 @@ import chex
 from functools import partial
 from typing import Tuple, Optional
 
-from jaxmarl.environments.spaces import Space
+from jaxmarl_mpe_robotswarm.environments.spaces import Space
 
 @chex.dataclass
 class State:

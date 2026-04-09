@@ -3,9 +3,9 @@ import jax.numpy as jnp
 import chex
 from typing import Tuple, Dict
 from functools import partial
-from jaxmarl.environments.mpe.simple import SimpleMPE, State
-from jaxmarl.environments.mpe.default_params import *
-from jaxmarl.environments.spaces import Box
+from jaxmarl_mpe_robotswarm.environments.mpe.simple import SimpleMPE, State
+from jaxmarl_mpe_robotswarm.environments.mpe.default_params import *
+from jaxmarl_mpe_robotswarm.environments.spaces import Box
 
 
 class SimpleSpreadMPE(SimpleMPE):

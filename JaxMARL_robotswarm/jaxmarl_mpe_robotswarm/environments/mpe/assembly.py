@@ -22,8 +22,8 @@ import chex
 from typing import Tuple, Dict
 from functools import partial
 
-from jaxmarl.environments.multi_agent_env import MultiAgentEnv
-from jaxmarl.environments.spaces import Box
+from jaxmarl_mpe_robotswarm.environments.multi_agent_env import MultiAgentEnv
+from jaxmarl_mpe_robotswarm.environments.spaces import Box
 
 
 @chex.dataclass

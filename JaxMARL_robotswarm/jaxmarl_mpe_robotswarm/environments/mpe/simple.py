@@ -7,10 +7,10 @@ TODO: viz for communication env, e.g. crypto
 import jax
 import jax.numpy as jnp
 import numpy as onp
-from jaxmarl.environments.multi_agent_env import MultiAgentEnv
-from jaxmarl.environments.mpe.default_params import *
+from jaxmarl_mpe_robotswarm.environments.multi_agent_env import MultiAgentEnv
+from jaxmarl_mpe_robotswarm.environments.mpe.default_params import *
 import chex
-from jaxmarl.environments.spaces import Box, Discrete
+from jaxmarl_mpe_robotswarm.environments.spaces import Box, Discrete
 from typing import Tuple, Optional, Dict
 from functools import partial
 
@@ -493,7 +493,7 @@ class SimpleMPE(MultiAgentEnv):
 
 
 if __name__ == "__main__":
-    from jaxmarl.environments.mpe import MPEVisualizer
+    from jaxmarl_mpe_robotswarm.environments.mpe import MPEVisualizer
 
     num_agents = 3
     key = jax.random.PRNGKey(0)
