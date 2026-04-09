@@ -48,8 +48,11 @@ def evaluate_and_render_random_episode(map_name="3m", seed=42, save_name="smax_r
     # Reset
     obs, state = jax.jit(env.reset)(reset_rng)
     
-    # We will collect the states to render them later
-    states_seq = [state]
+    # We collect renderer-ready tuples: (key, raw_smax_state, actions).
+    # The SMAX renderer expects this exact structure.
+    stop_action = int(env.num_movement_actions - 1)
+    init_actions = {agent: stop_action for agent in env.agents}
+    render_seq = [(None, state.env_state.state, init_actions)]
     done = False
     step = 0
     
@@ -86,7 +89,8 @@ def evaluate_and_render_random_episode(map_name="3m", seed=42, save_name="smax_r
         rng, step_rng = jax.random.split(rng)
         obs, state, rewards, dones, infos = jax.jit(env.step)(step_rng, state, actions)
         
-        states_seq.append(state)
+        render_actions = {agent: int(actions[agent]) for agent in env.agents}
+        render_seq.append((None, state.env_state.state, render_actions))
         done = dones["__all__"]
         step += 1
         if step > env.max_steps:
@@ -99,14 +103,14 @@ def evaluate_and_render_random_episode(map_name="3m", seed=42, save_name="smax_r
     
     # Initialize render with first state
     # We pass the underlying env_state since the SMAX wrapper returns LogEnvState
-    render_obj = env.init_render(ax, states_seq[0].env_state, 0, 0)
+    render_obj = env.init_render(ax, render_seq[0], 0, 0)
     
     def animate(i):
         # Update render
-        env.update_render(render_obj, states_seq[i].env_state, i, i)
+        env.update_render(render_obj, render_seq[i], i, i)
         return ax
         
-    anim = FuncAnimation(fig, animate, frames=len(states_seq), interval=100)
+    anim = FuncAnimation(fig, animate, frames=len(render_seq), interval=100)
     anim.save(save_path, dpi=80, writer='pillow')
     plt.close(fig)
     print(f"Saved recording to {save_path}")
