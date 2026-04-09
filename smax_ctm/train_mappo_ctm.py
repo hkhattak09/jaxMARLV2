@@ -513,7 +513,7 @@ if __name__ == "__main__":
         "CTM_D_MODEL": 128,
         "CTM_D_INPUT": 64,
         "CTM_ITERATIONS": 1,
-        "CTM_N_SYNCH_OUT": 16,
+        "CTM_N_SYNCH_OUT": 32,
         "CTM_MEMORY_LENGTH": 5,
         "CTM_DEEP_NLMS": True,
         "CTM_NLM_HIDDEN_DIM": 2,
