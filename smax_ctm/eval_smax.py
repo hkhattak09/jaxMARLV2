@@ -112,14 +112,15 @@ def evaluate_and_render_random_episode(map_name="3m", seed=42, save_name="smax_r
     # Rendering
     fig, ax = plt.subplots(1, 1, figsize=(6, 6))
     
-    # Initialize render with first state
-    # We pass the underlying env_state since the SMAX wrapper returns LogEnvState
+    # Initialize first frame.
     render_obj = env.init_render(ax, render_seq[0], 0, 0)
     
     def animate(i):
-        # Update render
-        env.update_render(render_obj, render_seq[i], i, i)
-        return ax
+        # Redraw from the axis each frame; SMAX.update_render reuses an artist
+        # that can be detached from its axes after clear(), causing None axes.
+        nonlocal render_obj
+        render_obj = env.init_render(ax, render_seq[i], i, i)
+        return [render_obj]
         
     anim = FuncAnimation(fig, animate, frames=len(render_seq), interval=100)
     anim.save(save_path, dpi=80, writer='pillow')
