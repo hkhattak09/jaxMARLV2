@@ -235,9 +235,9 @@ def main() -> None:
         try:
             plot_win_loss_sync_trajectories(metrics, outcomes, out_paths["figures_dir"])
         except ValueError as e:
-            if strict_stage4:
+            if strict_outcomes:
                 raise
-            print(f"WARNING: skipped won/lost trajectory plot in non-strict mode: {e}")
+            print(f"WARNING: skipped won/lost trajectory plot: {e}")
         try:
             plot_neuron_activation_heatmap(
                 collection,
