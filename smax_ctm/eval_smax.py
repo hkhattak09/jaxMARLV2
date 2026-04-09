@@ -5,6 +5,13 @@ from matplotlib.animation import FuncAnimation
 import optax
 import numpy as np
 
+import sys
+import os
+# Inject repo root into sys.path so 'jaxmarl' is always found regardless of CWD
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 # We import the exact same environment setup as in training
 from jaxmarl.environments.smax import map_name_to_scenario, HeuristicEnemySMAX
 from jaxmarl.wrappers.baselines import SMAXLogWrapper
