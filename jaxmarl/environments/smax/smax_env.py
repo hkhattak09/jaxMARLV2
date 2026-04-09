@@ -16,7 +16,7 @@ import io
 import math
 
 
-@dataclass
+@struct.dataclass
 class State:
     unit_positions: chex.Array
     unit_alive: chex.Array
