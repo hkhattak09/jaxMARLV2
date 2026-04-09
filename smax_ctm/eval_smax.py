@@ -28,6 +28,14 @@ def _get_avail_actions(env, env_state):
         return jax.vmap(env.get_avail_actions)(env_state)
 
 
+def _build_render_actions(raw_state, all_agents, default_action):
+    """Build renderer action dict for all agents from raw SMAX state when available."""
+    prev_actions = getattr(raw_state, "prev_attack_actions", None)
+    if prev_actions is None:
+        return {agent: default_action for agent in all_agents}
+    return {agent: int(prev_actions[i]) for i, agent in enumerate(all_agents)}
+
+
 def evaluate_and_render_random_episode(map_name="3m", seed=42, save_name="smax_random_eval.gif"):
     """
     Runs a single episode using random actions and saves it to a GIF.
@@ -49,10 +57,12 @@ def evaluate_and_render_random_episode(map_name="3m", seed=42, save_name="smax_r
     obs, state = jax.jit(env.reset)(reset_rng)
     
     # We collect renderer-ready tuples: (key, raw_smax_state, actions).
-    # The SMAX renderer expects this exact structure.
+    # The SMAX renderer expects actions for all agents (allies + enemies).
     stop_action = int(env.num_movement_actions - 1)
-    init_actions = {agent: stop_action for agent in env.agents}
-    render_seq = [(None, state.env_state.state, init_actions)]
+    all_render_agents = list(env._env.all_agents)
+    init_raw_state = state.env_state.state
+    init_actions = _build_render_actions(init_raw_state, all_render_agents, stop_action)
+    render_seq = [(None, init_raw_state, init_actions)]
     done = False
     step = 0
     
@@ -89,8 +99,9 @@ def evaluate_and_render_random_episode(map_name="3m", seed=42, save_name="smax_r
         rng, step_rng = jax.random.split(rng)
         obs, state, rewards, dones, infos = jax.jit(env.step)(step_rng, state, actions)
         
-        render_actions = {agent: int(actions[agent]) for agent in env.agents}
-        render_seq.append((None, state.env_state.state, render_actions))
+        raw_state = state.env_state.state
+        render_actions = _build_render_actions(raw_state, all_render_agents, stop_action)
+        render_seq.append((None, raw_state, render_actions))
         done = dones["__all__"]
         step += 1
         if step > env.max_steps:
