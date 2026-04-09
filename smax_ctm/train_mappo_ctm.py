@@ -505,7 +505,7 @@ if __name__ == "__main__":
         "GAE_LAMBDA": 0.95,
         "CLIP_EPS": 0.2,
         "SCALE_CLIP_EPS": False,
-        "ENT_COEF": 0.0,
+        "ENT_COEF": 0.01,
         "VF_COEF": 0.5,
         "MAX_GRAD_NORM": 0.25,
         "ACTIVATION": "relu",

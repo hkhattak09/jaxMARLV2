@@ -8,6 +8,12 @@ def glu(x, axis=-1):
     a, b = jnp.split(x, 2, axis=axis)
     return a * jax.nn.sigmoid(b)
 
+def symmetric_uniform(scale):
+    """Uniform initializer over [-scale, scale], matching PyTorch's .uniform_(-s, s)."""
+    def init(key, shape, dtype=jnp.float32):
+        return jax.random.uniform(key, shape, dtype, minval=-scale, maxval=scale)
+    return init
+
 class SuperLinear(nn.Module):
     in_dims: int
     out_dims: int
@@ -19,7 +25,7 @@ class SuperLinear(nn.Module):
         if self.do_norm:
             x = nn.LayerNorm()(x)
 
-        w1_init = nn.initializers.uniform(scale=1.0/jnp.sqrt(self.in_dims + self.out_dims))
+        w1_init = symmetric_uniform(1.0/jnp.sqrt(self.in_dims + self.out_dims))
         w1 = self.param('w1', w1_init, (self.in_dims, self.out_dims, self.N))
         
         b1_init = nn.initializers.zeros_init()
@@ -148,10 +154,10 @@ class CTMCell(nn.Module):
         obs, dones, avail_actions = x
         state_trace, activated_state_trace = carry
         
-        start_trace_init = nn.initializers.uniform(scale=1.0 / jnp.sqrt(self.d_model + self.memory_length))
+        start_trace_init = symmetric_uniform(1.0 / jnp.sqrt(self.d_model + self.memory_length))
         start_trace = self.param('start_trace', start_trace_init, (self.d_model, self.memory_length))
-        
-        start_act_init = nn.initializers.uniform(scale=1.0 / jnp.sqrt(self.d_model + self.memory_length))
+
+        start_act_init = symmetric_uniform(1.0 / jnp.sqrt(self.d_model + self.memory_length))
         start_activated_trace = self.param('start_activated_trace', start_act_init, (self.d_model, self.memory_length))
         
         reset_mask = dones[:, None, None]
