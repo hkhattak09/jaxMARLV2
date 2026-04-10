@@ -2,6 +2,7 @@ from .environments import (
     SMAX,
     HeuristicEnemySMAX,
     LearnedPolicyEnemySMAX,
+    Hanabi,
 )
 
 SUBMODULE_ENVIRONMENTS = False
@@ -18,6 +19,8 @@ def make(env_id: str, **env_kwargs):
         env = HeuristicEnemySMAX(**env_kwargs)
     elif env_id == "LearnedPolicyEnemySMAX":
         env = LearnedPolicyEnemySMAX(**env_kwargs)
+    elif env_id == "hanabi":
+        env = Hanabi(**env_kwargs)
 
     return env
 
@@ -25,4 +28,5 @@ registered_envs = [
     "SMAX",
     "HeuristicEnemySMAX",
     "LearnedPolicyEnemySMAX",
+    "hanabi",
 ]
