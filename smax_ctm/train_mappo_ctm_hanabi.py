@@ -95,6 +95,16 @@ class ActorCTM(nn.Module):
     @nn.compact
     def __call__(self, hidden, x):
         obs, dones, avail_actions = x
+        num_consensus_iterations = int(self.config.get("NUM_CONSENSUS_ITERATIONS", 0))
+        if num_consensus_iterations < 0:
+            raise ValueError(
+                f"NUM_CONSENSUS_ITERATIONS must be >= 0, got {num_consensus_iterations}."
+            )
+        if num_consensus_iterations != 0:
+            raise NotImplementedError(
+                "Stage 1 only supports NUM_CONSENSUS_ITERATIONS == 0. "
+                "Consensus pooling will be added in the next stage."
+            )
 
         ctm_in = (obs, dones, avail_actions)
         hidden, synch = ScannedCTM(self.config)(hidden, ctm_in)
@@ -158,6 +168,7 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
 
 
 def make_train(config):
+    config.setdefault("NUM_CONSENSUS_ITERATIONS", 0)
     if config.get("CTM_NEURON_SELECT", "first-last") != "first-last":
         raise ValueError(
             f"Unsupported CTM_NEURON_SELECT={config.get('CTM_NEURON_SELECT')}. "
@@ -472,6 +483,7 @@ if __name__ == "__main__":
         "CTM_USE_SYNC": True,
         "CTM_NEURON_SELECT": "first-last",
         "CTM_ACTOR_HEAD_DIM": 64,
+        "NUM_CONSENSUS_ITERATIONS": 0,
         "SEED": 42,
         "ENV_KWARGS": {},  # passed to HanabiEnv (num_colors, num_ranks, hand_size, etc.)
         "ANNEAL_LR": True,

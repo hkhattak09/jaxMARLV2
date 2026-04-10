@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import flax.linen as nn
 import functools
-from typing import Dict, Any
+from typing import Dict, Any, Optional, Tuple
 
 def glu(x, axis=-1):
     a, b = jnp.split(x, 2, axis=axis)
@@ -145,68 +145,117 @@ class CTMCell(nn.Module):
     neuron_select_type: str = 'first-last'
     do_layernorm_nlm: bool = False
 
-    @staticmethod
-    def initialize_carry(batch_size: int, d_model: int, memory_length: int):
-        return (jnp.zeros((batch_size, d_model, memory_length)),
-                jnp.zeros((batch_size, d_model, memory_length)))
+    def _single_iter(
+        self,
+        state_trace: jnp.ndarray,
+        activated_state_trace: jnp.ndarray,
+        features: jnp.ndarray,
+        consensus_in: Optional[jnp.ndarray],
+    ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        """Run one inner CTM iteration and emit that iteration's synchronisation."""
+        last_activated = activated_state_trace[:, :, -1]
+        pre_synapse_inputs = [features, last_activated]
+        if consensus_in is not None:
+            if consensus_in.ndim != 2:
+                raise ValueError(
+                    f"consensus_in must be rank-2 (batch, synch_size), got shape {consensus_in.shape}."
+                )
+            if consensus_in.shape[0] != features.shape[0]:
+                raise ValueError(
+                    "consensus_in batch dimension must match features batch dimension "
+                    f"({consensus_in.shape[0]} != {features.shape[0]})."
+                )
+            expected_synch_size = self.n_synch_out * (self.n_synch_out + 1) // 2
+            if consensus_in.shape[1] != expected_synch_size:
+                raise ValueError(
+                    "consensus_in synch dimension mismatch: "
+                    f"got {consensus_in.shape[1]}, expected {expected_synch_size}."
+                )
+            pre_synapse_inputs.append(consensus_in)
+        pre_synapse = jnp.concatenate(pre_synapse_inputs, axis=-1)
 
-    @nn.compact
-    def __call__(self, carry, x):
-        obs, dones, avail_actions = x
-        state_trace, activated_state_trace = carry
-        
-        start_trace_init = symmetric_uniform(1.0 / jnp.sqrt(self.d_model + self.memory_length))
-        start_trace = self.param('start_trace', start_trace_init, (self.d_model, self.memory_length))
+        new_state = self.synapses(pre_synapse)
+        new_state_trace = jnp.concatenate([state_trace[:, :, 1:], new_state[:, :, None]], axis=-1)
 
-        start_act_init = symmetric_uniform(1.0 / jnp.sqrt(self.d_model + self.memory_length))
-        start_activated_trace = self.param('start_activated_trace', start_act_init, (self.d_model, self.memory_length))
-        
-        reset_mask = dones[:, None, None]
-        state_trace = jnp.where(reset_mask, start_trace[None], state_trace)
-        activated_state_trace = jnp.where(reset_mask, start_activated_trace[None], activated_state_trace)
-        
-        features = CTMBackbone(d_input=self.d_input, obs_dim=self.obs_dim)(obs)
-        
-        for _ in range(self.iterations):
-            last_activated = activated_state_trace[:, :, -1]
-            pre_synapse = jnp.concatenate([features, last_activated], axis=-1)
-            
-            new_state = Synapses(d_model=self.d_model, d_input=self.d_input)(pre_synapse)
-            
-            state_trace = jnp.concatenate([state_trace[:, :, 1:], new_state[:, :, None]], axis=-1)
-            
-            activated_state = NLM(
-                d_model=self.d_model, 
-                memory_length=self.memory_length, 
-                memory_hidden_dims=self.memory_hidden_dims, 
-                deep_nlms=self.deep_nlms,
-                do_layernorm_nlm=self.do_layernorm_nlm,
-            )(state_trace)
-            
-            activated_state_trace = jnp.concatenate([activated_state_trace[:, :, 1:], activated_state[:, :, None]], axis=-1)
-            
-        synch_size = self.n_synch_out * (self.n_synch_out + 1) // 2
+        activated_state = self.nlm(new_state_trace)
+        new_activated_state_trace = jnp.concatenate(
+            [activated_state_trace[:, :, 1:], activated_state[:, :, None]], axis=-1
+        )
+
         if self.use_sync:
-            decay_params_init = nn.initializers.zeros_init()
-            decay_params_out = self.param('decay_params_out', decay_params_init, (synch_size,))
             synch = compute_synchronisation(
-                activated_state_trace,
-                decay_params_out,
+                new_activated_state_trace,
+                self.decay_params_out,
                 self.n_synch_out,
                 self.memory_length,
                 neuron_select_type=self.neuron_select_type,
             )
         else:
             flat_trace = jnp.reshape(
-                activated_state_trace,
-                (activated_state_trace.shape[0], self.d_model * self.memory_length),
+                new_activated_state_trace,
+                (new_activated_state_trace.shape[0], self.d_model * self.memory_length),
             )
             expected_flat_dim = self.d_model * self.memory_length
             if flat_trace.shape[-1] != expected_flat_dim:
                 raise ValueError(
                     f"Flattened activated trace has dim {flat_trace.shape[-1]}, expected {expected_flat_dim}."
                 )
-            synch = nn.Dense(synch_size, name="trace_proj")(flat_trace)
+            synch = self.trace_proj(flat_trace)
+
+        return new_state_trace, new_activated_state_trace, synch
+
+    def setup(self):
+        start_trace_init = symmetric_uniform(1.0 / jnp.sqrt(self.d_model + self.memory_length))
+        self.start_trace = self.param('start_trace', start_trace_init, (self.d_model, self.memory_length))
+        self.start_activated_trace = self.param(
+            'start_activated_trace',
+            start_trace_init,
+            (self.d_model, self.memory_length),
+        )
+        self.backbone = CTMBackbone(d_input=self.d_input, obs_dim=self.obs_dim)
+        self.synapses = Synapses(d_model=self.d_model, d_input=self.d_input)
+        self.nlm = NLM(
+            d_model=self.d_model,
+            memory_length=self.memory_length,
+            memory_hidden_dims=self.memory_hidden_dims,
+            deep_nlms=self.deep_nlms,
+            do_layernorm_nlm=self.do_layernorm_nlm,
+        )
+        synch_size = self.n_synch_out * (self.n_synch_out + 1) // 2
+        if self.use_sync:
+            decay_params_init = nn.initializers.zeros_init()
+            self.decay_params_out = self.param('decay_params_out', decay_params_init, (synch_size,))
+        else:
+            self.decay_params_out = None
+        if not self.use_sync:
+            self.trace_proj = nn.Dense(synch_size, name="trace_proj")
+
+    @staticmethod
+    def initialize_carry(batch_size: int, d_model: int, memory_length: int):
+        return (jnp.zeros((batch_size, d_model, memory_length)),
+                jnp.zeros((batch_size, d_model, memory_length)))
+
+    def __call__(self, carry, x):
+        obs, dones, avail_actions = x
+        state_trace, activated_state_trace = carry
+
+        reset_mask = dones[:, None, None]
+        state_trace = jnp.where(reset_mask, self.start_trace[None], state_trace)
+        activated_state_trace = jnp.where(reset_mask, self.start_activated_trace[None], activated_state_trace)
+        
+        features = self.backbone(obs)
+
+        # Stage 1 refactor: keep consensus disabled to preserve Stage 0 behaviour.
+        consensus_in = None
+        if self.iterations <= 0:
+            raise ValueError(f"CTM iterations must be >= 1, got {self.iterations}.")
+        for _ in range(self.iterations):
+            state_trace, activated_state_trace, synch = self._single_iter(
+                state_trace,
+                activated_state_trace,
+                features,
+                consensus_in,
+            )
         
         new_carry = (state_trace, activated_state_trace)
         return new_carry, synch
