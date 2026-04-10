@@ -16,18 +16,23 @@
 
 **Goal:** confirm assumptions and baseline numbers before touching the architecture.
 
-- [ ] Re-run SMAX 3m CTM-MAPPO baseline with current `CTM_ITERATIONS=1` to confirm reproducibility of the ~84% WR number. Save the seed, wall-clock, and checkpoint as the canonical baseline.
-- [ ] Verify that `CTMCell.__call__` in [ctm_jax.py](smax_ctm/ctm_jax.py) handles the current batch layout: inside `ScannedCTM`, the batch dim is `NUM_ACTORS = num_agents * num_envs`. Confirm the agent-axis ordering by running a small debug print that reshapes `(NUM_ACTORS, ...)` → `(num_envs, num_agents, ...)` and checks per-agent identity.
-- [ ] Read `jaxmarl/environments/hanabi/` from upstream FLAIROx/JaxMARL. Note its obs dim, action dim, `num_agents`, reward scaling, episode length, and world-state getter. Save a short note in `docs/hanabi_env_notes.md`.
-- [ ] Identify the upstream MAPPO/IPPO Hanabi baseline script. Note the GRU hidden size, entropy coefficient, and episode return range used there — these are the numbers reviewers will check you against.
-- [ ] **Axis convention — critical.** Read `batchify` in [train_mappo_ctm.py](smax_ctm/train_mappo_ctm.py) carefully. It stacks per-agent tensors along a new leading axis (`jnp.stack([x[a] for a in agents])` → `(num_agents, num_envs, F)`) and then reshapes to `(num_agents * num_envs, F)`. Consequence: the flat `NUM_ACTORS` axis is **agent-major**, i.e. the first `num_envs` rows are agent 0, the next `num_envs` rows are agent 1, and so on. The correct reshape inside `CTMCell` is therefore:
+- [x] Re-run SMAX 3m CTM-MAPPO baseline with current `CTM_ITERATIONS=1` to confirm reproducibility of the ~84% WR number. Save the seed, wall-clock, and checkpoint as the canonical baseline.
+- [x] Verify that `CTMCell.__call__` in [ctm_jax.py](smax_ctm/ctm_jax.py) handles the current batch layout: inside `ScannedCTM`, the batch dim is `NUM_ACTORS = num_agents * num_envs`. Confirm the agent-axis ordering by running a small debug print that reshapes `(NUM_ACTORS, ...)` → `(num_envs, num_agents, ...)` and checks per-agent identity.
+- [x] Read `jaxmarl/environments/hanabi/` from upstream FLAIROx/JaxMARL. Note its obs dim, action dim, `num_agents`, reward scaling, episode length, and world-state getter. Save a short note in `docs/hanabi_env_notes.md`.
+- [x] Identify the upstream MAPPO/IPPO Hanabi baseline script. Note the GRU hidden size, entropy coefficient, and episode return range used there — these are the numbers reviewers will check you against.
+- [x] **Axis convention — critical.** Read `batchify` in [train_mappo_ctm.py](smax_ctm/train_mappo_ctm.py) carefully. It stacks per-agent tensors along a new leading axis (`jnp.stack([x[a] for a in agents])` → `(num_agents, num_envs, F)`) and then reshapes to `(num_agents * num_envs, F)`. Consequence: the flat `NUM_ACTORS` axis is **agent-major**, i.e. the first `num_envs` rows are agent 0, the next `num_envs` rows are agent 1, and so on. The correct reshape inside `CTMCell` is therefore:
   ```python
   # (num_actors, synch) -> (num_agents, num_envs, synch)
   synch_per_agent = synch.reshape(num_agents, num_envs, synch_size)
   # pool across axis=0 (the agent axis)
   ```
   **Do NOT write `reshape(num_envs, num_agents, ...)`** — that silently mixes different agents into the same row and will train without erroring. Add an assert in Stage 1 that identifies a deliberately tagged per-agent value survives the round-trip reshape.
-- [ ] Write a one-shot debug script `smax_ctm/scripts/check_batchify_order.py` that feeds `batchify` a dict `{a0: ones*0, a1: ones*1, a2: ones*2}` and prints the flat result — confirms agent-major layout before we rely on it.
+- [x] Write a one-shot debug script `smax_ctm/scripts/check_batchify_order.py` that feeds `batchify` a dict `{a0: ones*0, a1: ones*1, a2: ones*2}` and prints the flat result — confirms agent-major layout before we rely on it.
+
+**Stage 0 evidence (2026-04-10):**
+- `check_batchify_order.py` output matches expected agent-major ordering and passes.
+- `check_ctm_axis_layout.py` output confirms `(num_agents, num_envs, ...)` is correct and `(num_envs, num_agents, ...)` is invalid for INC pooling.
+- Notes written to `docs/inc_axis_convention.md` and `docs/hanabi_env_notes.md`.
 
 **Exit criterion:** baseline reproduces and the agent/env axis convention is documented in `docs/inc_axis_convention.md`.
 

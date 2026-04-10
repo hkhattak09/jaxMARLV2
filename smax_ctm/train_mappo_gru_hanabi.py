@@ -24,7 +24,7 @@ from functools import partial
 import time
 
 from jaxmarl.wrappers.baselines import LogWrapper, JaxMARLWrapper
-from jaxmarl.environments.hanabi import HanabiEnv
+from jaxmarl.environments.hanabi import Hanabi as HanabiEnv
 
 
 class HanabiWorldStateWrapper(JaxMARLWrapper):
