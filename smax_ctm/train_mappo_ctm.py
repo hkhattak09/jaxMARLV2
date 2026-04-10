@@ -9,7 +9,7 @@ import pickle
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-_TEST_LOGGER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test&logger")
+_TEST_LOGGER_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "test_and_logger")
 if os.path.isdir(_TEST_LOGGER_DIR) and _TEST_LOGGER_DIR not in sys.path:
     sys.path.insert(0, _TEST_LOGGER_DIR)
 
