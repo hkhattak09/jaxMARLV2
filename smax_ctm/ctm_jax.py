@@ -141,6 +141,7 @@ class CTMCell(nn.Module):
     deep_nlms: bool
     memory_hidden_dims: int
     obs_dim: int
+    use_sync: bool = True
     neuron_select_type: str = 'first-last'
     do_layernorm_nlm: bool = False
 
@@ -185,16 +186,27 @@ class CTMCell(nn.Module):
             activated_state_trace = jnp.concatenate([activated_state_trace[:, :, 1:], activated_state[:, :, None]], axis=-1)
             
         synch_size = self.n_synch_out * (self.n_synch_out + 1) // 2
-        decay_params_init = nn.initializers.zeros_init()
-        decay_params_out = self.param('decay_params_out', decay_params_init, (synch_size,))
-        
-        synch = compute_synchronisation(
-            activated_state_trace,
-            decay_params_out,
-            self.n_synch_out,
-            self.memory_length,
-            neuron_select_type=self.neuron_select_type,
-        )
+        if self.use_sync:
+            decay_params_init = nn.initializers.zeros_init()
+            decay_params_out = self.param('decay_params_out', decay_params_init, (synch_size,))
+            synch = compute_synchronisation(
+                activated_state_trace,
+                decay_params_out,
+                self.n_synch_out,
+                self.memory_length,
+                neuron_select_type=self.neuron_select_type,
+            )
+        else:
+            flat_trace = jnp.reshape(
+                activated_state_trace,
+                (activated_state_trace.shape[0], self.d_model * self.memory_length),
+            )
+            expected_flat_dim = self.d_model * self.memory_length
+            if flat_trace.shape[-1] != expected_flat_dim:
+                raise ValueError(
+                    f"Flattened activated trace has dim {flat_trace.shape[-1]}, expected {expected_flat_dim}."
+                )
+            synch = nn.Dense(synch_size, name="trace_proj")(flat_trace)
         
         new_carry = (state_trace, activated_state_trace)
         return new_carry, synch
@@ -221,6 +233,7 @@ class ScannedCTM(nn.Module):
             deep_nlms=self.config["CTM_DEEP_NLMS"],
             memory_hidden_dims=self.config["CTM_NLM_HIDDEN_DIM"],
             obs_dim=obs_dim,
+            use_sync=self.config.get("CTM_USE_SYNC", True),
             neuron_select_type=self.config.get("CTM_NEURON_SELECT", "first-last"),
             do_layernorm_nlm=self.config.get("CTM_DO_LAYERNORM_NLM", False),
         )(carry, x)

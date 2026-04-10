@@ -61,7 +61,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         type=str,
-        default=os.path.join(_REPO_ROOT, "analysis_results"),
+        default=None,
         help="Directory for saved traces, metrics, and figures. Relative paths are resolved from smax_ctm/.",
     )
     parser.add_argument("--num-episodes", type=int, default=20, help="Number of evaluation episodes.")
@@ -115,15 +115,23 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     checkpoint_path = _resolve_checkpoint_path(args.checkpoint)
-    output_dir = _resolve_output_dir(args.output_dir)
 
     checkpoint = load_ctm_checkpoint(checkpoint_path)
     ctm_params, head_params = extract_ctm_and_head_params(checkpoint.actor_params)
+    use_sync = bool(checkpoint.config.get("CTM_USE_SYNC", True))
+
+    if args.output_dir is None:
+        default_dir = "analysis_results" if use_sync else "analysis_results_nosync"
+        output_dir = _resolve_output_dir(os.path.join(_REPO_ROOT, default_dir))
+    else:
+        output_dir = _resolve_output_dir(args.output_dir)
+
     out_paths = prepare_output_dirs(output_dir)
 
     print(f"Resolved checkpoint path: {checkpoint_path}")
     print(f"Resolved output directory: {output_dir}")
     print(f"Loaded checkpoint: {checkpoint.path}")
+    print(f"Mode: {'sync' if use_sync else 'no-sync ablation'}")
     print(
         "Collecting episodes "
         f"(num_episodes={args.num_episodes}, seed={args.seed}, map={args.map_name or checkpoint.config.get('MAP_NAME')})"
@@ -143,6 +151,7 @@ def main() -> None:
 
     print("Computing pairwise synchronisation metrics...")
     metrics = compute_pairwise_metrics(collection)
+    metrics.setdefault("metadata", {})["use_sync"] = use_sync
     save_pickle(metrics, out_paths["sync_metrics_path"])
 
     strict_stage4 = not args.non_strict_stage4
@@ -154,6 +163,7 @@ def main() -> None:
         seed=args.seed,
         strict=strict_stage4,
     )
+    event_stats.setdefault("metadata", {})["use_sync"] = use_sync
     save_pickle(event_stats, out_paths["event_stats_path"])
 
     print("Computing stage-4 lag profiles...")
@@ -165,6 +175,7 @@ def main() -> None:
         seed=args.seed,
         strict=strict_stage4,
     )
+    lag_profiles.setdefault("metadata", {})["use_sync"] = use_sync
     save_pickle(lag_profiles, out_paths["lag_profiles_path"])
 
     print("Computing outcome diagnostics...")
@@ -174,6 +185,7 @@ def main() -> None:
         win_return_threshold=args.win_return_threshold,
         strict=strict_outcomes,
     )
+    outcomes.setdefault("metadata", {})["use_sync"] = use_sync
     save_pickle(outcomes, out_paths["outcomes_path"])
 
     if metrics["metadata"]["undefined_corr_count"] > 0:

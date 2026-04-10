@@ -9,6 +9,11 @@ def _to_np(x: Any) -> np.ndarray:
     return np.asarray(x)
 
 
+def _title_suffix_from_metrics(metrics: Dict[str, Any]) -> str:
+    use_sync = bool(metrics.get("metadata", {}).get("use_sync", True))
+    return " (No-Sync Ablation)" if not use_sync else ""
+
+
 def _draw_event_lines(ax: Any, event_masks: Dict[str, Any]) -> None:
     required = ("focus_fire", "grouping", "enemy_kill")
     missing = [k for k in required if k not in event_masks]
@@ -33,6 +38,7 @@ def _draw_event_lines(ax: Any, event_masks: Dict[str, Any]) -> None:
 
 def plot_sync_timeseries(metrics: Dict[str, Any], figures_dir: str, max_episodes: int = 3) -> None:
     os.makedirs(figures_dir, exist_ok=True)
+    title_suffix = _title_suffix_from_metrics(metrics)
     for ep in metrics["episodes"][:max_episodes]:
         sync_mean = _to_np(ep["sync_pair_mean_ts"])
         obs_mean = _to_np(ep["obs_pair_mean_ts"])
@@ -50,7 +56,7 @@ def plot_sync_timeseries(metrics: Dict[str, Any], figures_dir: str, max_episodes
         _draw_event_lines(ax, event_masks)
         ax.set_xlabel("Timestep")
         ax.set_ylabel("Correlation")
-        ax.set_title(f"Episode {ep['episode_index']} | Sync vs Obs Correlation")
+        ax.set_title(f"Episode {ep['episode_index']} | Coord Vector vs Obs Correlation{title_suffix}")
         ax.legend(loc="best", fontsize=9)
         fig.tight_layout()
         fig.savefig(os.path.join(figures_dir, f"sync_timeseries_ep{ep['episode_index']}.png"), dpi=150)
@@ -59,6 +65,7 @@ def plot_sync_timeseries(metrics: Dict[str, Any], figures_dir: str, max_episodes
 
 def plot_pairwise_heatmap(metrics: Dict[str, Any], figures_dir: str, episode_index: int = 0) -> None:
     os.makedirs(figures_dir, exist_ok=True)
+    title_suffix = _title_suffix_from_metrics(metrics)
     episodes = metrics["episodes"]
     selected = None
     for ep in episodes:
@@ -76,7 +83,7 @@ def plot_pairwise_heatmap(metrics: Dict[str, Any], figures_dir: str, episode_ind
     plt.yticks(np.arange(len(pair_labels)), pair_labels)
     plt.xlabel("Timestep")
     plt.ylabel("Agent pair")
-    plt.title(f"Episode {selected['episode_index']} | Pairwise Sync Correlation")
+    plt.title(f"Episode {selected['episode_index']} | Pairwise Coord Vector Correlation{title_suffix}")
     plt.colorbar(label="Pearson corr")
     plt.tight_layout()
     plt.savefig(os.path.join(figures_dir, f"sync_heatmap_ep{selected['episode_index']}.png"), dpi=150)

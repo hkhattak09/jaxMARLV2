@@ -128,6 +128,8 @@ def collect_episodes(
     if grouping_radius <= 0.0:
         raise ValueError(f"grouping_radius must be > 0, got {grouping_radius}")
 
+    use_sync = bool(config.get("CTM_USE_SYNC", True))
+
     env = build_eval_env(config, map_name)
     obs_dim = env.observation_space(env.agents[0]).shape[0]
     action_dim = env.action_space(env.agents[0]).n
@@ -141,9 +143,16 @@ def collect_episodes(
         deep_nlms=config["CTM_DEEP_NLMS"],
         memory_hidden_dims=config["CTM_NLM_HIDDEN_DIM"],
         obs_dim=obs_dim,
+        use_sync=use_sync,
         neuron_select_type=config.get("CTM_NEURON_SELECT", "first-last"),
         do_layernorm_nlm=config.get("CTM_DO_LAYERNORM_NLM", False),
     )
+
+    if not use_sync:
+        print(
+            "[analyse_sync] NO-SYNC ablation mode — 'synch' vector below is a Dense projection "
+            "of the activated trace, NOT compute_synchronisation output."
+        )
 
     synch_size = config["CTM_N_SYNCH_OUT"] * (config["CTM_N_SYNCH_OUT"] + 1) // 2
     if "Dense_2" not in head_params or "kernel" not in head_params["Dense_2"]:
@@ -265,6 +274,7 @@ def collect_episodes(
     return {
         "metadata": {
             "map_name": map_name or config.get("MAP_NAME", "unknown"),
+            "use_sync": use_sync,
             "num_episodes": num_episodes,
             "num_agents": int(env.num_agents),
             "num_enemies": int(env.num_enemies),

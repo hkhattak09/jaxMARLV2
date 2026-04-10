@@ -521,6 +521,7 @@ if __name__ == "__main__":
         "CTM_DEEP_NLMS": True,
         "CTM_NLM_HIDDEN_DIM": 2,
         "CTM_DO_LAYERNORM_NLM": False,
+        "CTM_USE_SYNC": True,
         "CTM_NEURON_SELECT": "first-last",
         "CTM_ACTOR_HEAD_DIM": 64,
         "ENV_NAME": "HeuristicEnemySMAX",
@@ -547,7 +548,8 @@ if __name__ == "__main__":
 
     model_dir = os.path.join(_REPO_ROOT, "model")
     os.makedirs(model_dir, exist_ok=True)
-    model_path = os.path.join(model_dir, "smax_mappo_ctm_actor.pkl")
+    suffix = "_nosync" if not config.get("CTM_USE_SYNC", True) else ""
+    model_path = os.path.join(model_dir, f"smax_mappo_ctm_actor{suffix}.pkl")
 
     final_runner_state = out["runner_state"][0]
     final_train_states = final_runner_state[0]

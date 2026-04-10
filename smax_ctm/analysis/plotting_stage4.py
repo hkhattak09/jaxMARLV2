@@ -5,8 +5,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+def _title_suffix_from_payload(payload: Dict[str, Any]) -> str:
+    use_sync = bool(payload.get("metadata", {}).get("use_sync", True))
+    return " (No-Sync Ablation)" if not use_sync else ""
+
+
 def plot_event_delta_bars(event_stats: Dict[str, Any], figures_dir: str) -> None:
     os.makedirs(figures_dir, exist_ok=True)
+    title_suffix = _title_suffix_from_payload(event_stats)
     events = event_stats["events"]
 
     labels = []
@@ -36,7 +42,7 @@ def plot_event_delta_bars(event_stats: Dict[str, Any], figures_dir: str) -> None
 
     plt.xticks(x, labels)
     plt.ylabel("During - Outside Sync Corr")
-    plt.title("Event-Conditional Sync Correlation Delta")
+    plt.title(f"Event-Conditional Coord Vector Correlation Delta{title_suffix}")
     plt.tight_layout()
     plt.savefig(os.path.join(figures_dir, "event_conditional.png"), dpi=150)
     plt.close()
@@ -44,6 +50,7 @@ def plot_event_delta_bars(event_stats: Dict[str, Any], figures_dir: str) -> None
 
 def plot_event_lag_profiles(lag_profiles: Dict[str, Any], figures_dir: str) -> None:
     os.makedirs(figures_dir, exist_ok=True)
+    title_suffix = _title_suffix_from_payload(lag_profiles)
     events = lag_profiles["events"]
     valid_events = [(name, v) for name, v in events.items() if v.get("status") == "ok"]
     if not valid_events:
@@ -67,7 +74,7 @@ def plot_event_lag_profiles(lag_profiles: Dict[str, Any], figures_dir: str) -> N
         ax.axvline(0, color="black", linewidth=1, linestyle="--")
         ax.set_ylabel("Sync Corr")
         ax.set_title(
-            f"{name} | lead-lag delta={payload['lead_minus_lag_delta']:.4f} "
+            f"{name}{title_suffix} | lead-lag delta={payload['lead_minus_lag_delta']:.4f} "
             f"(null mean={payload['null_lead_minus_lag_mean']:.4f}, "
             f"p={payload['lead_minus_lag_perm_p_one_sided']:.3g})"
         )
@@ -81,6 +88,7 @@ def plot_event_lag_profiles(lag_profiles: Dict[str, Any], figures_dir: str) -> N
 
 def plot_sync_vs_outcome(outcomes: Dict[str, Any], figures_dir: str) -> None:
     os.makedirs(figures_dir, exist_ok=True)
+    title_suffix = _title_suffix_from_payload(outcomes)
 
     rows = outcomes["episodes"]
     x = np.asarray([r["sync_mean"] for r in rows], dtype=np.float64)
@@ -94,7 +102,7 @@ def plot_sync_vs_outcome(outcomes: Dict[str, Any], figures_dir: str) -> None:
     plt.scatter(x[won], y[won], label="won", alpha=0.8, color="#2a9d8f")
     plt.xlabel("Episode Mean Sync Corr")
     plt.ylabel("Episode Mean Return")
-    plt.title("Sync Correlation vs Episode Outcome")
+    plt.title(f"Coord Vector Correlation vs Episode Outcome{title_suffix}")
     plt.legend()
     plt.tight_layout()
     plt.savefig(os.path.join(figures_dir, "sync_vs_outcome.png"), dpi=150)
@@ -103,6 +111,7 @@ def plot_sync_vs_outcome(outcomes: Dict[str, Any], figures_dir: str) -> None:
 
 def plot_win_loss_sync_trajectories(metrics: Dict[str, Any], outcomes: Dict[str, Any], figures_dir: str) -> None:
     os.makedirs(figures_dir, exist_ok=True)
+    title_suffix = _title_suffix_from_payload(metrics)
     by_idx = {int(r["episode_index"]): bool(r["episode_won"]) for r in outcomes["episodes"]}
 
     won_ts = []
@@ -140,7 +149,7 @@ def plot_win_loss_sync_trajectories(metrics: Dict[str, Any], outcomes: Dict[str,
     plt.plot(t, lost_mean, label="lost", linewidth=2, color="#e76f51")
     plt.xlabel("Timestep")
     plt.ylabel("Mean Pairwise Sync Corr")
-    plt.title("Won vs Lost Sync Trajectories")
+    plt.title(f"Won vs Lost Coord-Vector Trajectories{title_suffix}")
     plt.legend()
     plt.tight_layout()
     plt.savefig(os.path.join(figures_dir, "won_vs_lost_sync.png"), dpi=150)

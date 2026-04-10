@@ -136,6 +136,7 @@ def compute_pairwise_metrics(collection: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "metadata": {
             "num_agents": num_agents,
+            "use_sync": bool(collection.get("metadata", {}).get("use_sync", True)),
             "pair_indices": pair_indices,
             "num_episodes": len(episodes),
             "undefined_corr_count": int(undefined_corr_count),
