@@ -420,7 +420,7 @@ class ScannedCTM(nn.Module):
         variable_broadcast="params",
         in_axes=0,
         out_axes=0,
-        split_rngs={"params": False},
+        split_rngs={"params": False, "dropout": True},
     )
     @nn.compact
     def __call__(self, carry, x):
