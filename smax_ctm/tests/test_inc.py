@@ -10,6 +10,9 @@ jnp = pytest.importorskip("jax.numpy")
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+_SMAX_CTM_DIR = os.path.join(_REPO_ROOT, "smax_ctm")
+if _SMAX_CTM_DIR not in sys.path:
+    sys.path.insert(0, _SMAX_CTM_DIR)
 
 from smax_ctm.ctm_jax import AgentConsensus, CTMCell
 from smax_ctm.train_mappo_ctm import shuffle_and_split_actor_batch_env_grouped
