@@ -1,0 +1,3 @@
+Read only when instructued to read.
+INC_ENABLED = True the results were similar to the baseline when it was false but very slightly faster
+INC_ENABLED = True and INC_CONSENSUS_DROPOUT > 0.0 (0.25 used in 3m experiments) produced the best results with much faster increase in the win rate and a higher overall end win rate. same story held for smoke screen experiments with hanabi.

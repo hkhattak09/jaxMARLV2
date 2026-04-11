@@ -78,28 +78,85 @@
 
 **Files touched:** [ctm_jax.py](smax_ctm/ctm_jax.py), [train_mappo_ctm.py](smax_ctm/train_mappo_ctm.py), [train_mappo_ctm_hanabi.py](smax_ctm/train_mappo_ctm_hanabi.py). The `AgentConsensus` module and `CTMCell` changes are shared; both training scripts must set `INC_NUM_AGENTS` from their respective envs and pass it through to `ScannedCTM`.
 
-- [ ] Introduce new config keys:
+- [X] Introduce new config keys:
   - `INC_ENABLED`: bool, default `False`.
   - `INC_POOLING`: one of `"mean" | "attention" | "gated"`, default `"mean"`.
   - `INC_NUM_AGENTS`: int, set automatically from env at `make_train` time.
   - `INC_CONSENSUS_DROPOUT`: float, default `0.0` (for later robustness experiments).
-- [ ] Add an `AgentConsensus` Flax module that takes a tensor of shape `(num_envs, num_agents, synch_size)` and returns a tensor of the same shape where each agent's output is the pooled summary of the **other** agents (leave-one-out pooling, so no self-leakage).
+- [X] Add an `AgentConsensus` Flax module that takes a tensor of shape `(num_envs, num_agents, synch_size)` and returns a tensor of the same shape where each agent's output is the pooled summary of the **other** agents (leave-one-out pooling, so no self-leakage).
   - Mean: `(sum(axis=agent) - self) / (num_agents - 1)`.
   - Attention: a single-head dot-product attention across the agent axis; queries/keys/values all derived from sync vectors via small Dense layers. Mask out self.
   - Gated: mean of others, passed through `sigmoid(gate) * tanh(value)` parameterised by a Dense layer. Provides a learnable on/off switch per consensus channel.
-- [ ] In `CTMCell.__call__`, when `INC_ENABLED` is true:
+- [X] In `CTMCell.__call__`, when `INC_ENABLED` is true:
   1. Run `_single_iter` with a zero `consensus_in` on iteration 0 (shape `(B, synch_size)`, all zeros). This carries no teammate information but keeps the Synapses' first Dense input dim identical across all iterations — see the Stage 1 note on `nn.Dense`'s one-shot input-dim inference. Only fall back to `consensus_in = None` when `CTM_ITERATIONS == 1` or `INC_ENABLED=False`, where the Synapses are only ever called with one input width.
   2. Between iterations, reshape the per-iteration `synch` from `(B, synch_size)` → `(num_agents, B // num_agents, synch_size)` (agent-major — see Stage 0 axis note).
   3. Pass through `AgentConsensus` → same shape. Module must be written so it pools along the **agent axis (axis=0)**, not axis=1.
   4. Reshape back to `(B, synch_size)`.
   5. Pass this as `consensus_in` to the next iteration's `_single_iter`.
-- [ ] Because `CTMCell` currently doesn't know `num_agents`, thread it in as a module field (`num_agents: int = 1`), set from config at construction time in `ScannedCTM`. The "num envs" dimension is inferred at runtime as `B // num_agents`.
-- [ ] **Batch-shape invariance between rollout and PPO update.** During rollout `B = num_actors = num_envs * num_agents`. During the PPO update, minibatches reshape the flat actor axis to `(num_minibatches, minibatch_size)` where `minibatch_size = num_actors * num_steps_per_env // num_minibatches` — but crucially the minibatch split in [train_mappo_ctm.py](smax_ctm/train_mappo_ctm.py) is done along the **env/agent flat axis while preserving agent-majority**. Verify this: grep for the permutation/reshape in the update step and confirm it does NOT shuffle agents across the flat axis. If it does (e.g. a `jax.random.permutation` over the flat actor axis), INC will train on corrupted consensus groupings. **Fix:** permute over the `num_envs` axis only, keep all agents of a given env together. Add a unit test.
-- [ ] **Sequence-length axis.** When `ScannedCTM` is applied during an update, inputs have a leading time axis `(T, B, ...)`. The inner `CTMCell` sees one time slice at a time (scan handles the T axis), so `B` is still `num_actors_in_minibatch` and the reshape logic above is unchanged. Double-check by printing shapes during the first update step.
-- [ ] **Dead-agent masking:** Hanabi and SMAX both kill agents partway through an episode. When an agent is dead its `done` mask is 1 and its sync is essentially frozen/invalid. Pass an `alive_mask` of shape `(num_envs, num_agents)` into `AgentConsensus` and use it to exclude dead agents from pooling. For SMAX derive this from the `dones` input; for Hanabi all agents stay alive so it's identity.
-- [ ] The final `synch` returned from `CTMCell` remains the last iteration's sync (same shape as before), so the actor head is unchanged.
+- [X] Because `CTMCell` currently doesn't know `num_agents`, thread it in as a module field (`num_agents: int = 1`), set from config at construction time in `ScannedCTM`. The "num envs" dimension is inferred at runtime as `B // num_agents`.
+- [X] **Batch-shape invariance between rollout and PPO update.** During rollout `B = num_actors = num_envs * num_agents`. During the PPO update, minibatches reshape the flat actor axis to `(num_minibatches, minibatch_size)` where `minibatch_size = num_actors * num_steps_per_env // num_minibatches` — but crucially the minibatch split in [train_mappo_ctm.py](smax_ctm/train_mappo_ctm.py) is done along the **env/agent flat axis while preserving agent-majority**. Verify this: grep for the permutation/reshape in the update step and confirm it does NOT shuffle agents across the flat axis. If it does (e.g. a `jax.random.permutation` over the flat actor axis), INC will train on corrupted consensus groupings. **Fix:** permute over the `num_envs` axis only, keep all agents of a given env together. Add a unit test.
+- [X] **Sequence-length axis.** When `ScannedCTM` is applied during an update, inputs have a leading time axis `(T, B, ...)`. The inner `CTMCell` sees one time slice at a time (scan handles the T axis), so `B` is still `num_actors_in_minibatch` and the reshape logic above is unchanged. Double-check by printing shapes during the first update step.
+- [X] **Dead-agent masking:** Hanabi and SMAX both kill agents partway through an episode. When an agent is dead its `done` mask is 1 and its sync is essentially frozen/invalid. Pass an `alive_mask` of shape `(num_envs, num_agents)` into `AgentConsensus` and use it to exclude dead agents from pooling. For SMAX derive this from the `dones` input; for Hanabi all agents stay alive so it's identity.
+- [X] The final `synch` returned from `CTMCell` remains the last iteration's sync (same shape as before), so the actor head is unchanged.
 
 **Exit criterion:** with `INC_ENABLED=True, INC_POOLING="mean", CTM_ITERATIONS=3`, training runs without shape errors and produces a different (hopefully better) learning curve. With `INC_ENABLED=False` behaviour is bit-identical to Stage 1.
+Observations: INC_ENABLED=True, INC_POOLING="mean", CTM_ITERATIONS=3 produced a slightly better learning curve and final win rate in 3m smax. while setting INC_CONSENSUS_DROPOUT>0.0(0.25 used in experiments) in addition to INC_ENABLED=True, INC_POOLING="mean", CTM_ITERATIONS=3 produced a significantly better learning cure and a much higher win rate.
+
+---
+
+## Stage 2.1 — Disambiguating the dropout win
+
+**Goal:** figure out *why* `INC_CONSENSUS_DROPOUT=0.25` unlocks a much larger gain than plain INC on SMAX 3m (and Hanabi smoke test). The Stage 2 result is that plain INC (`INC_ENABLED=True, mean, iter=3`) is only marginally better than the Stage 1 baseline, but adding 25% dropout on the pooled consensus signal produces a substantially faster learning curve and a higher final win rate. Before committing to Stage 4's hyperparameter sweep and Stage 5's full matrix, we need to know whether the benefit comes from (a) the teammate consensus channel specifically, (b) stochastic regularisation of the CTM iteration loop in general, or (c) both. If it's (b), the paper's framing has to change — INC becomes "iterative refinement with regularised internal dynamics" and pooled teammate sync is a secondary contribution. This stage is cheap (all SMAX 3m) and decides the framing of Stages 4, 5, and 7.
+
+**Files touched:** [ctm_jax.py](smax_ctm/ctm_jax.py) (small additions), [train_mappo_ctm.py](smax_ctm/train_mappo_ctm.py) (one new config key passthrough), new script `smax_ctm/scripts/run_stage2_1_disambig.py`, results written to `analysis_results_inc/stage2_1/`.
+
+**Cells to run** (3 seeds each, same total-timesteps budget as the Stage 2 run, SMAX 3m):
+
+| Cell | `INC_ENABLED` | `INC_CONSENSUS_DROPOUT` | `CTM_ITER_DROPOUT` (new) | `INC_FORCE_ZERO_CONSENSUS` (new) | Status |
+|---|---|---|---|---|---|
+| A | False | — | 0.0 | — | already logged (Stage 1 baseline) |
+| B | True  | 0.0  | 0.0 | False | already logged (plain INC) |
+| C | True  | 0.25 | 0.0 | False | already logged (INC + consensus dropout) |
+| **D** | **False** | **—** | **0.25** | **—** | **new — stochastic iteration loop, no consensus** |
+| **E** | **True**  | **0.25** | **0.0** | **True** | **new — same noise pattern as C but teammate info zeroed** |
+
+Cells A/B/C already have curves from the Stage 2 run — reuse those logs, do not re-run.
+
+- [ ] Add config key `CTM_ITER_DROPOUT` (float, default `0.0`) to both [train_mappo_ctm.py](smax_ctm/train_mappo_ctm.py) and [train_mappo_ctm_hanabi.py](smax_ctm/train_mappo_ctm_hanabi.py). Thread it into `CTMCell` as a module field.
+- [ ] In `CTMCell._single_iter`, when `CTM_ITER_DROPOUT > 0`, apply `nn.Dropout(rate=CTM_ITER_DROPOUT, deterministic=not train)` to `activated_state_trace` **before** it is fed into the next iteration's synapses. Apply it regardless of `INC_ENABLED` — this is the "stochastic iteration loop" control and must be independent of the consensus path. Plumb the `train` flag through `ScannedCTM` the same way Flax's standard dropout usage does; if there is no existing dropout RNG stream, add one (`rngs={"dropout": dropout_rng}` in `apply`).
+- [ ] Add config key `INC_FORCE_ZERO_CONSENSUS` (bool, default `False`). In `CTMCell.__call__`, after computing the pooled `consensus_in` from `AgentConsensus` and *before* applying `INC_CONSENSUS_DROPOUT`, replace `consensus_in` with `jnp.zeros_like(consensus_in)` when this flag is set. Crucially: the dropout mask is still drawn and applied to the zero tensor, so the RNG consumption and the downstream noise pattern match cell C exactly. This is the cell-E control — same stochasticity pattern as C, same widened Synapses input dim, but zero actual teammate information flowing through.
+- [ ] Unit test the new flags in [smax_ctm/tests/test_inc.py](smax_ctm/tests/test_inc.py):
+  - With `CTM_ITER_DROPOUT=0.0` and `INC_FORCE_ZERO_CONSENSUS=False`, forward pass is bit-identical to pre-change code.
+  - With `INC_FORCE_ZERO_CONSENSUS=True`, the input to the iteration-2 Synapses on the consensus slice is all zero (before dropout is applied), verified by hook or by `jax.lax.stop_gradient` + numerical probe.
+  - `CTM_ITER_DROPOUT=0.25` at eval time (`deterministic=True`) is a no-op; at train time it produces non-identity outputs on repeat calls with different RNGs.
+- [ ] Write `smax_ctm/scripts/run_stage2_1_disambig.py` that launches cells D and E, 3 seeds each. Same `TOTAL_TIMESTEPS`, `NUM_ENVS`, `CTM_ITERATIONS=3`, `INC_POOLING="mean"` as the Stage 2 run. Log to the same place as Stage 2 for apples-to-apples plotting.
+- [ ] After runs complete, produce two plots into `analysis_results_inc/stage2_1/`:
+  - **Learning curves:** all five cells (A, B, C, D, E) on one axis, win rate vs env steps, shaded by seed std. This is the headline plot for the stage.
+  - **Final WR bar chart:** mean ± 95% CI at the end of training for each cell.
+- [ ] Re-run [analyse_sync.py](smax_ctm/analyse_sync.py) on the cell-B checkpoint (plain INC) and the cell-C checkpoint (INC + dropout), producing the **within-step sync convergence plot** — how much does cross-agent sync disagreement shrink between iteration 0 and iteration K? Do both models converge in sync space, and does the dropout model converge *less* tightly while still performing better? This plot is reused in Stage 4 and becomes Figure 3 of the paper if the story holds.
+- [ ] Write a short interpretation note at `docs/inc_stage2_1_findings.md`: one paragraph per decision path (below), plus the learning-curve plot embedded.
+
+**What we want to see — decision rules:**
+
+The point of the stage is to pick between three mutually exclusive stories. Cells D and E each sharpen one dimension.
+
+1. **Story "consensus channel is load-bearing":** D is close to A/B (weak), E is close to A/B (weak), and C remains the clear winner. This means the gain requires both (i) real teammate information flowing through the pool *and* (ii) dropout-robustness on that channel. Cleanest possible outcome — write the paper exactly as originally planned, with the dropout result as a prominent sub-finding under the "robust consensus channel" framing.
+2. **Story "stochastic iteration loop":** D is close to C (strong), and E is also close to C (strong). This means the benefit is stochasticity inside the CTM iteration unroll, not teammate pooling — the consensus module is load-bearing only insofar as it gives dropout a place to apply. This is a real result but a different paper: INC becomes "regularised iterative refinement" and the "zero inter-step comm bandwidth consensus" framing has to be softened. We'd still run Stage 5, but the headline comparison changes from "INC vs no-INC" to "regularised iter vs plain iter", and Stage 6 ablations shift focus.
+3. **Story "mixed":** D is in between A and C (noticeable lift but not matching C), and E is close to D (or close to A). This means both mechanisms contribute. Still a publishable story, framed as "iteration-loop stochasticity plus pooled teammate sync are complementary." Stage 5 stays the same; Stage 7 adds a small decomposition figure.
+
+**Concretely, the numerical thresholds we'll use** (SMAX 3m, 3 seeds, final WR mean):
+- "Close to A/B" ≡ within 3 percentage points of the plain-INC mean *and* learning-curve slope visually indistinguishable.
+- "Close to C" ≡ within 3 percentage points of the INC+dropout mean *and* learning-curve slope visually indistinguishable.
+- "In between" ≡ outside both bands.
+
+If cells D and E together don't cleanly fit any of the three stories (e.g. D is strong but E is also strong, which would be internally inconsistent), treat that as a signal of an implementation bug in the new flags and go back to the unit tests before interpreting.
+
+**Things that would invalidate the stage and force a re-run:**
+- RNG stream for the new dropout is not properly split per-iteration (i.e. all iterations get the same mask) — would suppress the effect of `CTM_ITER_DROPOUT` artificially.
+- `INC_FORCE_ZERO_CONSENSUS` accidentally also zeros the gradient through the consensus branch entirely, so the widened Synapses kernel receives no training signal on that slice — would make E look artificially weak. Verify with a gradient-flow probe in the unit test.
+- Seeds from cells D/E inadvertently overlap with Stage 2's seeds, making the comparison biased. Use three fresh seeds.
+
+**Exit criterion:** `analysis_results_inc/stage2_1/` contains the 5-cell learning-curve plot, the bar chart, and `docs/inc_stage2_1_findings.md` states which of the three stories the data supports, with the corresponding decision for Stage 4's framing written down. The main plan body (Stages 4-7) is updated only *after* this stage completes.
 
 ---
 
@@ -107,12 +164,12 @@
 
 **Goal:** lock in the non-obvious invariants before they regress silently during later stages.
 
-- [ ] **Axis round-trip test.** Build a dummy `(num_actors, synch_size)` tensor where row `i` equals `i // num_envs` (so agent 0 rows are all 0, agent 1 rows are all 1, etc.). Reshape via the Stage-1 helper, confirm the agent axis is `[0, 1, ..., num_agents-1]` as expected.
-- [ ] **Leave-one-out mean test.** With `num_agents=3`, sync = `[[1], [2], [3]]` broadcast over envs, confirm pooled result is `[[2.5], [2.0], [1.5]]`.
-- [ ] **No-op equivalence.** With `INC_ENABLED=False`, the per-step output of `CTMCell` (including `synch`, action logits) must be bit-identical to the pre-refactor code on the same seed. Use `jnp.allclose(..., atol=0, rtol=0)`.
-- [ ] **Dead-agent masking.** With `num_agents=3` and agent 1 dead (`alive_mask=[1,0,1]`), the leave-one-out mean for agent 0 should equal agent 2's sync exactly, and vice versa; agent 1's pooled input should be a deterministic zero (or last-alive value — pick one and document it).
-- [ ] **Gradient flow.** Run one backward pass through an `INC_ENABLED=True` forward, confirm gradients are non-zero on the `AgentConsensus` parameters and on the widened `Synapses` first-layer kernel.
-- [ ] **Minibatch permutation safety.** Construct a fake update-step minibatch that permutes the flat actor axis, run `CTMCell` over it twice (once with the permutation, once without), and confirm the INC pooling yields the same per-agent result up to the permutation. Fails if the permutation scrambles agent groupings — in which case Stage 2's permutation-fix is required.
+- [X] **Axis round-trip test.** Build a dummy `(num_actors, synch_size)` tensor where row `i` equals `i // num_envs` (so agent 0 rows are all 0, agent 1 rows are all 1, etc.). Reshape via the Stage-1 helper, confirm the agent axis is `[0, 1, ..., num_agents-1]` as expected.
+- [X] **Leave-one-out mean test.** With `num_agents=3`, sync = `[[1], [2], [3]]` broadcast over envs, confirm pooled result is `[[2.5], [2.0], [1.5]]`.
+- [X] **No-op equivalence.** With `INC_ENABLED=False`, the per-step output of `CTMCell` (including `synch`, action logits) must be bit-identical to the pre-refactor code on the same seed. Use `jnp.allclose(..., atol=0, rtol=0)`.
+- [X] **Dead-agent masking.** With `num_agents=3` and agent 1 dead (`alive_mask=[1,0,1]`), the leave-one-out mean for agent 0 should equal agent 2's sync exactly, and vice versa; agent 1's pooled input should be a deterministic zero (or last-alive value — pick one and document it).
+- [X] **Gradient flow.** Run one backward pass through an `INC_ENABLED=True` forward, confirm gradients are non-zero on the `AgentConsensus` parameters and on the widened `Synapses` first-layer kernel.
+- [X] **Minibatch permutation safety.** Construct a fake update-step minibatch that permutes the flat actor axis, run `CTMCell` over it twice (once with the permutation, once without), and confirm the INC pooling yields the same per-agent result up to the permutation. Fails if the permutation scrambles agent groupings — in which case Stage 2's permutation-fix is required.
 
 **Exit criterion:** all tests pass as a single `pytest` file `smax_ctm/tests/test_inc.py`. This file is checked in before Stage 4 begins.
 

@@ -212,9 +212,16 @@ def make_train(config):
     config.setdefault("INC_DEBUG_SHAPES", False)
     # Hanabi agents are not individually killed mid-episode; use identity alive mask.
     config.setdefault("INC_USE_ALIVE_MASK_FROM_DONES", False)
+    # Stage 2.1 disambiguation flags.
+    config.setdefault("CTM_ITER_DROPOUT", 0.0)
+    config.setdefault("INC_FORCE_ZERO_CONSENSUS", False)
     if config["INC_CONSENSUS_DROPOUT"] < 0.0 or config["INC_CONSENSUS_DROPOUT"] >= 1.0:
         raise ValueError(
             f"INC_CONSENSUS_DROPOUT must be in [0.0, 1.0), got {config['INC_CONSENSUS_DROPOUT']}."
+        )
+    if config["CTM_ITER_DROPOUT"] < 0.0 or config["CTM_ITER_DROPOUT"] >= 1.0:
+        raise ValueError(
+            f"CTM_ITER_DROPOUT must be in [0.0, 1.0), got {config['CTM_ITER_DROPOUT']}."
         )
     if config.get("CTM_NEURON_SELECT", "first-last") != "first-last":
         raise ValueError(
@@ -287,7 +294,12 @@ def make_train(config):
 
             def _env_step(runner_state, unused):
                 train_states, env_state, last_obs, last_done, hstates, rng = runner_state
-                inc_dropout_active = config["INC_ENABLED"] and (config["INC_CONSENSUS_DROPOUT"] > 0.0)
+                # Dropout RNG is needed if INC consensus dropout OR the
+                # Stage 2.1 iteration-loop dropout control is on.
+                inc_dropout_active = (
+                    (config["INC_ENABLED"] and (config["INC_CONSENSUS_DROPOUT"] > 0.0))
+                    or (config["CTM_ITER_DROPOUT"] > 0.0)
+                )
 
                 # SELECT ACTION
                 rng, _rng_policy, _rng_dropout = jax.random.split(rng, 3)
@@ -404,7 +416,10 @@ def make_train(config):
                     actor_train_state, critic_train_state = train_states
                     minibatch_tensors, dropout_key = batch_info
                     ac_init_hstate, cr_init_hstate, traj_batch, advantages, targets = minibatch_tensors
-                    inc_dropout_active = config["INC_ENABLED"] and (config["INC_CONSENSUS_DROPOUT"] > 0.0)
+                    inc_dropout_active = (
+                        (config["INC_ENABLED"] and (config["INC_CONSENSUS_DROPOUT"] > 0.0))
+                        or (config["CTM_ITER_DROPOUT"] > 0.0)
+                    )
 
                     def _actor_loss_fn(actor_params, init_hstate, traj_batch, gae, rng_dropout):
                         if inc_dropout_active:
@@ -596,6 +611,9 @@ if __name__ == "__main__":
         "INC_CONSENSUS_DROPOUT": 0.0,
         "INC_DEBUG_SHAPES": False,
         "INC_USE_ALIVE_MASK_FROM_DONES": False,
+        # Stage 2.1 disambiguation defaults.
+        "CTM_ITER_DROPOUT": 0.0,
+        "INC_FORCE_ZERO_CONSENSUS": False,
         "SEED": 42,
         "ENV_KWARGS": {},  # passed to HanabiEnv (num_colors, num_ranks, hand_size, etc.)
         "ANNEAL_LR": True,

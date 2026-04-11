@@ -110,6 +110,11 @@ class Synapses(nn.Module):
 class AgentConsensus(nn.Module):
     pooling: str = "mean"
     dropout_rate: float = 0.0
+    # Stage 2.1 control: when True, the pooled output is replaced with zeros
+    # BEFORE dropout is applied. RNG consumption and downstream noise pattern
+    # stay identical to the non-zeroed path, so this is an apples-to-apples
+    # control for "does the teammate information actually flow?".
+    force_zero_output: bool = False
 
     @nn.compact
     def __call__(
@@ -195,6 +200,8 @@ class AgentConsensus(nn.Module):
                 f"Unsupported INC_POOLING='{self.pooling}'. Expected one of: mean, attention, gated."
             )
 
+        if self.force_zero_output:
+            pooled = jnp.zeros_like(pooled)
         if self.dropout_rate > 0.0:
             pooled = nn.Dropout(rate=self.dropout_rate)(pooled, deterministic=deterministic)
         return pooled
@@ -242,6 +249,14 @@ class CTMCell(nn.Module):
     inc_pooling: str = "mean"
     inc_consensus_dropout: float = 0.0
     inc_use_alive_mask_from_dones: bool = True
+    # Stage 2.1 controls. ctm_iter_dropout applies dropout to
+    # activated_state_trace BETWEEN iterations (independent of INC), to test
+    # whether stochastic regularisation of the CTM iteration loop alone
+    # explains the Stage 2 dropout win. inc_force_zero_consensus zeroes the
+    # pooled consensus value before the consensus dropout, testing whether
+    # teammate information actually flows through the pool.
+    ctm_iter_dropout: float = 0.0
+    inc_force_zero_consensus: bool = False
     deterministic: bool = True
 
     def _single_iter(
@@ -311,6 +326,11 @@ class CTMCell(nn.Module):
                 "INC_CONSENSUS_DROPOUT must be in [0.0, 1.0), "
                 f"got {self.inc_consensus_dropout}."
             )
+        if self.ctm_iter_dropout < 0.0 or self.ctm_iter_dropout >= 1.0:
+            raise ValueError(
+                "CTM_ITER_DROPOUT must be in [0.0, 1.0), "
+                f"got {self.ctm_iter_dropout}."
+            )
         start_trace_init = symmetric_uniform(1.0 / jnp.sqrt(self.d_model + self.memory_length))
         self.start_trace = self.param('start_trace', start_trace_init, (self.d_model, self.memory_length))
         self.start_activated_trace = self.param(
@@ -339,7 +359,10 @@ class CTMCell(nn.Module):
             self.consensus = AgentConsensus(
                 pooling=self.inc_pooling,
                 dropout_rate=self.inc_consensus_dropout,
+                force_zero_output=self.inc_force_zero_consensus,
             )
+        if self.ctm_iter_dropout > 0.0:
+            self.iter_dropout = nn.Dropout(rate=self.ctm_iter_dropout)
 
     @staticmethod
     def initialize_carry(batch_size: int, d_model: int, memory_length: int):
@@ -389,7 +412,21 @@ class CTMCell(nn.Module):
                 consensus_in,
             )
 
-            if self.inc_enabled and iter_idx < (self.iterations - 1):
+            is_last_iter = iter_idx >= (self.iterations - 1)
+
+            # Stage 2.1 cell D: stochastic iteration loop control. Apply
+            # dropout to activated_state_trace BETWEEN iterations so the next
+            # iteration's synapses see a noised last_activated and the NLM
+            # sliding window rolls on the noised history. The final returned
+            # carry is unaffected because we skip the last iteration. This is
+            # independent of INC on/off.
+            if (self.ctm_iter_dropout > 0.0) and (not is_last_iter):
+                activated_state_trace = self.iter_dropout(
+                    activated_state_trace,
+                    deterministic=self.deterministic,
+                )
+
+            if self.inc_enabled and not is_last_iter:
                 synch_agent_major = synch.reshape((self.num_agents, num_envs, synch.shape[-1]))
                 if self.inc_use_alive_mask_from_dones:
                     done_bool = dones.astype(bool)
@@ -442,5 +479,7 @@ class ScannedCTM(nn.Module):
             inc_pooling=self.config.get("INC_POOLING", "mean"),
             inc_consensus_dropout=self.config.get("INC_CONSENSUS_DROPOUT", 0.0),
             inc_use_alive_mask_from_dones=self.config.get("INC_USE_ALIVE_MASK_FROM_DONES", True),
+            ctm_iter_dropout=self.config.get("CTM_ITER_DROPOUT", 0.0),
+            inc_force_zero_consensus=self.config.get("INC_FORCE_ZERO_CONSENSUS", False),
             deterministic=self.deterministic,
         )(carry, x)
