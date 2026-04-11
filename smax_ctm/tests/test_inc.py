@@ -15,7 +15,10 @@ if _SMAX_CTM_DIR not in sys.path:
     sys.path.insert(0, _SMAX_CTM_DIR)
 
 from smax_ctm.ctm_jax import AgentConsensus, CTMCell
-from smax_ctm.train_mappo_ctm import shuffle_and_split_actor_batch_env_grouped
+from smax_ctm.train_mappo_ctm import (
+    compute_focus_fire_mask,
+    shuffle_and_split_actor_batch_env_grouped,
+)
 
 
 def _build_ctm_cell(**kwargs):
@@ -199,6 +202,57 @@ def test_env_grouped_minibatch_split_preserves_env_pairs():
         mb_flat = minibatches[mb_idx, 0, :, 0]
         grouped = mb_flat.reshape(num_agents, envs_per_mb)
         assert jnp.array_equal(grouped[0], grouped[1])
+
+
+def test_compute_focus_fire_mask_no_attacks_all_false():
+    # T=2, A=3, E=2; all actions are movement actions (< num_movement_actions).
+    actions = jnp.array(
+        [
+            [0, 1, 2, 0, 1, 2],
+            [3, 4, 0, 1, 2, 3],
+        ],
+        dtype=jnp.int32,
+    )
+    mask = compute_focus_fire_mask(
+        actions,
+        num_agents=3,
+        num_envs=2,
+        num_movement_actions=6,
+        num_enemies=3,
+    )
+    assert mask.shape == (2, 2)
+    assert jnp.array_equal(mask, jnp.zeros((2, 2), dtype=bool))
+
+
+def test_compute_focus_fire_mask_two_agents_same_enemy_true():
+    # T=1, A=3, E=2 with agent-major flattening: [a0e0,a0e1,a1e0,a1e1,a2e0,a2e1]
+    # Attack index for enemy k is num_movement_actions + k.
+    # Env0 targets: [6,6,7] => focus fire True
+    # Env1 targets: [7,8,8] => focus fire True
+    actions = jnp.array([[6, 7, 6, 8, 7, 8]], dtype=jnp.int32)
+    mask = compute_focus_fire_mask(
+        actions,
+        num_agents=3,
+        num_envs=2,
+        num_movement_actions=6,
+        num_enemies=3,
+    )
+    expected = jnp.array([[True, True]])
+    assert jnp.array_equal(mask, expected)
+
+
+def test_compute_focus_fire_mask_agents_attack_different_enemies_false():
+    # T=1, A=3, E=1. Distinct enemy targets in the single env: [6,7,8] => False.
+    actions = jnp.array([[6, 7, 8]], dtype=jnp.int32)
+    mask = compute_focus_fire_mask(
+        actions,
+        num_agents=3,
+        num_envs=1,
+        num_movement_actions=6,
+        num_enemies=3,
+    )
+    expected = jnp.array([[False]])
+    assert jnp.array_equal(mask, expected)
 
 
 # ---------------------------------------------------------------------------
