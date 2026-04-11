@@ -1,0 +1,215 @@
+'''
+Test against CTM baseline for SMAX
+Set INC:
+INC_ENABLED = True
+INC_POOLING = mean
+CTM_ITERATIONS = 3
+INC_CONSENSUS_DROPOUT = 0.0
+INC_DEBUG_SHAPES = True
+'''
+! python jaxMARLV2/smax_ctm/train_mappo_ctm.py
+
+
+2026-04-11 10:04:47.153251: E external/local_xla/xla/stream_executor/cuda/cuda_fft.cc:467] Unable to register cuFFT factory: Attempting to register factory for plugin cuFFT when one has already been registered
+WARNING: All log messages before absl::InitializeLog() is called are written to STDERR
+E0000 00:00:1775901887.175339   29184 cuda_dnn.cc:8579] Unable to register cuDNN factory: Attempting to register factory for plugin cuDNN when one has already been registered
+E0000 00:00:1775901887.182584   29184 cuda_blas.cc:1407] Unable to register cuBLAS factory: Attempting to register factory for plugin cuBLAS when one has already been registered
+W0000 00:00:1775901887.199579   29184 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1775901887.199608   29184 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1775901887.199611   29184 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+W0000 00:00:1775901887.199617   29184 computation_placer.cc:177] computation placer already registered. Please check linkage and avoid linking the same target more than once.
+Starting 3m MAPPO Baseline...
+INC shape check | traj obs shape=(T=128, B=384, ...) | INC_NUM_AGENTS=3 | inferred num_envs=128
+Step        0 | Return:       0.18 | Win Rate:  0.00 | Loss:     0.1325 | Ent:   1.2917 | GradN(actor/critic):   0.0234/  2.9407
+Step    16384 | Return:       0.21 | Win Rate:  0.00 | Loss:    -0.0099 | Ent:   1.2409 | GradN(actor/critic):   0.0877/  0.5345
+Step    32768 | Return:       0.25 | Win Rate:  0.00 | Loss:    -0.0150 | Ent:   1.2348 | GradN(actor/critic):   0.1422/  0.4309
+Step    49152 | Return:       0.31 | Win Rate:  0.00 | Loss:    -0.0172 | Ent:   1.2063 | GradN(actor/critic):   0.1367/  0.0621
+Step    65536 | Return:       0.37 | Win Rate:  0.00 | Loss:    -0.0167 | Ent:   1.1707 | GradN(actor/critic):   0.1909/  0.0864
+Step    81920 | Return:       0.43 | Win Rate:  0.00 | Loss:    -0.0136 | Ent:   1.1085 | GradN(actor/critic):   0.2973/  0.1143
+Step    98304 | Return:       0.50 | Win Rate:  0.01 | Loss:    -0.0102 | Ent:   1.0444 | GradN(actor/critic):   0.1900/  0.1951
+Step   114688 | Return:       0.59 | Win Rate:  0.03 | Loss:    -0.0056 | Ent:   0.9621 | GradN(actor/critic):   0.1868/  0.2515
+Step   131072 | Return:       0.69 | Win Rate:  0.06 | Loss:    -0.0007 | Ent:   0.9069 | GradN(actor/critic):   0.1285/  0.2116
+Step   147456 | Return:       0.79 | Win Rate:  0.10 | Loss:     0.0082 | Ent:   0.8577 | GradN(actor/critic):   0.2153/  0.2608
+Step   163840 | Return:       0.91 | Win Rate:  0.17 | Loss:     0.0180 | Ent:   0.7506 | GradN(actor/critic):   0.1354/  0.6314
+Step   180224 | Return:       1.03 | Win Rate:  0.24 | Loss:     0.0249 | Ent:   0.7052 | GradN(actor/critic):   0.1110/  0.5321
+Step   196608 | Return:       1.06 | Win Rate:  0.25 | Loss:     0.0232 | Ent:   0.6666 | GradN(actor/critic):   0.1729/  0.1703
+Step   212992 | Return:       1.10 | Win Rate:  0.28 | Loss:     0.0229 | Ent:   0.6340 | GradN(actor/critic):   0.1353/  0.2347
+Step   229376 | Return:       1.20 | Win Rate:  0.35 | Loss:     0.0269 | Ent:   0.5939 | GradN(actor/critic):   0.1468/  0.2444
+Step   245760 | Return:       1.26 | Win Rate:  0.39 | Loss:     0.0278 | Ent:   0.5549 | GradN(actor/critic):   0.1526/  0.2559
+Step   262144 | Return:       1.22 | Win Rate:  0.36 | Loss:     0.0263 | Ent:   0.5561 | GradN(actor/critic):   0.1257/  0.2193
+Step   278528 | Return:       1.26 | Win Rate:  0.39 | Loss:     0.0303 | Ent:   0.5123 | GradN(actor/critic):   0.1321/  0.4847
+Step   294912 | Return:       1.32 | Win Rate:  0.43 | Loss:     0.0289 | Ent:   0.4658 | GradN(actor/critic):   0.1096/  0.1564
+Step   311296 | Return:       1.39 | Win Rate:  0.48 | Loss:     0.0290 | Ent:   0.4317 | GradN(actor/critic):   0.1274/  0.2672
+Step   327680 | Return:       1.40 | Win Rate:  0.50 | Loss:     0.0298 | Ent:   0.4337 | GradN(actor/critic):   0.1976/  0.2652
+Step   344064 | Return:       1.46 | Win Rate:  0.54 | Loss:     0.0306 | Ent:   0.3749 | GradN(actor/critic):   0.2349/  0.1714
+Step   360448 | Return:       1.46 | Win Rate:  0.54 | Loss:     0.0317 | Ent:   0.3895 | GradN(actor/critic):   0.2154/  0.4237
+Step   376832 | Return:       1.46 | Win Rate:  0.55 | Loss:     0.0290 | Ent:   0.3828 | GradN(actor/critic):   0.2044/  0.1605
+Step   393216 | Return:       1.48 | Win Rate:  0.56 | Loss:     0.0293 | Ent:   0.3441 | GradN(actor/critic):   0.1124/  0.3117
+Step   409600 | Return:       1.48 | Win Rate:  0.56 | Loss:     0.0290 | Ent:   0.3252 | GradN(actor/critic):   0.0980/  0.2806
+Step   425984 | Return:       1.48 | Win Rate:  0.56 | Loss:     0.0304 | Ent:   0.3010 | GradN(actor/critic):   0.1175/  0.4257
+Step   442368 | Return:       1.50 | Win Rate:  0.57 | Loss:     0.0285 | Ent:   0.2884 | GradN(actor/critic):   0.1492/  0.2085
+Step   458752 | Return:       1.53 | Win Rate:  0.59 | Loss:     0.0295 | Ent:   0.2601 | GradN(actor/critic):   0.1255/  0.3952
+Step   475136 | Return:       1.53 | Win Rate:  0.59 | Loss:     0.0298 | Ent:   0.2700 | GradN(actor/critic):   0.1453/  0.3972
+Step   491520 | Return:       1.55 | Win Rate:  0.62 | Loss:     0.0268 | Ent:   0.2670 | GradN(actor/critic):   0.1231/  0.3497
+Step   507904 | Return:       1.55 | Win Rate:  0.62 | Loss:     0.0274 | Ent:   0.2632 | GradN(actor/critic):   0.1385/  0.2752
+Step   524288 | Return:       1.58 | Win Rate:  0.63 | Loss:     0.0284 | Ent:   0.2590 | GradN(actor/critic):   0.1470/  0.3651
+Step   540672 | Return:       1.56 | Win Rate:  0.62 | Loss:     0.0289 | Ent:   0.2437 | GradN(actor/critic):   0.1507/  0.3173
+Step   557056 | Return:       1.58 | Win Rate:  0.64 | Loss:     0.0277 | Ent:   0.2238 | GradN(actor/critic):   0.1546/  0.3656
+Step   573440 | Return:       1.58 | Win Rate:  0.64 | Loss:     0.0262 | Ent:   0.2205 | GradN(actor/critic):   0.1262/  0.1732
+Step   589824 | Return:       1.56 | Win Rate:  0.62 | Loss:     0.0264 | Ent:   0.2071 | GradN(actor/critic):   0.1195/  0.2361
+Step   606208 | Return:       1.62 | Win Rate:  0.67 | Loss:     0.0252 | Ent:   0.2189 | GradN(actor/critic):   0.1208/  0.1921
+Step   622592 | Return:       1.60 | Win Rate:  0.65 | Loss:     0.0258 | Ent:   0.2258 | GradN(actor/critic):   0.1348/  0.2630
+Step   638976 | Return:       1.61 | Win Rate:  0.66 | Loss:     0.0262 | Ent:   0.2252 | GradN(actor/critic):   0.1151/  0.4009
+Step   655360 | Return:       1.60 | Win Rate:  0.65 | Loss:     0.0263 | Ent:   0.2209 | GradN(actor/critic):   0.1309/  0.2802
+Step   671744 | Return:       1.59 | Win Rate:  0.64 | Loss:     0.0276 | Ent:   0.2167 | GradN(actor/critic):   0.1844/  0.4211
+Step   688128 | Return:       1.61 | Win Rate:  0.66 | Loss:     0.0251 | Ent:   0.2139 | GradN(actor/critic):   0.0912/  0.1682
+Step   704512 | Return:       1.59 | Win Rate:  0.64 | Loss:     0.0247 | Ent:   0.2077 | GradN(actor/critic):   0.1318/  0.2565
+Step   720896 | Return:       1.61 | Win Rate:  0.67 | Loss:     0.0265 | Ent:   0.2122 | GradN(actor/critic):   0.1562/  0.3405
+Step   737280 | Return:       1.62 | Win Rate:  0.67 | Loss:     0.0268 | Ent:   0.1962 | GradN(actor/critic):   0.1166/  0.4462
+Step   753664 | Return:       1.62 | Win Rate:  0.66 | Loss:     0.0242 | Ent:   0.2031 | GradN(actor/critic):   0.1051/  0.1784
+Step   770048 | Return:       1.63 | Win Rate:  0.68 | Loss:     0.0252 | Ent:   0.1934 | GradN(actor/critic):   0.1354/  0.2091
+Step   786432 | Return:       1.62 | Win Rate:  0.66 | Loss:     0.0261 | Ent:   0.1850 | GradN(actor/critic):   0.1665/  0.2377
+Step   802816 | Return:       1.59 | Win Rate:  0.64 | Loss:     0.0263 | Ent:   0.1921 | GradN(actor/critic):   0.1871/  0.1971
+Step   819200 | Return:       1.62 | Win Rate:  0.67 | Loss:     0.0235 | Ent:   0.1911 | GradN(actor/critic):   0.1315/  0.1672
+Step   835584 | Return:       1.61 | Win Rate:  0.65 | Loss:     0.0255 | Ent:   0.1807 | GradN(actor/critic):   0.1006/  0.3716
+Step   851968 | Return:       1.63 | Win Rate:  0.68 | Loss:     0.0246 | Ent:   0.1738 | GradN(actor/critic):   0.0979/  0.2709
+Step   868352 | Return:       1.65 | Win Rate:  0.69 | Loss:     0.0241 | Ent:   0.1853 | GradN(actor/critic):   0.1206/  0.2605
+Step   884736 | Return:       1.65 | Win Rate:  0.70 | Loss:     0.0234 | Ent:   0.1896 | GradN(actor/critic):   0.1213/  0.2947
+Step   901120 | Return:       1.68 | Win Rate:  0.72 | Loss:     0.0228 | Ent:   0.1751 | GradN(actor/critic):   0.1107/  0.4060
+Step   917504 | Return:       1.63 | Win Rate:  0.68 | Loss:     0.0237 | Ent:   0.1714 | GradN(actor/critic):   0.1235/  0.1952
+Step   933888 | Return:       1.64 | Win Rate:  0.69 | Loss:     0.0224 | Ent:   0.1725 | GradN(actor/critic):   0.1143/  0.1774
+Step   950272 | Return:       1.63 | Win Rate:  0.68 | Loss:     0.0239 | Ent:   0.1620 | GradN(actor/critic):   0.1351/  0.2668
+Step   966656 | Return:       1.64 | Win Rate:  0.69 | Loss:     0.0226 | Ent:   0.1766 | GradN(actor/critic):   0.1354/  0.1718
+Step   983040 | Return:       1.66 | Win Rate:  0.70 | Loss:     0.0240 | Ent:   0.1661 | GradN(actor/critic):   0.1195/  0.2578
+Step   999424 | Return:       1.64 | Win Rate:  0.69 | Loss:     0.0236 | Ent:   0.1825 | GradN(actor/critic):   0.1393/  0.3304
+Step  1015808 | Return:       1.65 | Win Rate:  0.69 | Loss:     0.0228 | Ent:   0.1730 | GradN(actor/critic):   0.1719/  0.2413
+Step  1032192 | Return:       1.65 | Win Rate:  0.69 | Loss:     0.0227 | Ent:   0.1781 | GradN(actor/critic):   0.1671/  0.1755
+Step  1048576 | Return:       1.66 | Win Rate:  0.70 | Loss:     0.0227 | Ent:   0.1830 | GradN(actor/critic):   0.1364/  0.2863
+Step  1064960 | Return:       1.66 | Win Rate:  0.70 | Loss:     0.0229 | Ent:   0.1875 | GradN(actor/critic):   0.1187/  0.3788
+Step  1081344 | Return:       1.64 | Win Rate:  0.68 | Loss:     0.0240 | Ent:   0.1757 | GradN(actor/critic):   0.1490/  0.2824
+Step  1097728 | Return:       1.65 | Win Rate:  0.69 | Loss:     0.0231 | Ent:   0.1796 | GradN(actor/critic):   0.1622/  0.2720
+Step  1114112 | Return:       1.66 | Win Rate:  0.70 | Loss:     0.0218 | Ent:   0.1848 | GradN(actor/critic):   0.1344/  0.2786
+Step  1130496 | Return:       1.63 | Win Rate:  0.68 | Loss:     0.0238 | Ent:   0.1883 | GradN(actor/critic):   0.1249/  0.3935
+Step  1146880 | Return:       1.65 | Win Rate:  0.69 | Loss:     0.0239 | Ent:   0.1779 | GradN(actor/critic):   0.1250/  0.2416
+Step  1163264 | Return:       1.65 | Win Rate:  0.69 | Loss:     0.0214 | Ent:   0.1807 | GradN(actor/critic):   0.1115/  0.2183
+Step  1179648 | Return:       1.67 | Win Rate:  0.71 | Loss:     0.0214 | Ent:   0.1761 | GradN(actor/critic):   0.1475/  0.1851
+Step  1196032 | Return:       1.65 | Win Rate:  0.69 | Loss:     0.0218 | Ent:   0.1956 | GradN(actor/critic):   0.1738/  0.1862
+Step  1212416 | Return:       1.65 | Win Rate:  0.70 | Loss:     0.0237 | Ent:   0.1934 | GradN(actor/critic):   0.2323/  0.3687
+Step  1228800 | Return:       1.63 | Win Rate:  0.67 | Loss:     0.0224 | Ent:   0.1897 | GradN(actor/critic):   0.1745/  0.2902
+Step  1245184 | Return:       1.67 | Win Rate:  0.71 | Loss:     0.0230 | Ent:   0.1933 | GradN(actor/critic):   0.1292/  0.5043
+Step  1261568 | Return:       1.69 | Win Rate:  0.73 | Loss:     0.0207 | Ent:   0.1979 | GradN(actor/critic):   0.1349/  0.3130
+Step  1277952 | Return:       1.65 | Win Rate:  0.69 | Loss:     0.0221 | Ent:   0.1871 | GradN(actor/critic):   0.2140/  0.3754
+Step  1294336 | Return:       1.68 | Win Rate:  0.72 | Loss:     0.0206 | Ent:   0.1847 | GradN(actor/critic):   0.1108/  0.2227
+Step  1310720 | Return:       1.66 | Win Rate:  0.70 | Loss:     0.0220 | Ent:   0.1945 | GradN(actor/critic):   0.1191/  0.3391
+Step  1327104 | Return:       1.65 | Win Rate:  0.69 | Loss:     0.0228 | Ent:   0.1857 | GradN(actor/critic):   0.1471/  0.3036
+Step  1343488 | Return:       1.68 | Win Rate:  0.72 | Loss:     0.0197 | Ent:   0.1923 | GradN(actor/critic):   0.1482/  0.1773
+Step  1359872 | Return:       1.68 | Win Rate:  0.72 | Loss:     0.0202 | Ent:   0.1818 | GradN(actor/critic):   0.1067/  0.2592
+Step  1376256 | Return:       1.71 | Win Rate:  0.75 | Loss:     0.0181 | Ent:   0.1899 | GradN(actor/critic):   0.1028/  0.1653
+Step  1392640 | Return:       1.68 | Win Rate:  0.72 | Loss:     0.0199 | Ent:   0.1922 | GradN(actor/critic):   0.1132/  0.1581
+Step  1409024 | Return:       1.69 | Win Rate:  0.73 | Loss:     0.0202 | Ent:   0.1918 | GradN(actor/critic):   0.1457/  0.2320
+Step  1425408 | Return:       1.67 | Win Rate:  0.71 | Loss:     0.0207 | Ent:   0.1872 | GradN(actor/critic):   0.0954/  0.4350
+Step  1441792 | Return:       1.71 | Win Rate:  0.75 | Loss:     0.0188 | Ent:   0.1992 | GradN(actor/critic):   0.1267/  0.2579
+Step  1458176 | Return:       1.70 | Win Rate:  0.74 | Loss:     0.0198 | Ent:   0.1971 | GradN(actor/critic):   0.1695/  0.2743
+Step  1474560 | Return:       1.70 | Win Rate:  0.73 | Loss:     0.0200 | Ent:   0.1931 | GradN(actor/critic):   0.1625/  0.1740
+Step  1490944 | Return:       1.66 | Win Rate:  0.70 | Loss:     0.0223 | Ent:   0.1914 | GradN(actor/critic):   0.1644/  0.3026
+Step  1507328 | Return:       1.67 | Win Rate:  0.71 | Loss:     0.0207 | Ent:   0.1930 | GradN(actor/critic):   0.1825/  0.2218
+Step  1523712 | Return:       1.68 | Win Rate:  0.72 | Loss:     0.0207 | Ent:   0.1880 | GradN(actor/critic):   0.1340/  0.3260
+Step  1540096 | Return:       1.69 | Win Rate:  0.73 | Loss:     0.0224 | Ent:   0.1928 | GradN(actor/critic):   0.1655/  0.5049
+Step  1556480 | Return:       1.68 | Win Rate:  0.71 | Loss:     0.0205 | Ent:   0.1850 | GradN(actor/critic):   0.1583/  0.1929
+Step  1572864 | Return:       1.68 | Win Rate:  0.72 | Loss:     0.0195 | Ent:   0.1818 | GradN(actor/critic):   0.1618/  0.1834
+Step  1589248 | Return:       1.67 | Win Rate:  0.71 | Loss:     0.0213 | Ent:   0.1845 | GradN(actor/critic):   0.1812/  0.2413
+Step  1605632 | Return:       1.70 | Win Rate:  0.73 | Loss:     0.0203 | Ent:   0.1821 | GradN(actor/critic):   0.1332/  0.2690
+Step  1622016 | Return:       1.70 | Win Rate:  0.73 | Loss:     0.0196 | Ent:   0.1826 | GradN(actor/critic):   0.1570/  0.2425
+Step  1638400 | Return:       1.67 | Win Rate:  0.71 | Loss:     0.0210 | Ent:   0.1701 | GradN(actor/critic):   0.1526/  0.2798
+Step  1654784 | Return:       1.73 | Win Rate:  0.76 | Loss:     0.0185 | Ent:   0.1770 | GradN(actor/critic):   0.1450/  0.3047
+Step  1671168 | Return:       1.70 | Win Rate:  0.73 | Loss:     0.0193 | Ent:   0.1768 | GradN(actor/critic):   0.1554/  0.1861
+Step  1687552 | Return:       1.68 | Win Rate:  0.72 | Loss:     0.0207 | Ent:   0.1766 | GradN(actor/critic):   0.1847/  0.2651
+Step  1703936 | Return:       1.72 | Win Rate:  0.75 | Loss:     0.0178 | Ent:   0.1914 | GradN(actor/critic):   0.1639/  0.2440
+Step  1720320 | Return:       1.72 | Win Rate:  0.75 | Loss:     0.0192 | Ent:   0.1906 | GradN(actor/critic):   0.2643/  0.2414
+Step  1736704 | Return:       1.71 | Win Rate:  0.74 | Loss:     0.0191 | Ent:   0.1899 | GradN(actor/critic):   0.1678/  0.2522
+Step  1753088 | Return:       1.70 | Win Rate:  0.74 | Loss:     0.0190 | Ent:   0.1884 | GradN(actor/critic):   0.1746/  0.2599
+Step  1769472 | Return:       1.69 | Win Rate:  0.73 | Loss:     0.0197 | Ent:   0.2033 | GradN(actor/critic):   0.1618/  0.2430
+Step  1785856 | Return:       1.70 | Win Rate:  0.73 | Loss:     0.0195 | Ent:   0.2116 | GradN(actor/critic):   0.1866/  0.2012
+Step  1802240 | Return:       1.71 | Win Rate:  0.74 | Loss:     0.0185 | Ent:   0.1988 | GradN(actor/critic):   0.1648/  0.2328
+Step  1818624 | Return:       1.69 | Win Rate:  0.72 | Loss:     0.0197 | Ent:   0.1996 | GradN(actor/critic):   0.1497/  0.3318
+Step  1835008 | Return:       1.72 | Win Rate:  0.75 | Loss:     0.0183 | Ent:   0.1904 | GradN(actor/critic):   0.1756/  0.2028
+Step  1851392 | Return:       1.71 | Win Rate:  0.75 | Loss:     0.0188 | Ent:   0.1941 | GradN(actor/critic):   0.1750/  0.2613
+Step  1867776 | Return:       1.71 | Win Rate:  0.75 | Loss:     0.0180 | Ent:   0.1950 | GradN(actor/critic):   0.1618/  0.2902
+Step  1884160 | Return:       1.74 | Win Rate:  0.77 | Loss:     0.0175 | Ent:   0.1982 | GradN(actor/critic):   0.1513/  0.3613
+Step  1900544 | Return:       1.70 | Win Rate:  0.74 | Loss:     0.0191 | Ent:   0.1950 | GradN(actor/critic):   0.1167/  0.1931
+Step  1916928 | Return:       1.71 | Win Rate:  0.74 | Loss:     0.0189 | Ent:   0.1962 | GradN(actor/critic):   0.1845/  0.2765
+Step  1933312 | Return:       1.71 | Win Rate:  0.74 | Loss:     0.0203 | Ent:   0.1987 | GradN(actor/critic):   0.2396/  0.4461
+Step  1949696 | Return:       1.72 | Win Rate:  0.75 | Loss:     0.0174 | Ent:   0.2020 | GradN(actor/critic):   0.1911/  0.3025
+Step  1966080 | Return:       1.71 | Win Rate:  0.75 | Loss:     0.0185 | Ent:   0.2048 | GradN(actor/critic):   0.1982/  0.2464
+Step  1982464 | Return:       1.71 | Win Rate:  0.74 | Loss:     0.0181 | Ent:   0.1876 | GradN(actor/critic):   0.1472/  0.1562
+Step  1998848 | Return:       1.73 | Win Rate:  0.76 | Loss:     0.0172 | Ent:   0.1822 | GradN(actor/critic):   0.1629/  0.1437
+Step  2015232 | Return:       1.72 | Win Rate:  0.76 | Loss:     0.0172 | Ent:   0.1790 | GradN(actor/critic):   0.1362/  0.2057
+Step  2031616 | Return:       1.71 | Win Rate:  0.74 | Loss:     0.0185 | Ent:   0.1834 | GradN(actor/critic):   0.1149/  0.2173
+Step  2048000 | Return:       1.74 | Win Rate:  0.77 | Loss:     0.0185 | Ent:   0.1831 | GradN(actor/critic):   0.1315/  0.2345
+Step  2064384 | Return:       1.74 | Win Rate:  0.77 | Loss:     0.0171 | Ent:   0.1850 | GradN(actor/critic):   0.1598/  0.2099
+Step  2080768 | Return:       1.73 | Win Rate:  0.77 | Loss:     0.0168 | Ent:   0.1890 | GradN(actor/critic):   0.2085/  0.2423
+Step  2097152 | Return:       1.75 | Win Rate:  0.78 | Loss:     0.0172 | Ent:   0.1863 | GradN(actor/critic):   0.1793/  0.1786
+Step  2113536 | Return:       1.73 | Win Rate:  0.76 | Loss:     0.0168 | Ent:   0.1791 | GradN(actor/critic):   0.1786/  0.2220
+Step  2129920 | Return:       1.73 | Win Rate:  0.76 | Loss:     0.0172 | Ent:   0.1801 | GradN(actor/critic):   0.1717/  0.2267
+Step  2146304 | Return:       1.74 | Win Rate:  0.77 | Loss:     0.0173 | Ent:   0.1803 | GradN(actor/critic):   0.1847/  0.2183
+Step  2162688 | Return:       1.73 | Win Rate:  0.76 | Loss:     0.0177 | Ent:   0.1777 | GradN(actor/critic):   0.1855/  0.2309
+Step  2179072 | Return:       1.71 | Win Rate:  0.75 | Loss:     0.0183 | Ent:   0.1882 | GradN(actor/critic):   0.1995/  0.2524
+Step  2195456 | Return:       1.71 | Win Rate:  0.75 | Loss:     0.0179 | Ent:   0.1900 | GradN(actor/critic):   0.2193/  0.2703
+Step  2211840 | Return:       1.73 | Win Rate:  0.76 | Loss:     0.0174 | Ent:   0.1924 | GradN(actor/critic):   0.1738/  0.2480
+Step  2228224 | Return:       1.75 | Win Rate:  0.78 | Loss:     0.0164 | Ent:   0.1907 | GradN(actor/critic):   0.1664/  0.1991
+Step  2244608 | Return:       1.74 | Win Rate:  0.77 | Loss:     0.0165 | Ent:   0.1946 | GradN(actor/critic):   0.1476/  0.1888
+Step  2260992 | Return:       1.73 | Win Rate:  0.76 | Loss:     0.0179 | Ent:   0.1909 | GradN(actor/critic):   0.2215/  0.2082
+Step  2277376 | Return:       1.74 | Win Rate:  0.77 | Loss:     0.0173 | Ent:   0.2063 | GradN(actor/critic):   0.1706/  0.1784
+Step  2293760 | Return:       1.73 | Win Rate:  0.76 | Loss:     0.0173 | Ent:   0.1954 | GradN(actor/critic):   0.2017/  0.2399
+Step  2310144 | Return:       1.74 | Win Rate:  0.77 | Loss:     0.0163 | Ent:   0.2000 | GradN(actor/critic):   0.1766/  0.1905
+Step  2326528 | Return:       1.75 | Win Rate:  0.78 | Loss:     0.0165 | Ent:   0.2037 | GradN(actor/critic):   0.1911/  0.1732
+Step  2342912 | Return:       1.75 | Win Rate:  0.78 | Loss:     0.0163 | Ent:   0.2024 | GradN(actor/critic):   0.1593/  0.1597
+Step  2359296 | Return:       1.74 | Win Rate:  0.77 | Loss:     0.0166 | Ent:   0.2027 | GradN(actor/critic):   0.1687/  0.1658
+Step  2375680 | Return:       1.76 | Win Rate:  0.79 | Loss:     0.0155 | Ent:   0.2061 | GradN(actor/critic):   0.1976/  0.1702
+Step  2392064 | Return:       1.76 | Win Rate:  0.78 | Loss:     0.0169 | Ent:   0.2094 | GradN(actor/critic):   0.1928/  0.1748
+Step  2408448 | Return:       1.76 | Win Rate:  0.79 | Loss:     0.0159 | Ent:   0.2205 | GradN(actor/critic):   0.2103/  0.1452
+Step  2424832 | Return:       1.74 | Win Rate:  0.77 | Loss:     0.0164 | Ent:   0.2165 | GradN(actor/critic):   0.2068/  0.1611
+Step  2441216 | Return:       1.77 | Win Rate:  0.80 | Loss:     0.0158 | Ent:   0.2133 | GradN(actor/critic):   0.1630/  0.2095
+Step  2457600 | Return:       1.77 | Win Rate:  0.80 | Loss:     0.0147 | Ent:   0.2175 | GradN(actor/critic):   0.2005/  0.2551
+Step  2473984 | Return:       1.75 | Win Rate:  0.78 | Loss:     0.0162 | Ent:   0.2151 | GradN(actor/critic):   0.1667/  0.1369
+Step  2490368 | Return:       1.74 | Win Rate:  0.77 | Loss:     0.0162 | Ent:   0.2129 | GradN(actor/critic):   0.1765/  0.1752
+Step  2506752 | Return:       1.75 | Win Rate:  0.78 | Loss:     0.0151 | Ent:   0.2132 | GradN(actor/critic):   0.2253/  0.1326
+Step  2523136 | Return:       1.76 | Win Rate:  0.78 | Loss:     0.0152 | Ent:   0.2179 | GradN(actor/critic):   0.1807/  0.2138
+Step  2539520 | Return:       1.74 | Win Rate:  0.77 | Loss:     0.0164 | Ent:   0.2109 | GradN(actor/critic):   0.1859/  0.1735
+Step  2555904 | Return:       1.79 | Win Rate:  0.81 | Loss:     0.0136 | Ent:   0.2196 | GradN(actor/critic):   0.1811/  0.1848
+Step  2572288 | Return:       1.76 | Win Rate:  0.79 | Loss:     0.0156 | Ent:   0.2200 | GradN(actor/critic):   0.1707/  0.1131
+Step  2588672 | Return:       1.77 | Win Rate:  0.79 | Loss:     0.0152 | Ent:   0.2231 | GradN(actor/critic):   0.1688/  0.2030
+Step  2605056 | Return:       1.76 | Win Rate:  0.79 | Loss:     0.0150 | Ent:   0.2284 | GradN(actor/critic):   0.1878/  0.1606
+Step  2621440 | Return:       1.77 | Win Rate:  0.80 | Loss:     0.0146 | Ent:   0.2272 | GradN(actor/critic):   0.2347/  0.1433
+Step  2637824 | Return:       1.78 | Win Rate:  0.80 | Loss:     0.0140 | Ent:   0.2311 | GradN(actor/critic):   0.1812/  0.1108
+Step  2654208 | Return:       1.75 | Win Rate:  0.78 | Loss:     0.0149 | Ent:   0.2178 | GradN(actor/critic):   0.2019/  0.1623
+Step  2670592 | Return:       1.75 | Win Rate:  0.78 | Loss:     0.0155 | Ent:   0.2197 | GradN(actor/critic):   0.1813/  0.1394
+Step  2686976 | Return:       1.78 | Win Rate:  0.80 | Loss:     0.0148 | Ent:   0.2081 | GradN(actor/critic):   0.1918/  0.1266
+Step  2703360 | Return:       1.80 | Win Rate:  0.82 | Loss:     0.0130 | Ent:   0.2063 | GradN(actor/critic):   0.1859/  0.1368
+Step  2719744 | Return:       1.78 | Win Rate:  0.80 | Loss:     0.0143 | Ent:   0.2089 | GradN(actor/critic):   0.1869/  0.1654
+Step  2736128 | Return:       1.76 | Win Rate:  0.79 | Loss:     0.0154 | Ent:   0.2006 | GradN(actor/critic):   0.2178/  0.1098
+Step  2752512 | Return:       1.79 | Win Rate:  0.81 | Loss:     0.0137 | Ent:   0.2097 | GradN(actor/critic):   0.1875/  0.1304
+Step  2768896 | Return:       1.82 | Win Rate:  0.84 | Loss:     0.0113 | Ent:   0.2047 | GradN(actor/critic):   0.1801/  0.1037
+Step  2785280 | Return:       1.78 | Win Rate:  0.81 | Loss:     0.0141 | Ent:   0.2088 | GradN(actor/critic):   0.1906/  0.1505
+Step  2801664 | Return:       1.78 | Win Rate:  0.81 | Loss:     0.0138 | Ent:   0.2076 | GradN(actor/critic):   0.1797/  0.1940
+Step  2818048 | Return:       1.77 | Win Rate:  0.80 | Loss:     0.0146 | Ent:   0.2009 | GradN(actor/critic):   0.2205/  0.1351
+Step  2834432 | Return:       1.81 | Win Rate:  0.83 | Loss:     0.0133 | Ent:   0.2030 | GradN(actor/critic):   0.2148/  0.1457
+Step  2850816 | Return:       1.80 | Win Rate:  0.83 | Loss:     0.0134 | Ent:   0.1967 | GradN(actor/critic):   0.2013/  0.1243
+Step  2867200 | Return:       1.79 | Win Rate:  0.81 | Loss:     0.0138 | Ent:   0.1952 | GradN(actor/critic):   0.1955/  0.1183
+Step  2883584 | Return:       1.79 | Win Rate:  0.82 | Loss:     0.0142 | Ent:   0.1940 | GradN(actor/critic):   0.1916/  0.1192
+Step  2899968 | Return:       1.76 | Win Rate:  0.79 | Loss:     0.0149 | Ent:   0.1984 | GradN(actor/critic):   0.2231/  0.1233
+Step  2916352 | Return:       1.80 | Win Rate:  0.82 | Loss:     0.0140 | Ent:   0.1999 | GradN(actor/critic):   0.2040/  0.1050
+Step  2932736 | Return:       1.79 | Win Rate:  0.82 | Loss:     0.0141 | Ent:   0.1900 | GradN(actor/critic):   0.1650/  0.1252
+Step  2949120 | Return:       1.78 | Win Rate:  0.80 | Loss:     0.0152 | Ent:   0.1885 | GradN(actor/critic):   0.1783/  0.1323
+Step  2965504 | Return:       1.77 | Win Rate:  0.80 | Loss:     0.0152 | Ent:   0.1897 | GradN(actor/critic):   0.2036/  0.1411
+Step  2981888 | Return:       1.81 | Win Rate:  0.83 | Loss:     0.0133 | Ent:   0.1940 | GradN(actor/critic):   0.2164/  0.1131
+Training completed in 11.4 minutes.
+
+=== Step 9 Console Summary ===
+[PASS] No NaN in loss diagnostics: nan_present=False
+[PASS] Entropy not collapsed: start=0.8887, end=0.1998
+[PASS] Gradient norms finite: actor(start/end)=0.1506/0.1968, critic(start/end)=0.4367/0.1319
+[PASS] Return trend non-decreasing: start=0.7407, end=1.7891
+[PASS] Win-rate trend non-decreasing: start=0.1469, end=0.8130
+Final observed episode stats: return=1.8094, win_rate=0.8305
+Saved CTM actor checkpoint to /content/jaxMARLV2/model/smax_mappo_ctm_actor.pkl

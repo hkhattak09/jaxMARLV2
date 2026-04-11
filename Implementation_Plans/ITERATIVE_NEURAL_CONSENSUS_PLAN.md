@@ -1,316 +1,629 @@
-# Iterative Neural Consensus (INC) — Implementation Plan
+# Sync-Based Cross-Agent Coordination — Implementation Plan
 
-**Paper target:** *Iterative Neural Consensus: Coordinating Multi-Agent Policies Through Shared Internal Dynamics*
+**Paper working title:** *Sync-Alignment Losses for Coordinated Multi-Agent Policies*
+**Primary method:** **Sync-Alignment Auxiliary Loss (SAAL).** A training-time loss that
+encourages per-environment cosine similarity between teammates' CTM sync vectors
+to be higher on coordination events than on non-coordination steps. **Fully
+decentralised at execution** — the loss only touches gradients during training,
+and at test time each agent runs a vanilla CTM-MAPPO with zero inter-agent
+bandwidth.
+**Comparison method:** **Iterative Neural Consensus (INC).** Between-iteration
+cross-agent pooling of sync vectors *inside* a single env step. Implemented in
+Stages 0–2.5. Useful as a comparison condition — it exposes how much of the
+coordination gain comes from an execution-time channel vs. a training-time
+alignment signal.
+**Benchmarks:** SMAX 3m (fast iteration) → SMAX 2s3z + 5m_vs_6m (main matrix) →
+Hanabi 2p + 4p (held back until SAAL lands on SMAX — see Stage 7).
 
-**Core mechanism:** Between CTM internal iterations (inside a single env step), each agent's next-iteration synapses are conditioned on its own state **plus a pooled summary of the other agents' sync vectors from the previous iteration**. Consensus happens within a single env step over `CTM_ITERATIONS` internal rounds — zero inter-step communication bandwidth.
-
-**Design decisions already locked:**
-- **Centralised pooling** across all teammates (Option A). Decentralised-at-test is a later ablation only if reviewers demand it.
-- **Pool the full 528-dim sync vector** (Option X). Matches the Stage 1-3 analysis variable exactly, so motivation and method operate on the same signal.
-- **Primary benchmark: Hanabi** (via JaxMARL upstream). Secondary: SMAX 2s3z, 5m_vs_6m.
-- **Motivation section of paper** = existing Stage 1-3 sync analysis results.
+**How this document relates to the research direction doc:**
+[docs/iterative_neural_consensus.md](../docs/iterative_neural_consensus.md) is the
+"what we're building and why" for a new collaborator. This document is the
+"exactly what to do next and which files to touch" plan.
 
 ---
 
-## Stage 0 — Pre-flight checks
+## History before the pivot (done and still valid)
+
+Stages 0–2.5 and the completed parts of Stage 3 built the infrastructure — CTM
+refactor, `AgentConsensus` module, Hanabi env wiring, unit tests, and the
+Stage 2.1 disambiguation experiment. **None of that work is being thrown away.**
+The SAAL implementation sits on top of the same CTM code path; Hanabi wiring is
+reused verbatim for the eventual Hanabi runs; the Stage 2.1 analysis framework
+(per-seed final WR, frac-over-threshold, curve-slope comparisons) is the same
+methodology we'll use for SAAL on SMAX.
+
+What changed: **INC is no longer the paper's headline method**, because of a
+cheating concern on info-restricted benchmarks (Hanabi) that we did not surface
+at the start of the project. See
+[docs/iterative_neural_consensus.md](../docs/iterative_neural_consensus.md) §4
+for the full pivot rationale. Stage 2.1 data is still load-bearing — it showed
+the pooled channel is real on SMAX — and now frames the motivation for SAAL
+("the same alignment phenomenon, but trained into the model rather than piped
+between models at execution").
+
+---
+
+## Stage 0 — Pre-flight checks ✅ DONE
 
 **Goal:** confirm assumptions and baseline numbers before touching the architecture.
 
-- [x] Re-run SMAX 3m CTM-MAPPO baseline with current `CTM_ITERATIONS=1` to confirm reproducibility of the ~84% WR number. Save the seed, wall-clock, and checkpoint as the canonical baseline.
-- [x] Verify that `CTMCell.__call__` in [ctm_jax.py](smax_ctm/ctm_jax.py) handles the current batch layout: inside `ScannedCTM`, the batch dim is `NUM_ACTORS = num_agents * num_envs`. Confirm the agent-axis ordering by running a small debug print that reshapes `(NUM_ACTORS, ...)` → `(num_envs, num_agents, ...)` and checks per-agent identity.
-- [x] Read `jaxmarl/environments/hanabi/` from upstream FLAIROx/JaxMARL. Note its obs dim, action dim, `num_agents`, reward scaling, episode length, and world-state getter. Save a short note in `docs/hanabi_env_notes.md`.
-- [x] Identify the upstream MAPPO/IPPO Hanabi baseline script. Note the GRU hidden size, entropy coefficient, and episode return range used there — these are the numbers reviewers will check you against.
-- [x] **Axis convention — critical.** Read `batchify` in [train_mappo_ctm.py](smax_ctm/train_mappo_ctm.py) carefully. It stacks per-agent tensors along a new leading axis (`jnp.stack([x[a] for a in agents])` → `(num_agents, num_envs, F)`) and then reshapes to `(num_agents * num_envs, F)`. Consequence: the flat `NUM_ACTORS` axis is **agent-major**, i.e. the first `num_envs` rows are agent 0, the next `num_envs` rows are agent 1, and so on. The correct reshape inside `CTMCell` is therefore:
+- [x] Re-run SMAX 3m CTM-MAPPO baseline with `CTM_ITERATIONS=1` and confirm the
+  ~84% WR number. Canonical baseline seeded and checkpointed.
+- [x] Verify `CTMCell.__call__` batch layout: inside `ScannedCTM`, the flat batch
+  dim is `NUM_ACTORS = num_agents * num_envs`, **agent-major**.
+  `check_batchify_order.py` and `check_ctm_axis_layout.py` both pass; notes in
+  [docs/inc_axis_convention.md](../docs/inc_axis_convention.md).
+- [x] Read and document upstream JaxMARL Hanabi env; obs/action/reward shapes in
+  [docs/hanabi_env_notes.md](../docs/hanabi_env_notes.md).
+- [x] Identify the upstream MAPPO/IPPO Hanabi baseline config as the reference
+  number to beat.
+
+**Exit criterion (met):** baseline reproduces; agent/env axis convention
+documented.
+
+---
+
+## Stage 1 — CTMCell refactor: per-iteration sync + optional consensus input ✅ DONE
+
+**Goal:** iterate-by-iterate internal loop emitting per-iteration sync. No
+behavioural change when `consensus_in=None`.
+
+**Files touched:** [smax_ctm/ctm_jax.py](../smax_ctm/ctm_jax.py),
+[smax_ctm/train_mappo_ctm.py](../smax_ctm/train_mappo_ctm.py),
+[smax_ctm/train_mappo_ctm_hanabi.py](../smax_ctm/train_mappo_ctm_hanabi.py).
+
+- [x] `CTMCell._single_iter(state_trace, activated_state_trace, features,
+  consensus_in)` helper added; returns `(new_state_trace,
+  new_activated_state_trace, synch)`.
+- [x] Consensus input is concatenated with `[features, last_activated]` before
+  synapses. Seeded with zeros on iteration 0 (when `INC_ENABLED=True`) so the
+  `nn.Dense` kernel shape is stable across iterations.
+- [x] No-op equivalence: with `INC_ENABLED=False` and `CTM_ITERATIONS=1`, the
+  refactor reproduces pre-change numbers bit-for-bit.
+
+**Exit criterion (met):** refactor is a no-op at the Stage 1 config.
+
+---
+
+## Stage 2 — Cross-agent pooling via `AgentConsensus` ✅ DONE
+
+**Goal:** introduce the INC consensus mechanism behind `INC_ENABLED`. Off by
+default; fully Stage-1-compatible when off.
+
+**Files touched:** [smax_ctm/ctm_jax.py](../smax_ctm/ctm_jax.py),
+[smax_ctm/train_mappo_ctm.py](../smax_ctm/train_mappo_ctm.py),
+[smax_ctm/train_mappo_ctm_hanabi.py](../smax_ctm/train_mappo_ctm_hanabi.py).
+
+- [x] Config keys: `INC_ENABLED`, `INC_POOLING ∈ {mean, attention, gated}`,
+  `INC_NUM_AGENTS` (auto from env), `INC_CONSENSUS_DROPOUT` (default 0).
+- [x] `AgentConsensus` Flax module: leave-one-out pooling on agent-major tensors,
+  dead-agent masking, three pooling variants.
+- [x] `CTMCell` wires the pool between iterations, agent-major reshape verified
+  by unit tests.
+- [x] Minibatch permutation preserves agent grouping (regression-tested).
+
+**Exit criterion (met):** at `INC_ENABLED=True, INC_POOLING="mean",
+CTM_ITERATIONS=3`, SMAX 3m training runs without shape errors. Observed: plain
+INC is slightly better than baseline; INC + 0.25 consensus dropout is
+substantially better (final WR 0.822 vs 0.793, sustained-WR frac 41.5% vs 4.9%).
+
+---
+
+## Stage 2.1 — Disambiguating the dropout win ✅ DONE
+
+**Goal:** identify whether the cell-C win comes from (a) the pooled channel, (b)
+stochastic regularisation on the iteration loop, or (c) both.
+
+**Files touched:** [smax_ctm/ctm_jax.py](../smax_ctm/ctm_jax.py) (added
+`CTM_ITER_DROPOUT`, `INC_FORCE_ZERO_CONSENSUS` flags),
+[smax_ctm/scripts/run_stage2_1_disambig.py](../smax_ctm/scripts/run_stage2_1_disambig.py),
+[smax_ctm/tests/test_inc.py](../smax_ctm/tests/test_inc.py),
+`analysis_results_inc/stage2_1/`,
+[docs/inc_stage2_1_findings.md](../docs/inc_stage2_1_findings.md).
+
+**Cells run** (3 seeds each, SMAX 3m, 3M timesteps):
+
+| Cell | `INC_ENABLED` | `INC_CONSENSUS_DROPOUT` | `CTM_ITER_DROPOUT` | `FORCE_ZERO_CONSENSUS` | Final WR | Frac ≥ 0.8 |
+|---|---|---|---|---|---|---|
+| A | False | — | 0.0 | — | 0.793 | 4.9% |
+| B | True  | 0.0 | 0.0 | False | 0.811 | 12.0% |
+| C | True  | 0.25 | 0.0 | False | **0.822** | **41.5%** |
+| D | False | — | 0.25 | — | 0.745 | 1.1% |
+| E | True | 0.25 | 0.0 | True | 0.802 | 14.9% |
+
+**Outcome:** Story 1 ("consensus channel is load-bearing") supported. Cell D
+regresses *below* the no-INC baseline — pure iteration-loop stochasticity is a
+net negative, not a neutral control. Cell E matches B on final WR and stays well
+below C on curve-quality metrics, reverting to the no-INC regime when teammate
+information is stripped. Full analysis in
+[docs/inc_stage2_1_findings.md](../docs/inc_stage2_1_findings.md).
+
+**Consequence for the new plan:** the pooled channel is demonstrably load-bearing
+on SMAX for *sustained* high-performance coordination. On Hanabi, the same
+channel is what raises the cheating concern. SAAL is the natural way to exploit
+this alignment phenomenon without an execution-time channel — see Stages 4–6.
+
+---
+
+## Stage 2.5 — Unit tests for INC plumbing ✅ DONE
+
+All invariants locked into
+[smax_ctm/tests/test_inc.py](../smax_ctm/tests/test_inc.py): axis round-trip,
+leave-one-out mean, no-op equivalence, dead-agent masking, gradient flow,
+minibatch permutation safety, Stage 2.1 force-zero + gradient-still-flows test.
+
+---
+
+## Stage 3 — Hanabi environment wiring ✅ DONE (training held back)
+
+**Goal:** CTM-MAPPO and GRU-MAPPO runnable on Hanabi.
+
+**Files touched:** [jaxmarl/environments/hanabi/](../jaxmarl/environments/hanabi/),
+[smax_ctm/train_mappo_ctm_hanabi.py](../smax_ctm/train_mappo_ctm_hanabi.py),
+[smax_ctm/train_mappo_gru_hanabi.py](../smax_ctm/train_mappo_gru_hanabi.py),
+[smax_ctm/test_and_logger/run_hanabi_tests.py](../smax_ctm/test_and_logger/run_hanabi_tests.py).
+
+- [x] Upstream FLAIROx/JaxMARL Hanabi env imported and registered.
+- [x] Hanabi-specific CTM and GRU training scripts with `HanabiWorldStateWrapper`,
+  dict-returning `get_legal_moves` handling, score-out-of-25 logging, CTM
+  reset-on-done `last_done` initialisation.
+- [x] Env contract tests pass (reset/step shapes, legal-moves shape, 3-player
+  config).
+- [x] Sanity smoke tests: 90k-timestep INC-on and INC-on-with-dropout runs
+  complete without shape/crash errors; score is still ~0 at that budget (expected
+  — Hanabi needs tens of millions of steps).
+
+**Why training is held back:** a full Hanabi run at `CTM_ITERATIONS=3` costs
+~6.5h per seed. Running the Hanabi matrix before SAAL exists on SMAX would spend
+compute refining a story we are pivoting away from. Hanabi training resumes in
+Stage 7 once SAAL is validated on SMAX and has a Hanabi-specific coord-event
+detector.
+
+**Exit criterion (met):** Hanabi wiring runs end-to-end; both GRU and CTM code
+paths load, step, and train. Full-budget training deferred to Stage 7.
+
+---
+
+## Stage 4 — SAAL pair-cosine logging pass 🟢 NEXT
+
+**Goal:** before committing to loss weights, measure the baseline cross-agent
+`pair_cos` distribution on a vanilla CTM-MAPPO SMAX 3m run. With parameter
+sharing, sync vectors already have some natural similarity; we need to know
+whether that baseline is 0.1 (lots of headroom) or 0.9 (no headroom) before
+picking `ALIGN_ALPHA`.
+
+**This stage writes no loss.** It adds logging only. Zero risk of affecting
+training dynamics. Outcome is a number (or a histogram) that unblocks Stage 5.
+
+**Files touched:**
+- [smax_ctm/train_mappo_ctm.py](../smax_ctm/train_mappo_ctm.py): expose sync from
+  `ActorCTM`, compute and log `pair_cos` in `_actor_loss_fn`.
+
+**Implementation:**
+
+- [ ] **Expose sync from `ActorCTM`.** Change
+  [train_mappo_ctm.py:139-159](../smax_ctm/train_mappo_ctm.py#L139) so
+  `ActorCTM.__call__` returns `(hidden, pi, synch)` instead of `(hidden, pi)`.
+  `synch` is already locally available — it's fed to the policy head on line 149.
+  Update every call site of `actor_network.apply` to unpack three values
+  (rollout step and `_actor_loss_fn`).
+- [ ] **Capture env constants into config.** In `make_train` after
+  [train_mappo_ctm.py:279](../smax_ctm/train_mappo_ctm.py#L279), stash
+  `config["NUM_MOVEMENT_ACTIONS"] = int(env.num_movement_actions)` and
+  `config["NUM_ENEMIES"] = int(env.num_enemies)`. These are needed for the
+  focus-fire mask helper.
+- [ ] **Helper function `compute_focus_fire_mask(actions, num_agents, num_envs,
+  num_movement_actions, num_enemies)`.** Pure `jnp`. Input: action array shape
+  `(T, num_agents * num_envs)`. Reshape to `(T, num_agents, num_envs)`, mark
+  entries where action ≥ `num_movement_actions` and ≤
+  `num_movement_actions + num_enemies - 1` as "attacking enemy k". For each
+  `(t, env)`, return True iff ≥2 agents target the same enemy. Logic mirrors
+  [analysis/collector.py:73-89](../smax_ctm/analysis/collector.py#L73). Place in
+  [train_mappo_ctm.py](../smax_ctm/train_mappo_ctm.py) near the other helpers.
+- [ ] **Compute `pair_cos` in the actor loss fn.** In `_actor_loss_fn`
+  ([train_mappo_ctm.py:462](../smax_ctm/train_mappo_ctm.py#L462)), after
+  unpacking `synch`:
   ```python
-  # (num_actors, synch) -> (num_agents, num_envs, synch)
-  synch_per_agent = synch.reshape(num_agents, num_envs, synch_size)
-  # pool across axis=0 (the agent axis)
+  T = synch.shape[0]
+  num_agents = config["INC_NUM_AGENTS"]
+  num_envs_mb = synch.shape[1] // num_agents
+  synch_am = synch.reshape(T, num_agents, num_envs_mb, -1)
+  s_norm = synch_am / (jnp.linalg.norm(synch_am, axis=-1, keepdims=True) + 1e-8)
+  cos_mat = jnp.einsum("taec,tbec->teab", s_norm, s_norm)  # (T, E, A, A)
+  iu, ju = jnp.triu_indices(num_agents, k=1)
+  pair_cos = cos_mat[..., iu, ju].mean(axis=-1)            # (T, E)
+
+  ff_mask = compute_focus_fire_mask(
+      traj_batch.action, num_agents, num_envs_mb,
+      config["NUM_MOVEMENT_ACTIONS"], config["NUM_ENEMIES"],
+  )                                                        # (T, E) bool
+
+  pair_cos_all  = pair_cos.mean()
+  pair_cos_ff   = jnp.where(ff_mask, pair_cos, 0.0).sum() / (ff_mask.sum() + 1e-8)
+  pair_cos_nff  = jnp.where(~ff_mask, pair_cos, 0.0).sum() / ((~ff_mask).sum() + 1e-8)
+  ff_frac       = ff_mask.mean()
   ```
-  **Do NOT write `reshape(num_envs, num_agents, ...)`** — that silently mixes different agents into the same row and will train without erroring. Add an assert in Stage 1 that identifies a deliberately tagged per-agent value survives the round-trip reshape.
-- [x] Write a one-shot debug script `smax_ctm/scripts/check_batchify_order.py` that feeds `batchify` a dict `{a0: ones*0, a1: ones*1, a2: ones*2}` and prints the flat result — confirms agent-major layout before we rely on it.
+  **Crucial:** do NOT add `pair_cos` to `actor_loss`. This stage is logging only.
+- [ ] **Add fields to `loss_info`** at
+  [train_mappo_ctm.py:519](../smax_ctm/train_mappo_ctm.py#L519): `pair_cos_all`,
+  `pair_cos_ff`, `pair_cos_nff`, `ff_frac`. Confirm they print to stdout at each
+  log step.
+- [ ] **Unit test `compute_focus_fire_mask`** in
+  [smax_ctm/tests/test_inc.py](../smax_ctm/tests/test_inc.py) on a hand-crafted
+  action array with known events. 2–3 cases: no attacks (all False), 2 agents
+  target same enemy (True), 2 agents target different enemies (False).
+- [ ] **Run SMAX 3m, 1 seed, same budget as Stage 2 cell A** with
+  `INC_ENABLED=False, CTM_ITERATIONS=1`. This is the baseline CTM-MAPPO. Collect
+  the `pair_cos_all / pair_cos_ff / pair_cos_nff` curves throughout training.
+- [ ] **Write interpretation note** at
+  [docs/saal_stage4_baseline_paircos.md](../docs/saal_stage4_baseline_paircos.md):
+  what are the baseline values, do `ff` and `nff` diverge spontaneously (the
+  Stage 1-3 phenomenon showing up in the training loop directly), how much
+  headroom is there for an alignment loss to push.
 
-**Stage 0 evidence (2026-04-10):**
-- `check_batchify_order.py` output matches expected agent-major ordering and passes.
-- `check_ctm_axis_layout.py` output confirms `(num_agents, num_envs, ...)` is correct and `(num_envs, num_agents, ...)` is invalid for INC pooling.
-- Notes written to `docs/inc_axis_convention.md` and `docs/hanabi_env_notes.md`.
+**Exit criterion:**
+- Logging fields appear in training output and are finite across the whole run.
+- A number for baseline `pair_cos` at converged training exists.
+- A decision on `ALIGN_ALPHA` / `ALIGN_BETA` starting points is written into
+  Stage 5.
 
-**Exit criterion:** baseline reproduces and the agent/env axis convention is documented in `docs/inc_axis_convention.md`.
+**Decision rule after Stage 4:**
+- If baseline `pair_cos_ff` is already very close to 1.0 (say ≥ 0.9), SAAL has
+  almost no room to push — revisit the loss formulation (maybe align to a target
+  subspace, not a scalar cosine).
+- If baseline `pair_cos_ff ≈ pair_cos_nff`, the model is not spontaneously
+  distinguishing coord from non-coord steps — SAAL has a clear job to do and
+  Story 1-3 is intact in the training distribution.
+- If baseline `pair_cos_ff` > `pair_cos_nff` by a meaningful margin, the model is
+  already learning the alignment on its own — SAAL may only sharpen the effect.
+  Set `ALIGN_ALPHA` conservatively.
 
 ---
 
-## Stage 1 — Refactor CTMCell to expose per-iteration sync
+## Stage 5 — SAAL loss implementation + SMAX 3m validation
 
-**Goal:** make the iteration loop iterate-by-iterate instead of fused, and emit a per-iteration sync vector that the outer code can pool across agents. No behavioural change yet — this stage should give identical numbers to Stage 0 when `num_consensus_iterations == 0`.
+**Goal:** add the sync-alignment auxiliary loss and validate on SMAX 3m. Single
+seed sanity run first, then 3-seed comparison against the Stage 1 baseline.
 
-**Files touched:** [ctm_jax.py](smax_ctm/ctm_jax.py), [train_mappo_ctm.py](smax_ctm/train_mappo_ctm.py) (SMAX), [train_mappo_ctm_hanabi.py](smax_ctm/train_mappo_ctm_hanabi.py) (Hanabi). The CTMCell refactor is shared; only the outer-loop hook-in happens per-benchmark script.
+**Prerequisite:** Stage 4 logging pass complete, starting hyperparameters chosen.
 
-**Relationship to `ScannedCTM` / `nn.scan`:** `ScannedCTM` uses `nn.scan` to iterate `CTMCell` over the **time axis** of a rollout/minibatch. The CTM's internal `CTM_ITERATIONS` loop lives **inside** each scan step — it is unrolled at compile time, not scanned. The INC refactor only touches this inner unrolled loop. `nn.scan`'s carry stays exactly as today: `(state_trace, activated_state_trace)`. Consensus is *not* carried across time — it is recomputed fresh every time step, consistent with the "zero inter-step bandwidth" framing.
+**Files touched:** [smax_ctm/train_mappo_ctm.py](../smax_ctm/train_mappo_ctm.py),
+[smax_ctm/tests/test_inc.py](../smax_ctm/tests/test_inc.py),
+[smax_ctm/scripts/run_saal_stage5.py](../smax_ctm/scripts/run_saal_stage5.py)
+(new).
 
-- [x] In `CTMCell.__call__`, replace the `for _ in range(self.iterations)` body with a helper `_single_iter(state_trace, activated_state_trace, features, consensus_in)` that returns `(new_state_trace, new_activated_state_trace, synch)`. Signature:
+**Loss definition:**
+
+```
+L_align  = - ALIGN_ALPHA * mean_{(t,e) ∈ focus_fire} pair_cos(t, e)
+           + ALIGN_BETA  * mean_{(t,e) ∉ focus_fire} pair_cos(t, e)
+
+actor_loss_total = loss_actor - ENT_COEF * entropy + L_align
+```
+
+The β term prevents the degenerate solution of making sync vectors agent-invariant
+under parameter sharing. See
+[docs/iterative_neural_consensus.md](../docs/iterative_neural_consensus.md) §5 for
+the derivation.
+
+**Implementation:**
+
+- [ ] **New config keys** in `make_train`:
+  - `ALIGN_ENABLED` (bool, default `False`)
+  - `ALIGN_ALPHA` (float, default `0.0`)
+  - `ALIGN_BETA` (float, default `0.0`)
+- [ ] **Loss assembly.** In `_actor_loss_fn`, behind `if config["ALIGN_ENABLED"]:`:
   ```python
-  def _single_iter(
-      self,
-      state_trace: jnp.ndarray,           # (B, D, M)
-      activated_state_trace: jnp.ndarray,  # (B, D, M)
-      features: jnp.ndarray,               # (B, F)
-      consensus_in: Optional[jnp.ndarray], # (B, synch_size) or None
-  ) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-      # returns (new_state_trace, new_activated_state_trace, synch)
+  align_pos = jnp.where(ff_mask, pair_cos, 0.0).sum() / (ff_mask.sum() + 1e-8)
+  align_neg = jnp.where(~ff_mask, pair_cos, 0.0).sum() / ((~ff_mask).sum() + 1e-8)
+  L_align   = -config["ALIGN_ALPHA"] * align_pos + config["ALIGN_BETA"] * align_neg
+  actor_loss = actor_loss + L_align
   ```
-  Keep the helper as a regular Python method (not `@nn.compact`) and call the existing `Synapses` / `NLMs` / `compute_synchronisation` submodules from it — Flax will register them once at module init time.
-- [x] The helper must compute the per-iteration sync vector using the existing `compute_synchronisation` against the current `activated_state_trace`, not just the final one. The `decay_params_out` parameter stays shared across iterations.
-- [x] Add a new argument `consensus_in` (shape `(batch, synch_size)` or `None`) to `_single_iter`. When non-None, it is concatenated with `[features, last_activated]` before the synapses: `pre_synapse = concat([features, last_activated, consensus_in])`. Widen the Synapses' first Dense input accordingly. **Important:** `nn.Dense` infers its input dim **only once, at parameter init time**, and then freezes the kernel shape — it does NOT re-widen across calls. So if iteration 0 is called with `consensus_in=None` (input dim `d_input + d_model`) and iteration 1 with a real consensus vector (input dim `d_input + d_model + synch_size`), the second call raises `ScopeParamShapeError`. The fix is to make the Synapses input shape consistent across all iterations: when `INC_ENABLED=True` and `CTM_ITERATIONS > 1`, seed `consensus_in` with `jnp.zeros((batch, synch_size))` on iteration 0 instead of `None`. A zero vector carries no information from teammates, so the "no consensus on iter 0" semantics are preserved while the kernel shape stays stable. For `CTM_ITERATIONS == 1` and for `INC_ENABLED=False`, keep `consensus_in=None` so the Stage 1 no-op equivalence path is bit-identical.
-- [x] For Stage 1, pass `consensus_in = None` on every iteration — this reproduces the current code path exactly but through the refactored helper. The final `synch` return value stays the last iteration's.
-- [x] Run the Stage 0 baseline command again. The win-rate curve should overlay the original within noise (same seed → bit-identical, ideally).
+  When `ALIGN_ENABLED=False`, `L_align` is not computed at all (keeps the jit
+  graph identical to Stage 4).
+- [ ] **Log `L_align`, `align_pos`, `align_neg`** in `loss_info`.
+- [ ] **Loss-gate unit test:** forward-pass with `ALIGN_ENABLED=True`, confirm
+  `L_align` is finite, correct sign, and that gradients flow from `L_align` back
+  to the CTM parameters (`Synapses`, `NLMs`, `decay_params_out`).
+- [ ] **Sanity training run.** SMAX 3m, 1 seed, same budget as Stage 2 cell A,
+  `ALIGN_ENABLED=True`. Starting hyperparameters from Stage 4 decision rule (my
+  blind guess if Stage 4 is inconclusive: `ALIGN_ALPHA=0.05, ALIGN_BETA=0.025`).
+  Confirm the run does not diverge, entropy does not collapse, `pair_cos_ff`
+  rises above the Stage-4 baseline.
+- [ ] **3-seed comparison run.** Same config, 3 fresh seeds (non-overlapping with
+  Stage 2 / 2.1 seeds). Compare against the 3-seed Stage-1 baseline (cell A).
+  Metrics: final WR, frac ≥ 0.8, first-update rolling-20 ≥ 0.8, final
+  `pair_cos_ff / pair_cos_nff`. Same decision framework as Stage 2.1.
 
-**Stage 1 evidence (2026-04-11):**
-- `CTMCell` refactored to `_single_iter(...)` with per-iteration sync emission and optional `consensus_in` input.
-- Training scripts wired with `NUM_CONSENSUS_ITERATIONS` Stage-1 guard (`0` only), preserving no-op behavior.
-- SMAX baseline after refactor is very similar to Stage 0 (within expected run noise), so Stage 1 is accepted as complete.
+**Exit criterion:** SAAL sanity run completes without NaN/entropy collapse;
+3-seed SMAX 3m comparison shows either a win over cell A (proceed to Stage 6) or
+a clear null result (retune or reformulate the loss before proceeding).
 
-**Exit criterion:** refactor is a no-op; SMAX 3m training curve matches pre-refactor run.
+**If SAAL fails on SMAX 3m:** options to try in order:
+1. Hyperparameter retune: sweep `ALIGN_ALPHA ∈ {0.01, 0.05, 0.1, 0.2}` with
+   `ALIGN_BETA = ALIGN_ALPHA / 2`.
+2. Event detector widening: add grouping and enemy-kill events (requires
+   plumbing raw SMAX state through `Transition` — ~50 lines).
+3. Advantage-gated formulation: replace `ff_mask` with `advantage > 0` as a soft
+   gate. Cheaper than plumbing state; not tied to hand-crafted events.
 
----
-
-## Stage 2 — Centralised cross-agent pooling
-
-**Goal:** introduce the consensus mechanism itself, behind a config flag. When the flag is off, behaviour is identical to Stage 1. When on, between-iteration consensus is active.
-
-**Files touched:** [ctm_jax.py](smax_ctm/ctm_jax.py), [train_mappo_ctm.py](smax_ctm/train_mappo_ctm.py), [train_mappo_ctm_hanabi.py](smax_ctm/train_mappo_ctm_hanabi.py). The `AgentConsensus` module and `CTMCell` changes are shared; both training scripts must set `INC_NUM_AGENTS` from their respective envs and pass it through to `ScannedCTM`.
-
-- [X] Introduce new config keys:
-  - `INC_ENABLED`: bool, default `False`.
-  - `INC_POOLING`: one of `"mean" | "attention" | "gated"`, default `"mean"`.
-  - `INC_NUM_AGENTS`: int, set automatically from env at `make_train` time.
-  - `INC_CONSENSUS_DROPOUT`: float, default `0.0` (for later robustness experiments).
-- [X] Add an `AgentConsensus` Flax module that takes a tensor of shape `(num_envs, num_agents, synch_size)` and returns a tensor of the same shape where each agent's output is the pooled summary of the **other** agents (leave-one-out pooling, so no self-leakage).
-  - Mean: `(sum(axis=agent) - self) / (num_agents - 1)`.
-  - Attention: a single-head dot-product attention across the agent axis; queries/keys/values all derived from sync vectors via small Dense layers. Mask out self.
-  - Gated: mean of others, passed through `sigmoid(gate) * tanh(value)` parameterised by a Dense layer. Provides a learnable on/off switch per consensus channel.
-- [X] In `CTMCell.__call__`, when `INC_ENABLED` is true:
-  1. Run `_single_iter` with a zero `consensus_in` on iteration 0 (shape `(B, synch_size)`, all zeros). This carries no teammate information but keeps the Synapses' first Dense input dim identical across all iterations — see the Stage 1 note on `nn.Dense`'s one-shot input-dim inference. Only fall back to `consensus_in = None` when `CTM_ITERATIONS == 1` or `INC_ENABLED=False`, where the Synapses are only ever called with one input width.
-  2. Between iterations, reshape the per-iteration `synch` from `(B, synch_size)` → `(num_agents, B // num_agents, synch_size)` (agent-major — see Stage 0 axis note).
-  3. Pass through `AgentConsensus` → same shape. Module must be written so it pools along the **agent axis (axis=0)**, not axis=1.
-  4. Reshape back to `(B, synch_size)`.
-  5. Pass this as `consensus_in` to the next iteration's `_single_iter`.
-- [X] Because `CTMCell` currently doesn't know `num_agents`, thread it in as a module field (`num_agents: int = 1`), set from config at construction time in `ScannedCTM`. The "num envs" dimension is inferred at runtime as `B // num_agents`.
-- [X] **Batch-shape invariance between rollout and PPO update.** During rollout `B = num_actors = num_envs * num_agents`. During the PPO update, minibatches reshape the flat actor axis to `(num_minibatches, minibatch_size)` where `minibatch_size = num_actors * num_steps_per_env // num_minibatches` — but crucially the minibatch split in [train_mappo_ctm.py](smax_ctm/train_mappo_ctm.py) is done along the **env/agent flat axis while preserving agent-majority**. Verify this: grep for the permutation/reshape in the update step and confirm it does NOT shuffle agents across the flat axis. If it does (e.g. a `jax.random.permutation` over the flat actor axis), INC will train on corrupted consensus groupings. **Fix:** permute over the `num_envs` axis only, keep all agents of a given env together. Add a unit test.
-- [X] **Sequence-length axis.** When `ScannedCTM` is applied during an update, inputs have a leading time axis `(T, B, ...)`. The inner `CTMCell` sees one time slice at a time (scan handles the T axis), so `B` is still `num_actors_in_minibatch` and the reshape logic above is unchanged. Double-check by printing shapes during the first update step.
-- [X] **Dead-agent masking:** Hanabi and SMAX both kill agents partway through an episode. When an agent is dead its `done` mask is 1 and its sync is essentially frozen/invalid. Pass an `alive_mask` of shape `(num_envs, num_agents)` into `AgentConsensus` and use it to exclude dead agents from pooling. For SMAX derive this from the `dones` input; for Hanabi all agents stay alive so it's identity.
-- [X] The final `synch` returned from `CTMCell` remains the last iteration's sync (same shape as before), so the actor head is unchanged.
-
-**Exit criterion:** with `INC_ENABLED=True, INC_POOLING="mean", CTM_ITERATIONS=3`, training runs without shape errors and produces a different (hopefully better) learning curve. With `INC_ENABLED=False` behaviour is bit-identical to Stage 1.
-Observations: INC_ENABLED=True, INC_POOLING="mean", CTM_ITERATIONS=3 produced a slightly better learning curve and final win rate in 3m smax. while setting INC_CONSENSUS_DROPOUT>0.0(0.25 used in experiments) in addition to INC_ENABLED=True, INC_POOLING="mean", CTM_ITERATIONS=3 produced a significantly better learning cure and a much higher win rate.
+If none of these work, SAAL is dead as an idea and we return to the direction
+doc for a re-plan before spending more compute.
 
 ---
 
-## Stage 2.1 — Disambiguating the dropout win
+## Stage 6 — SAAL SMAX main matrix + hyperparameter sweep
 
-**Goal:** figure out *why* `INC_CONSENSUS_DROPOUT=0.25` unlocks a much larger gain than plain INC on SMAX 3m (and Hanabi smoke test). The Stage 2 result is that plain INC (`INC_ENABLED=True, mean, iter=3`) is only marginally better than the Stage 1 baseline, but adding 25% dropout on the pooled consensus signal produces a substantially faster learning curve and a higher final win rate. Before committing to Stage 4's hyperparameter sweep and Stage 5's full matrix, we need to know whether the benefit comes from (a) the teammate consensus channel specifically, (b) stochastic regularisation of the CTM iteration loop in general, or (c) both. If it's (b), the paper's framing has to change — INC becomes "iterative refinement with regularised internal dynamics" and pooled teammate sync is a secondary contribution. This stage is cheap (all SMAX 3m) and decides the framing of Stages 4, 5, and 7.
+**Goal:** lock in SAAL's performance envelope on SMAX before touching Hanabi.
 
-**Files touched:** [ctm_jax.py](smax_ctm/ctm_jax.py) (small additions), [train_mappo_ctm.py](smax_ctm/train_mappo_ctm.py) (one new config key passthrough), new script `smax_ctm/scripts/run_stage2_1_disambig.py`, results written to `analysis_results_inc/stage2_1/`.
+**Prerequisite:** Stage 5 shows a statistically meaningful SAAL > baseline win on
+SMAX 3m.
 
-**Cells to run** (3 seeds each, same total-timesteps budget as the Stage 2 run, SMAX 3m):
+**Cells (SMAX, 3 seeds each unless noted):**
 
-| Cell | `INC_ENABLED` | `INC_CONSENSUS_DROPOUT` | `CTM_ITER_DROPOUT` (new) | `INC_FORCE_ZERO_CONSENSUS` (new) | Status |
-|---|---|---|---|---|---|
-| A | False | — | 0.0 | — | already logged (Stage 1 baseline) |
-| B | True  | 0.0  | 0.0 | False | already logged (plain INC) |
-| C | True  | 0.25 | 0.0 | False | already logged (INC + consensus dropout) |
-| **D** | **False** | **—** | **0.25** | **—** | **new — stochastic iteration loop, no consensus** |
-| **E** | **True**  | **0.25** | **0.0** | **True** | **new — same noise pattern as C but teammate info zeroed** |
-
-Cells A/B/C already have curves from the Stage 2 run — reuse those logs, do not re-run.
-
-- [ ] Add config key `CTM_ITER_DROPOUT` (float, default `0.0`) to both [train_mappo_ctm.py](smax_ctm/train_mappo_ctm.py) and [train_mappo_ctm_hanabi.py](smax_ctm/train_mappo_ctm_hanabi.py). Thread it into `CTMCell` as a module field.
-- [ ] In `CTMCell._single_iter`, when `CTM_ITER_DROPOUT > 0`, apply `nn.Dropout(rate=CTM_ITER_DROPOUT, deterministic=not train)` to `activated_state_trace` **before** it is fed into the next iteration's synapses. Apply it regardless of `INC_ENABLED` — this is the "stochastic iteration loop" control and must be independent of the consensus path. Plumb the `train` flag through `ScannedCTM` the same way Flax's standard dropout usage does; if there is no existing dropout RNG stream, add one (`rngs={"dropout": dropout_rng}` in `apply`).
-- [ ] Add config key `INC_FORCE_ZERO_CONSENSUS` (bool, default `False`). In `CTMCell.__call__`, after computing the pooled `consensus_in` from `AgentConsensus` and *before* applying `INC_CONSENSUS_DROPOUT`, replace `consensus_in` with `jnp.zeros_like(consensus_in)` when this flag is set. Crucially: the dropout mask is still drawn and applied to the zero tensor, so the RNG consumption and the downstream noise pattern match cell C exactly. This is the cell-E control — same stochasticity pattern as C, same widened Synapses input dim, but zero actual teammate information flowing through.
-- [ ] Unit test the new flags in [smax_ctm/tests/test_inc.py](smax_ctm/tests/test_inc.py):
-  - With `CTM_ITER_DROPOUT=0.0` and `INC_FORCE_ZERO_CONSENSUS=False`, forward pass is bit-identical to pre-change code.
-  - With `INC_FORCE_ZERO_CONSENSUS=True`, the input to the iteration-2 Synapses on the consensus slice is all zero (before dropout is applied), verified by hook or by `jax.lax.stop_gradient` + numerical probe.
-  - `CTM_ITER_DROPOUT=0.25` at eval time (`deterministic=True`) is a no-op; at train time it produces non-identity outputs on repeat calls with different RNGs.
-- [ ] Write `smax_ctm/scripts/run_stage2_1_disambig.py` that launches cells D and E, 3 seeds each. Same `TOTAL_TIMESTEPS`, `NUM_ENVS`, `CTM_ITERATIONS=3`, `INC_POOLING="mean"` as the Stage 2 run. Log to the same place as Stage 2 for apples-to-apples plotting.
-- [ ] After runs complete, produce two plots into `analysis_results_inc/stage2_1/`:
-  - **Learning curves:** all five cells (A, B, C, D, E) on one axis, win rate vs env steps, shaded by seed std. This is the headline plot for the stage.
-  - **Final WR bar chart:** mean ± 95% CI at the end of training for each cell.
-- [ ] Re-run [analyse_sync.py](smax_ctm/analyse_sync.py) on the cell-B checkpoint (plain INC) and the cell-C checkpoint (INC + dropout), producing the **within-step sync convergence plot** — how much does cross-agent sync disagreement shrink between iteration 0 and iteration K? Do both models converge in sync space, and does the dropout model converge *less* tightly while still performing better? This plot is reused in Stage 4 and becomes Figure 3 of the paper if the story holds.
-- [ ] Write a short interpretation note at `docs/inc_stage2_1_findings.md`: one paragraph per decision path (below), plus the learning-curve plot embedded.
-
-**What we want to see — decision rules:**
-
-The point of the stage is to pick between three mutually exclusive stories. Cells D and E each sharpen one dimension.
-
-1. **Story "consensus channel is load-bearing":** D is close to A/B (weak), E is close to A/B (weak), and C remains the clear winner. This means the gain requires both (i) real teammate information flowing through the pool *and* (ii) dropout-robustness on that channel. Cleanest possible outcome — write the paper exactly as originally planned, with the dropout result as a prominent sub-finding under the "robust consensus channel" framing.
-2. **Story "stochastic iteration loop":** D is close to C (strong), and E is also close to C (strong). This means the benefit is stochasticity inside the CTM iteration unroll, not teammate pooling — the consensus module is load-bearing only insofar as it gives dropout a place to apply. This is a real result but a different paper: INC becomes "regularised iterative refinement" and the "zero inter-step comm bandwidth consensus" framing has to be softened. We'd still run Stage 5, but the headline comparison changes from "INC vs no-INC" to "regularised iter vs plain iter", and Stage 6 ablations shift focus.
-3. **Story "mixed":** D is in between A and C (noticeable lift but not matching C), and E is close to D (or close to A). This means both mechanisms contribute. Still a publishable story, framed as "iteration-loop stochasticity plus pooled teammate sync are complementary." Stage 5 stays the same; Stage 7 adds a small decomposition figure.
-
-**Concretely, the numerical thresholds we'll use** (SMAX 3m, 3 seeds, final WR mean):
-- "Close to A/B" ≡ within 3 percentage points of the plain-INC mean *and* learning-curve slope visually indistinguishable.
-- "Close to C" ≡ within 3 percentage points of the INC+dropout mean *and* learning-curve slope visually indistinguishable.
-- "In between" ≡ outside both bands.
-
-If cells D and E together don't cleanly fit any of the three stories (e.g. D is strong but E is also strong, which would be internally inconsistent), treat that as a signal of an implementation bug in the new flags and go back to the unit tests before interpreting.
-
-**Things that would invalidate the stage and force a re-run:**
-- RNG stream for the new dropout is not properly split per-iteration (i.e. all iterations get the same mask) — would suppress the effect of `CTM_ITER_DROPOUT` artificially.
-- `INC_FORCE_ZERO_CONSENSUS` accidentally also zeros the gradient through the consensus branch entirely, so the widened Synapses kernel receives no training signal on that slice — would make E look artificially weak. Verify with a gradient-flow probe in the unit test.
-- Seeds from cells D/E inadvertently overlap with Stage 2's seeds, making the comparison biased. Use three fresh seeds.
-
-**Exit criterion:** `analysis_results_inc/stage2_1/` contains the 5-cell learning-curve plot, the bar chart, and `docs/inc_stage2_1_findings.md` states which of the three stories the data supports, with the corresponding decision for Stage 4's framing written down. The main plan body (Stages 4-7) is updated only *after* this stage completes.
-
----
-
-## Stage 2.5 — Unit tests for INC plumbing
-
-**Goal:** lock in the non-obvious invariants before they regress silently during later stages.
-
-- [X] **Axis round-trip test.** Build a dummy `(num_actors, synch_size)` tensor where row `i` equals `i // num_envs` (so agent 0 rows are all 0, agent 1 rows are all 1, etc.). Reshape via the Stage-1 helper, confirm the agent axis is `[0, 1, ..., num_agents-1]` as expected.
-- [X] **Leave-one-out mean test.** With `num_agents=3`, sync = `[[1], [2], [3]]` broadcast over envs, confirm pooled result is `[[2.5], [2.0], [1.5]]`.
-- [X] **No-op equivalence.** With `INC_ENABLED=False`, the per-step output of `CTMCell` (including `synch`, action logits) must be bit-identical to the pre-refactor code on the same seed. Use `jnp.allclose(..., atol=0, rtol=0)`.
-- [X] **Dead-agent masking.** With `num_agents=3` and agent 1 dead (`alive_mask=[1,0,1]`), the leave-one-out mean for agent 0 should equal agent 2's sync exactly, and vice versa; agent 1's pooled input should be a deterministic zero (or last-alive value — pick one and document it).
-- [X] **Gradient flow.** Run one backward pass through an `INC_ENABLED=True` forward, confirm gradients are non-zero on the `AgentConsensus` parameters and on the widened `Synapses` first-layer kernel.
-- [X] **Minibatch permutation safety.** Construct a fake update-step minibatch that permutes the flat actor axis, run `CTMCell` over it twice (once with the permutation, once without), and confirm the INC pooling yields the same per-agent result up to the permutation. Fails if the permutation scrambles agent groupings — in which case Stage 2's permutation-fix is required.
-
-**Exit criterion:** all tests pass as a single `pytest` file `smax_ctm/tests/test_inc.py`. This file is checked in before Stage 4 begins.
-
----
-
-## Stage 3 — Hanabi environment wiring
-
-**Goal:** have CTM-MAPPO and GRU-MAPPO train on Hanabi in JaxMARL. This stage does NOT depend on Stage 2 — it can be done in parallel.
-
-**Files touched:** [jaxmarl/environments/hanabi/](jaxmarl/environments/hanabi/), [jaxmarl/environments/__init__.py](jaxmarl/environments/__init__.py), [jaxmarl/registration.py](jaxmarl/registration.py), [smax_ctm/train_mappo_ctm_hanabi.py](smax_ctm/train_mappo_ctm_hanabi.py), [smax_ctm/train_mappo_gru_hanabi.py](smax_ctm/train_mappo_gru_hanabi.py), [smax_ctm/test&logger/run_hanabi_tests.py](smax_ctm/test&logger/run_hanabi_tests.py).
-
-**Why per-benchmark training scripts?** SMAX and Hanabi have non-trivially different env contracts — `get_avail_actions` vs `get_legal_moves` (returns a per-agent **dict**, not an array, so vmap yields a dict of `(num_envs, num_moves)` arrays and must be batchified directly), different world-state constructions (SMAX state + one-hot agent id vs Hanabi observation concatenation), different episode-return logging (win rate vs score out of 25), and different wrappers (`SMAXLogWrapper` vs generic `LogWrapper`). Forcing one script to branch on env name would obscure both code paths. We keep the two benchmarks in separate files and share only what actually is shared: `ctm_jax.py` (CTMCell, ScannedCTM, AgentConsensus) and eventually a shared INC module.
-
-- [x] Copy `jaxmarl/environments/hanabi/` from upstream FLAIROx/JaxMARL into the local `jaxmarl/environments/` tree. Register it in [jaxmarl/environments/__init__.py](jaxmarl/environments/__init__.py) and [jaxmarl/registration.py](jaxmarl/registration.py).
-- [x] Create [smax_ctm/train_mappo_ctm_hanabi.py](smax_ctm/train_mappo_ctm_hanabi.py) as a Hanabi-specific clone of [train_mappo_ctm.py](smax_ctm/train_mappo_ctm.py):
-  - SMAX imports replaced: `HanabiEnv` from `jaxmarl.environments.hanabi`, generic `LogWrapper` instead of `SMAXLogWrapper`, no `map_name_to_scenario`.
-  - New local `HanabiWorldStateWrapper`: concatenates all agents' obs into a `num_agents * obs_size` world state, tiled per agent. Matches the centralised-critic convention from upstream MAPPO-Hanabi.
-  - `avail_actions` is read by vmapping `env._env.get_legal_moves` over envs (returns dict `{a: (num_envs, num_moves)}`), then passed directly to `batchify`. **Do not treat the vmap result as an array** — that was the first bug to get hit and fix during wiring.
-  - `step9_report` import removed (SMAX-specific).
-  - Episode-return logging reports Hanabi score (max 25 for 2p), no win rate.
-  - `last_done` initialised to `jnp.ones(...)` at rollout start to trigger CTM reset-on-done (matches SMAX CTM behaviour — the learned start-trace pathway).
-  - Checkpoint saved to `model/hanabi_mappo_ctm_actor{_nosync}.pkl` with `env: "hanabi"` tag for loader disambiguation.
-- [x] Create [smax_ctm/train_mappo_gru_hanabi.py](smax_ctm/train_mappo_gru_hanabi.py) as a Hanabi-specific clone of [train_mappo_gru.py](smax_ctm/train_mappo_gru.py) with the same env-wiring adaptations. GRU does not need the force-reset-on-start trick; `last_done` initialised to zeros.
-- [x] Basic env contract test: [smax_ctm/test&logger/run_hanabi_tests.py](smax_ctm/test&logger/run_hanabi_tests.py) — reset/step contracts, `get_legal_moves` shape, short rollout stability, 3-player setting, fail-loud on unknown env id.
-- [ ] Run GRU-MAPPO on Hanabi 2p. Confirm it reaches published numbers (upstream MAPPO-Hanabi score ~24/25 at convergence).
-- [ ] Run CTM-MAPPO on Hanabi 2p with `CTM_ITERATIONS=1, INC_ENABLED=False`. Confirm it learns *something* (non-trivial above random). This is the CTM-without-consensus Hanabi baseline.
-
-**Exit criterion:** both GRU and CTM baselines train on Hanabi 2p end-to-end without errors; GRU matches upstream reported numbers within noise.
-
----
-
-## Stage 4 — Hyperparameter sanity on the consensus mechanism
-
-**Goal:** find a sensible default before the full experiment matrix. Use SMAX 3m because it's fast, then confirm on Hanabi.
-
-- [ ] Small sweep on SMAX 3m with `INC_ENABLED=True, INC_POOLING="mean"`:
-  - `CTM_ITERATIONS ∈ {2, 3, 5}` × 3 seeds.
-  - Record final WR, wall-clock per update, sync/obs correlation delta (the Stage 1-3 metric).
-- [ ] Pick a lead `CTM_ITERATIONS` value (I expect 3-5). Document rationale in `docs/inc_hparams.md`.
-- [ ] Confirm that turning `INC_POOLING` between `mean`, `attention`, `gated` all train stably on SMAX 3m. Don't pick a winner yet — that's the ablation in Stage 6.
-- [ ] Re-run the Stage 1-3 sync analysis script ([analyse_sync.py](smax_ctm/analyse_sync.py)) on an INC model and add a new plot: **within-step sync convergence across iterations** (how much does consensus reduce the cross-agent sync disagreement by iteration `k` vs iteration `0`?). This is a key mechanism-verification figure for the paper.
-
-**Exit criterion:** a default `CTM_ITERATIONS` is chosen, all pooling variants train without NaNs, within-step convergence plot exists and shows a non-trivial trajectory.
-
----
-
-## Stage 5 — Main experiment matrix
-
-**Goal:** produce the numbers the paper reports. Everything here is pre-planned, no fishing.
-
-**Axes:**
-
-| Axis | Values |
+| Map | Methods |
 |---|---|
-| Method | `GRU-MAPPO`, `CTM-MAPPO (iter=1, no INC)`, `CTM-MAPPO (iter=K, no INC)`, `CTM-MAPPO + INC (iter=K)` |
-| Benchmark | Hanabi-2p, Hanabi-4p, SMAX 2s3z, SMAX 5m_vs_6m |
-| Seeds | 5 per cell |
+| 3m | CTM baseline, CTM + SAAL, CTM + INC(cell C), CTM + SAAL + INC |
+| 2s3z | same four methods |
+| 5m_vs_6m | same four methods |
 
-where `K` is the default chosen in Stage 4.
+The `CTM + SAAL + INC` cell is the "does SAAL and INC combine additively" test —
+useful regardless of whether INC ends up in the paper, because it tells us
+whether the two interventions are tapping the same underlying coordination
+signal or different ones.
 
-- [ ] Write a small runner script `smax_ctm/scripts/run_matrix.py` that enumerates the cells and dispatches training jobs with proper logging.
-- [ ] Log to Weights & Biases (or local TFEvents if you prefer self-hosted): return, win rate (SMAX) / episode score (Hanabi), entropy, value loss, per-iteration sync convergence metric, wall-clock per update.
-- [ ] The **key comparison** for the paper is `CTM-MAPPO (iter=K, no INC)` vs `CTM-MAPPO + INC (iter=K)`. Same compute, only difference is the consensus pooling. If INC doesn't beat this apples-to-apples control the method isn't real.
-- [ ] The secondary comparison is `CTM-MAPPO + INC (iter=K)` vs `GRU-MAPPO` and vs `CTM-MAPPO (iter=1)` — needed to show the combined architecture is worth it.
-- [ ] Track sample efficiency curves, not just final performance. Hanabi reviewers especially care about this.
+**Hyperparameter sweep (on SMAX 3m only, 2 seeds per cell):**
+- `ALIGN_ALPHA ∈ {0.01, 0.05, 0.1}` (keeping `ALIGN_BETA = ALIGN_ALPHA / 2`)
+- `ALIGN_BETA / ALIGN_ALPHA ∈ {0.0, 0.25, 0.5, 1.0}` at chosen `ALIGN_ALPHA`
 
-**Exit criterion:** a full results table with means + 95% CIs across seeds for every cell, and sample-efficiency plots saved to `analysis_results_inc/`.
+Pick a single `(ALIGN_ALPHA, ALIGN_BETA)` and lock it in before running 2s3z and
+5m_vs_6m.
+
+- [ ] Write runner `smax_ctm/scripts/run_saal_smax_matrix.py`.
+- [ ] Run the sweep on 3m, pick the best `(alpha, beta)`.
+- [ ] Run the full 2-map × 4-method × 3-seed matrix.
+- [ ] Write findings note at
+  [docs/saal_stage6_smax_matrix.md](../docs/saal_stage6_smax_matrix.md).
+
+**Exit criterion:** SAAL's SMAX performance across three maps is characterised;
+`(ALIGN_ALPHA, ALIGN_BETA)` is locked; a go/no-go decision on porting SAAL to
+Hanabi is made.
 
 ---
 
-## Stage 6 — Ablations
+## Stage 7 — SAAL Hanabi port
+
+**Goal:** port SAAL to Hanabi. Needs a Hanabi-specific coord-event detector
+because focus-fire does not exist there.
+
+**Prerequisite:** Stage 6 shows SAAL wins on SMAX across at least two maps.
+
+**Files touched:**
+[smax_ctm/train_mappo_ctm_hanabi.py](../smax_ctm/train_mappo_ctm_hanabi.py), new
+Hanabi event detector helper.
+
+**Hanabi coord event candidates** (pick one or both for V1):
+
+1. **Hint-then-play.** An agent gives a hint on turn `t`, the recipient plays a
+   card on turn `t+1` (or within `k` turns). The `(t, t+1)` pair is a coord event;
+   label both steps as "in coord event" for the current hand.
+2. **Successful-play reward.** On any step where `reward > 0`, mark the previous
+   `k` steps as "in coord event." Captures the "something good just happened,
+   the reasoning was probably shared" intuition without needing to parse hint
+   semantics.
+
+V1 proposal: option 2 (reward-lookback). Simpler, environment-agnostic, works
+with the data already in `Transition`. Option 1 is a cleaner signal but requires
+parsing Hanabi's action space into hint vs play vs discard.
+
+- [ ] Implement `compute_hanabi_coord_event_mask(rewards, num_agents, num_envs,
+  lookback_k)` as a pure `jnp` helper.
+- [ ] Wire SAAL into
+  [train_mappo_ctm_hanabi.py](../smax_ctm/train_mappo_ctm_hanabi.py) with the
+  same structure as Stage 5. Reuse `ALIGN_ALPHA / ALIGN_BETA` from Stage 6 as
+  defaults; expect to retune.
+- [ ] Unit tests for the event mask.
+- [ ] **Sanity run:** Hanabi 2p, 1 seed, half budget (~3h). Confirm no crash,
+  entropy reasonable, `pair_cos_*` logs look sane.
+- [ ] **Main runs:** Hanabi 2p, 3 seeds, full budget. Cells: baseline Hanabi
+  CTM-MAPPO, CTM + SAAL. `ALIGN_ALPHA / ALIGN_BETA` sweep if time permits.
+
+**Exit criterion:** SAAL trains stably on Hanabi 2p and either beats or matches
+the Hanabi CTM-MAPPO baseline on score-out-of-25.
+
+---
+
+## Stage 8 — INC Hanabi discriminating tests
+
+**Goal:** run the INC-on-Hanabi cells that tell us whether INC's
+coordination gain comes from a legitimate mechanism or from smuggling card
+information through the execution-time channel. This is the "negative result
+with teeth" that supports the pivot and makes SAAL the defensible recommendation
+rather than just the author's preference.
+
+**Prerequisite:** Stage 7 in hand. This stage is effectively "add the INC cells
+to the Hanabi results table."
+
+**Files touched:**
+[smax_ctm/train_mappo_ctm_hanabi.py](../smax_ctm/train_mappo_ctm_hanabi.py) (no
+code changes needed — uses existing INC flags), new cross-play eval script.
+
+**Cells (Hanabi 2p, 3 seeds each):**
+
+| Cell | Config | Purpose |
+|---|---|---|
+| H-A | baseline (already from Stage 7) | No-channel control |
+| H-C | `INC_ENABLED=True, INC_CONSENSUS_DROPOUT=0.25` | INC at its best SMAX config |
+| H-E | H-C + `INC_FORCE_ZERO_CONSENSUS=True` | Zero-consensus control |
+
+Plus cross-play eval between H-C seed-0 and H-C seed-1 checkpoints.
+
+- [ ] Write `smax_ctm/scripts/run_hanabi_inc_discrim.py` to launch H-C and H-E
+  with the same hyperparameters and budget as the Stage 7 baseline.
+- [ ] **Cross-play eval plumbing.** New script
+  [smax_ctm/eval_hanabi_crossplay.py](../smax_ctm/eval_hanabi_crossplay.py) that:
+  1. Loads two `HanabiCTM` actor checkpoints from different seeds.
+  2. In rollout, dispatches actor params by agent index — agent 0 uses
+     `params_A`, agent 1 uses `params_B`.
+  3. Logs mean / median / std score over N eval episodes.
+  4. Reports score alongside self-play (same checkpoint on both agents).
+- [ ] **Pre-registered decision rules:**
+  - "H-C above H-A" ≡ mean-score gap ≥ 2 points.
+  - "H-E drops" ≡ H-E mean within 1 point of H-A.
+  - "Cross-play collapses" ≡ cross-play mean ≥ 3 points below self-play mean.
+- [ ] Write findings note at
+  [docs/inc_stage8_hanabi_discrim.md](../docs/inc_stage8_hanabi_discrim.md).
+
+**Interpretation matrix:**
+
+| H-C vs H-A | H-E vs H-A | Cross-play | Verdict | Paper role |
+|---|---|---|---|---|
+| H-C ≫ A | H-E ≈ A | collapses | INC cheats via channel + private convention | Negative result, INC reported as cautionary case |
+| H-C ≫ A | H-E ≈ A | holds | Channel load-bearing but conventions are generic | Mixed result; keep INC as secondary method |
+| H-C ≫ A | H-E ≈ H-C | — | Channel not load-bearing, INC gain is other | INC survives as parallel method to SAAL |
+| H-C ≈ A | — | — | INC doesn't transfer to Hanabi | Drop INC from Hanabi table |
+
+**Exit criterion:** all three cells + cross-play numbers logged;
+[docs/inc_stage8_hanabi_discrim.md](../docs/inc_stage8_hanabi_discrim.md) states
+which verdict cell fires and how the paper's Hanabi section is framed in
+consequence.
+
+---
+
+## Stage 9 — Ablations
 
 **Goal:** answer the obvious reviewer questions before they're asked.
 
-- [ ] **Pooling type.** `mean` vs `attention` vs `gated` on Hanabi-2p and SMAX 2s3z, 3 seeds each.
-- [ ] **Iteration count.** `K ∈ {1, 2, 3, 5, 7}` with INC on, holding pooling fixed. Shows the trade-off between consensus depth and compute.
-- [ ] **Consensus dropout.** Randomly zero out the pooled consensus input at training time with probability `INC_CONSENSUS_DROPOUT ∈ {0, 0.25, 0.5}`. Tests whether the policy can still act alone when the "channel" is unreliable — robustness story.
-- [ ] **Leave-one-out vs full pool (incl. self).** Run one set with self-included pooling; confirm the leave-one-out choice isn't load-bearing.
-- [ ] **Decentralised-at-test.** Take a centralised-trained INC model and evaluate it with each agent only pooling over its observable teammates (uses the SMAX sight radius or Hanabi's partial info). Reports performance drop. This is the defence against "this isn't decentralised enough" reviewers.
-- [ ] **No-sync ablation on INC model.** Replace `compute_synchronisation` with a linear projection of the flat trace (existing `CTM_USE_SYNC=False` path). Tests whether INC's benefit comes specifically from the sync signal vs any pooled internal state. This is the Stage 5a test that was already on the Stage 1-3 roadmap.
+- [ ] **SAAL α/β sensitivity curve.** Already partially covered in Stage 6 sweep.
+  Produce a single plot.
+- [ ] **SAAL event-detector sensitivity.** If Stage 5 used focus-fire-only, re-run
+  3m with the grouping and enemy-kill events added. Does the signal get stronger
+  or does the extra mask dilute it?
+- [ ] **SAAL under no parameter sharing.** Train with separate networks per agent
+  (if feasible). Tests whether the loss is really about cross-agent alignment or
+  about shared-param regularisation.
+- [ ] **INC pooling type.** `mean / attention / gated` on SMAX 2s3z and Hanabi 2p,
+  3 seeds each. Only if Stage 8 shows INC is surviving as a secondary method.
+- [ ] **INC iteration count.** `K ∈ {1, 2, 3, 5}` with INC on.
+- [ ] **Consensus dropout rate.** `{0, 0.1, 0.25, 0.5}` — already partially
+  covered by Stage 2 but extend.
+- [ ] **Decentralised-at-test INC.** Train centralised, eval with each agent
+  pooling only over observable teammates.
+- [ ] **No-sync ablation.** Replace the sync readout with a linear projection of
+  the flat activated-state trace, keeping SAAL on. Tests whether the benefit
+  comes specifically from the sync signal or any internal representation.
 
-**Exit criterion:** each ablation has a clean table or plot, interpretable in one sentence.
+**Exit criterion:** each ablation has a clean table or plot, interpretable in one
+sentence.
 
 ---
 
-## Stage 7 — Analysis & paper figures
+## Stage 10 — Analysis & paper figures
 
-**Goal:** turn training logs into the figures and narrative of the paper.
+**Goal:** turn training logs into figures and narrative.
 
-- [ ] **Figure 1:** the pitch. Architecture diagram of CTM + iterative consensus, highlighting the new between-iteration pooling arrow.
-- [ ] **Figure 2:** motivation from Stage 1-3 (sync rises during coordination events). Reuse the existing event-conditional bar chart.
-- [ ] **Figure 3:** within-step sync convergence under INC — agents start uncorrelated at iteration 0 and align by iteration K. Side-by-side with a no-INC model showing flat-line.
-- [ ] **Figure 4:** main results. Sample efficiency curves on Hanabi-2p and SMAX 5m_vs_6m for all four methods. Error bars = 95% CI over seeds.
-- [ ] **Figure 5:** ablation grid — pooling type × iteration count heatmap on Hanabi-2p final score.
-- [ ] **Figure 6:** interpretability. On a Hanabi episode, plot each agent's sync vector through time, marked with the information-giving move the policy actually takes. Does the consensus pooling visibly precede information moves?
-- [ ] **Table 1:** full experiment matrix with means ± CI.
-- [ ] Write the method section: problem statement (reuse the Stage 1-3 narrative for motivation), INC mechanism, equations for mean/attention/gated pooling, integration into CTM's iteration loop, complexity analysis (O(num_agents²) per iteration, negligible vs a single synapse forward pass).
-- [ ] Write related work: CTM, sync-based coordination in MARL, comm methods (CommNet, TarMAC, QMIX), adaptive-compute (ACT, PonderNet). Frame INC against both "learned comm" (INC has no learned message head, consensus is over the model's own internal variable) and "adaptive compute" (INC uses iterations for *joint* consensus, not per-agent halting).
-- [ ] Discussion: limitations (centralised pooling relies on parameter sharing; fully decentralised variants are future work), failure cases (does INC hurt on tasks that don't need coordination? — include a negative control like MPE `simple_tag` or a single-agent task).
+Figure list (tentative, in pitch order):
+
+1. **Architecture + method diagram.** CTM sync readout with the SAAL gradient
+   arrow on training-time coord events. Optional INC variant in a grey box.
+2. **Motivation from Stage 1-3.** Sync rises during coord events (existing plot).
+3. **SAAL main results.** Sample efficiency on SMAX 3m / 2s3z / 5m_vs_6m and
+   Hanabi 2p / 4p. Four methods: GRU-MAPPO, CTM iter=1, CTM + SAAL, CTM + INC.
+4. **SAAL mechanism verification.** `pair_cos_ff` vs `pair_cos_nff` over training
+   for baseline vs SAAL. Shows the loss does what it says.
+5. **SAAL ablation heatmap.** α × β grid on SMAX 3m.
+6. **Hanabi INC cheating signature.** Cross-play vs self-play bar chart for H-C.
+   The "INC fails Hanabi correctly" figure.
+7. **Reliability / rliable aggregate.** IQM + probability-of-improvement over
+   baseline, all envs pooled.
+
+Tables:
+- **Table 1:** full matrix, mean ± 95% CI.
+- **Table 2:** compute / memory / wall-clock comparison.
+
+Writing tasks:
+- [ ] Method section: SAAL derivation, β collapse-prevention argument, focus-fire
+  detector, Hanabi reward-lookback detector.
+- [ ] Related work: sync-based coordination, aux losses for MARL coordination
+  (Jakob Foerster's ZSC line, SAD), CommNet/TarMAC/IC3Net for contrast, CTM
+  background.
+- [ ] Discussion: when SAAL helps, when it doesn't, cost of parameter sharing
+  assumption, Hanabi INC case study as a cautionary note on execution-time
+  information channels.
 
 **Exit criterion:** draft figures + writing ready for internal review.
 
 ---
 
-## Stage 8 — Robustness & negative controls
+## Stage 11 — Robustness & negative controls
 
-**Goal:** strengthen against reviewer attacks.
-
-- [ ] **Negative control.** Run INC on a task where agents don't need to coordinate (e.g. MPE `simple` — single agent, or an independent-reward setting). INC should NOT help here. If it does, the story is wrong and we need to rethink.
-- [ ] **Compute-matched GRU.** Give GRU-MAPPO the same number of forward-pass FLOPs as INC-CTM (deeper GRU or more hidden units). Show INC still wins. This kills the "you just have more parameters" critique.
-- [ ] **Parameter-count-matched.** Same but matched on total params instead of FLOPs.
-- [ ] **Unseeded runs.** Final headline numbers on new seeds not used during development, to avoid seed-hacking accusations.
-- [ ] **Scaling.** If time permits, try Hanabi 5p to show the mechanism scales with team size.
-
-**Exit criterion:** negative control confirms INC does nothing where it shouldn't; compute-matched GRU still loses; headline numbers reproduce on fresh seeds.
-
----
+- [ ] **Negative control.** Run SAAL on a task that does not require coordination
+  (single-agent MPE or an independent-reward setting). SAAL should *not* help.
+  If it does, the story is wrong.
+- [ ] **Compute-matched GRU baseline.** Same FLOPs per step as CTM + SAAL.
+  Defends against "you just have more compute."
+- [ ] **Parameter-matched GRU baseline.**
+- [ ] **Fresh seeds for headline numbers**, not used during development.
+- [ ] **Hanabi 4p scaling.**
 
 ---
 
 ## Dependencies between stages
 
 ```
-Stage 0 ──► Stage 1 ──► Stage 2 ──► Stage 2.5 ──► Stage 4 ──► Stage 5 ──► Stage 6 ──► Stage 7 ──► Stage 8
-              │                                      ▲
-              └─► Stage 3 ──────────────────────────┘
+Stage 0 ──► 1 ──► 2 ──► 2.1 ──► 2.5 ──► [pivot]
+                                              │
+                                              ▼
+                                          Stage 4 (SAAL logging)
+                                              │
+                                              ▼
+                                          Stage 5 (SAAL SMAX 3m validation)
+                                              │
+                                              ▼
+                                          Stage 6 (SAAL SMAX matrix)
+                                              │
+                                              ▼
+                                          Stage 7 (SAAL Hanabi port)
+                                              │
+                                              ▼
+                                          Stage 8 (INC Hanabi discrim + cross-play)
+                                              │
+                                              ▼
+                                          Stage 9 (ablations)
+                                              │
+                                              ▼
+                                          Stage 10 (figures + writing)
+                                              │
+                                              ▼
+                                          Stage 11 (robustness)
+
+Stage 3 (Hanabi env wiring) sits outside this line — done in parallel during
+Stages 1-2, completed, and is a prerequisite for Stages 7 and 8.
 ```
 
-Stage 3 (Hanabi wiring) can run in parallel with Stages 1-2 if you split sessions across machines.
+**Bailout points:**
+- End of Stage 4: if baseline `pair_cos_ff` is already saturated, reformulate SAAL before Stage 5.
+- End of Stage 5: if SAAL doesn't beat baseline on SMAX 3m after hyperparameter retune, return to direction doc.
+- End of Stage 6: if SAAL doesn't generalise beyond 3m, decide whether to port to Hanabi or re-plan.
+- End of Stage 7: if SAAL doesn't work on Hanabi, the Hanabi section becomes negative-only (Stage 8 only).
 
 ---
 
-## Config keys added (quick reference)
+## Config keys (quick reference)
 
-| Key | Type | Default | Meaning |
-|---|---|---|---|
-| `INC_ENABLED` | bool | `False` | Master switch for iterative neural consensus |
-| `INC_POOLING` | str | `"mean"` | One of `mean` / `attention` / `gated` |
-| `INC_NUM_AGENTS` | int | auto | Set from env at `make_train` time |
-| `INC_CONSENSUS_DROPOUT` | float | `0.0` | Train-time dropout on the pooled consensus signal |
-| `INC_SELF_INCLUDED` | bool | `False` | Whether pooling includes the agent's own sync |
+| Key | Type | Default | Added in | Meaning |
+|---|---|---|---|---|
+| `INC_ENABLED` | bool | `False` | Stage 2 | Master switch for INC pooling |
+| `INC_POOLING` | str | `"mean"` | Stage 2 | `mean` / `attention` / `gated` |
+| `INC_NUM_AGENTS` | int | auto | Stage 2 | Set from env at `make_train` |
+| `INC_CONSENSUS_DROPOUT` | float | `0.0` | Stage 2 | Dropout on pooled consensus |
+| `CTM_ITER_DROPOUT` | float | `0.0` | Stage 2.1 | Dropout on activated trace between iters |
+| `INC_FORCE_ZERO_CONSENSUS` | bool | `False` | Stage 2.1 | Zero pooled vector (cell-E control) |
+| `ALIGN_ENABLED` | bool | `False` | Stage 5 | Master switch for SAAL |
+| `ALIGN_ALPHA` | float | `0.0` | Stage 5 | SAAL pull weight on coord events |
+| `ALIGN_BETA` | float | `0.0` | Stage 5 | SAAL push weight on non-coord steps |
+| `NUM_MOVEMENT_ACTIONS` | int | auto | Stage 4 | Captured from env for focus-fire mask |
+| `NUM_ENEMIES` | int | auto | Stage 4 | Captured from env for focus-fire mask |
 
 ---
 
@@ -318,17 +631,10 @@ Stage 3 (Hanabi wiring) can run in parallel with Stages 1-2 if you split session
 
 | Risk | Mitigation |
 |---|---|
-| INC doesn't beat `CTM iter=K, no INC` apples-to-apples | Stage 4 gives an early signal before committing to the matrix; fall back to Sync-Alignment Aux Loss (direction #2 in the brainstorm) |
-| Hanabi port is trickier than expected | Stage 3 is independent — if it stalls, run the full matrix on SMAX only and add Hanabi later |
-| Attention pooling is unstable at high iteration counts | Gradient-clip the consensus branch separately; Stage 6 ablation will catch this |
-| Dead-agent masking bug skews SMAX results | Unit test in Stage 2 that compares pooling with a dead agent to a manual expected value |
-| Consensus creates implicit off-policy behaviour when `CTM_ITERATIONS` changes between train and eval | Keep `CTM_ITERATIONS` fixed between train and eval; document this as a constraint |
-
----
-
-## Out of scope for this paper
-
-- Decentralised learned comm heads (we explicitly contrast against this).
-- Per-agent adaptive iteration count (that's the fallback "Think Fast, Think Slow" paper).
-- Changes to the centralised critic architecture — keep it as GRU for now so the actor is the only independent variable.
-- Heterogeneous-agent CTMs (one set of shared weights throughout).
+| Baseline `pair_cos` is already saturated | Stage 4 measures this before any loss is added; reformulate SAAL as subspace alignment if needed |
+| SAAL drives sync vectors to agent-invariant collapse under parameter sharing | β push-term on non-coord steps; Stage 5 gradient-flow test; entropy monitoring during sanity run |
+| Focus-fire is too sparse a signal | Stage 5 bailout option 2 (widen event set) or option 3 (advantage-gated) |
+| SAAL helps SMAX but not Hanabi | Stage 7 has a Hanabi-specific event detector; bailout is Hanabi section becomes negative-only (INC cheating case only) |
+| INC cheating test is ambiguous (H-C ≫ A but H-E ≈ C) | Cross-play is the decisive second line of evidence; if both tests disagree, report the ambiguity in the paper rather than picking a side |
+| Hanabi budget explodes (full matrix > available compute) | Stage 7 runs 1 seed per cell first ("signal exists"), 3 seeds only if warranted; same staging rule as Stage 8 |
+| Cross-play plumbing has a bug that underreports scores | Unit test: self-pair (same seed on both agents) must match standard eval score within noise |
