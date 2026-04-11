@@ -292,11 +292,11 @@ def make_train(config):
         obs_dim = env.observation_space(env.agents[0]).shape[0]
         action_dim = env.action_space(env.agents[0]).n
         ac_init_x = (
-            jnp.zeros((1, config["NUM_ENVS"], obs_dim)),
-            jnp.zeros((1, config["NUM_ENVS"])),
-            jnp.zeros((1, config["NUM_ENVS"], action_dim)),
+            jnp.zeros((1, config["NUM_ACTORS"], obs_dim)),
+            jnp.zeros((1, config["NUM_ACTORS"])),
+            jnp.zeros((1, config["NUM_ACTORS"], action_dim)),
         )
-        ac_init_hstate = CTMCell.initialize_carry(config["NUM_ENVS"], config["CTM_D_MODEL"], config["CTM_MEMORY_LENGTH"])
+        ac_init_hstate = CTMCell.initialize_carry(config["NUM_ACTORS"], config["CTM_D_MODEL"], config["CTM_MEMORY_LENGTH"])
         actor_network_params = actor_network.init(_rng_actor, ac_init_hstate, ac_init_x, deterministic=True)
         
         cr_init_x = (
