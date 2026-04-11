@@ -90,6 +90,36 @@ def test_agent_consensus_mean_dead_mask():
     assert jnp.allclose(out, expected)
 
 
+def test_agent_consensus_all_dead_gradient_is_finite():
+    # Regression: on the first rollout step train_mappo_ctm.py seeds last_done=ones
+    # to force the CTM reset path, which makes alive_mask all-False. The naive
+    # jnp.where(denom>0, numer/denom, 0) gives NaN gradients through the dead
+    # branch even though the forward pass looks fine. Safe-divide must fix this.
+    num_agents = 3
+    num_envs = 2
+    synch_size = 4
+
+    sync = jnp.arange(num_agents * num_envs * synch_size, dtype=jnp.float32).reshape(
+        num_agents, num_envs, synch_size
+    ) / 10.0
+    alive_mask = jnp.zeros((num_envs, num_agents), dtype=bool)  # everyone dead
+
+    for pooling in ("mean", "attention", "gated"):
+        module = AgentConsensus(pooling=pooling, dropout_rate=0.0)
+        variables = module.init(
+            jax.random.PRNGKey(0), sync, alive_mask=alive_mask, deterministic=True
+        )
+
+        def loss_fn(s):
+            out = module.apply(variables, s, alive_mask=alive_mask, deterministic=True)
+            return jnp.sum(out)
+
+        grad = jax.grad(loss_fn)(sync)
+        assert jnp.all(jnp.isfinite(grad)), (
+            f"all-dead mask produced non-finite gradient for pooling={pooling}"
+        )
+
+
 def test_no_op_proxy_inc_disabled_matches_single_iteration_enabled():
     # For iterations=1, consensus path is never consumed, so INC on/off must match.
     batch_size = 6  # 3 agents x 2 envs

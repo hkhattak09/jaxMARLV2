@@ -160,7 +160,11 @@ class AgentConsensus(nn.Module):
             sources = sync_agent_major[None, :, :, :]  # (1, A, E, S)
             numer = jnp.sum(sources * pair_mask[:, :, :, None], axis=1)  # (A, E, S)
             denom = jnp.sum(pair_mask, axis=1, keepdims=False)[:, :, None]  # (A, E, 1)
-            pooled = jnp.where(denom > 0, numer / denom, 0.0)
+            # Safe-divide: avoid NaN gradients from jnp.where(cond, x/0, 0.0).
+            # JAX evaluates both branches in backward, so the "dead" divide must
+            # not produce non-finite values even though forward discards them.
+            safe_denom = jnp.where(denom > 0, denom, 1.0)
+            pooled = jnp.where(denom > 0, numer / safe_denom, 0.0)
             return pooled * target_alive
 
         if self.pooling == "mean":
@@ -175,7 +179,9 @@ class AgentConsensus(nn.Module):
             # Handle all-masked rows robustly (e.g., no alive peers).
             weights = weights * pair_mask
             norm = jnp.sum(weights, axis=1, keepdims=True)
-            weights = jnp.where(norm > 0, weights / norm, 0.0)
+            # Safe-divide: same gradient trap as leave_one_out_mean.
+            safe_norm = jnp.where(norm > 0, norm, 1.0)
+            weights = jnp.where(norm > 0, weights / safe_norm, 0.0)
             pooled = jnp.einsum("abe,bes->aes", weights, v)
             pooled = pooled * target_alive
         elif self.pooling == "gated":
