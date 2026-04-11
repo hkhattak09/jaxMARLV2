@@ -237,6 +237,33 @@ def compute_focus_fire_mask(
     return jnp.any(hits_per_enemy >= 2, axis=-1)
 
 
+def compute_saal_alignment_terms(
+    pair_cos_ff: jnp.ndarray,
+    pair_cos_nff: jnp.ndarray,
+    align_enabled: bool,
+    align_alpha: float,
+    align_beta: float,
+):
+    """Compute Stage 5 SAAL terms from pre-computed masked cosine means.
+
+    Args:
+        pair_cos_ff:  Scalar mean of pair_cos over focus-fire steps (already computed
+                      for Stage 4 logging — pass it directly, do not recompute).
+        pair_cos_nff: Scalar mean of pair_cos over non-focus-fire steps (same).
+        align_enabled: Master switch; returns exact zeros when False.
+        align_alpha:  Pull weight on coordinated events.
+        align_beta:   Push weight on non-coordinated steps.
+    """
+    if not align_enabled:
+        zero = jnp.asarray(0.0, dtype=pair_cos_ff.dtype)
+        return zero, zero, zero
+
+    align_pos = -align_alpha * pair_cos_ff
+    align_neg = align_beta * pair_cos_nff
+    l_align = align_pos + align_neg
+    return l_align, align_pos, align_neg
+
+
 def shuffle_and_split_actor_batch_env_grouped(
     batch_tree,
     env_permutation: jnp.ndarray,
@@ -289,6 +316,9 @@ def make_train(config):
     # Stage 2.1 disambiguation flags.
     config.setdefault("CTM_ITER_DROPOUT", 0.0)
     config.setdefault("INC_FORCE_ZERO_CONSENSUS", False)
+    config.setdefault("ALIGN_ENABLED", False)
+    config.setdefault("ALIGN_ALPHA", 0.0)
+    config.setdefault("ALIGN_BETA", 0.0)
     if config["INC_CONSENSUS_DROPOUT"] < 0.0 or config["INC_CONSENSUS_DROPOUT"] >= 1.0:
         raise ValueError(
             f"INC_CONSENSUS_DROPOUT must be in [0.0, 1.0), got {config['INC_CONSENSUS_DROPOUT']}."
@@ -297,6 +327,10 @@ def make_train(config):
         raise ValueError(
             f"CTM_ITER_DROPOUT must be in [0.0, 1.0), got {config['CTM_ITER_DROPOUT']}."
         )
+    if config["ALIGN_ALPHA"] < 0.0:
+        raise ValueError(f"ALIGN_ALPHA must be >= 0.0, got {config['ALIGN_ALPHA']}.")
+    if config["ALIGN_BETA"] < 0.0:
+        raise ValueError(f"ALIGN_BETA must be >= 0.0, got {config['ALIGN_BETA']}.")
     if config.get("CTM_NEURON_SELECT", "first-last") != "first-last":
         raise ValueError(
             f"Unsupported CTM_NEURON_SELECT={config.get('CTM_NEURON_SELECT')}. "
@@ -549,9 +583,23 @@ def make_train(config):
                         pair_cos_nff = jnp.sum(pair_cos * nff_mask_f) / (jnp.sum(nff_mask_f) + 1e-8)
                         ff_frac = ff_mask_f.mean()
 
+                        if config["ALIGN_ENABLED"]:
+                            l_align, align_pos, align_neg = compute_saal_alignment_terms(
+                                pair_cos_ff,
+                                pair_cos_nff,
+                                True,
+                                float(config["ALIGN_ALPHA"]),
+                                float(config["ALIGN_BETA"]),
+                            )
+                        else:
+                            zero = jnp.asarray(0.0, dtype=pair_cos.dtype)
+                            l_align, align_pos, align_neg = zero, zero, zero
+
                         approx_kl = ((ratio - 1) - logratio).mean()
                         clip_frac = jnp.mean(jnp.abs(ratio - 1) > config["CLIP_EPS"])
                         actor_loss = loss_actor - config["ENT_COEF"] * entropy
+                        if config["ALIGN_ENABLED"]:
+                            actor_loss = actor_loss + l_align
                         return actor_loss, (
                             loss_actor,
                             entropy,
@@ -562,6 +610,9 @@ def make_train(config):
                             pair_cos_ff,
                             pair_cos_nff,
                             ff_frac,
+                            l_align,
+                            align_pos,
+                            align_neg,
                         )
 
                     def _critic_loss_fn(critic_params, init_hstate, traj_batch, targets):
@@ -614,6 +665,9 @@ def make_train(config):
                         "pair_cos_ff": actor_loss[1][6],
                         "pair_cos_nff": actor_loss[1][7],
                         "ff_frac": actor_loss[1][8],
+                        "L_align": actor_loss[1][9],
+                        "align_pos": actor_loss[1][10],
+                        "align_neg": actor_loss[1][11],
                     }
                     return (actor_train_state, critic_train_state), loss_info
 
@@ -672,6 +726,9 @@ def make_train(config):
             pair_cos_ff = loss_info["pair_cos_ff"]
             pair_cos_nff = loss_info["pair_cos_nff"]
             ff_frac = loss_info["ff_frac"]
+            l_align = loss_info["L_align"]
+            align_pos = loss_info["align_pos"]
+            align_neg = loss_info["align_neg"]
             has_nan = (
                 jnp.isnan(total_loss)
                 | jnp.isnan(entropy)
@@ -683,16 +740,37 @@ def make_train(config):
                 | jnp.isnan(pair_cos_ff)
                 | jnp.isnan(pair_cos_nff)
                 | jnp.isnan(ff_frac)
+                | jnp.isnan(l_align)
+                | jnp.isnan(align_pos)
+                | jnp.isnan(align_neg)
             )
             entropy_low = entropy < 1e-3
 
-            def log_callback(r, w, s, tl, ent, agn, cgn, p_all, p_ff, p_nff, ff, nan_flag, ent_low):
+            def log_callback(
+                r,
+                w,
+                s,
+                tl,
+                ent,
+                agn,
+                cgn,
+                p_all,
+                p_ff,
+                p_nff,
+                ff,
+                l_align_cb,
+                align_pos_cb,
+                align_neg_cb,
+                nan_flag,
+                ent_low,
+            ):
                 line = (
                     f"Step {s:8d} | Return: {r:10.2f} | Win Rate: {w:5.2f} "
                     f"| Loss: {tl:10.4f} | Ent: {ent:8.4f} "
                     f"| GradN(actor/critic): {agn:8.4f}/{cgn:8.4f} "
                     f"| pair_cos(all/ff/nff): {p_all:7.4f}/{p_ff:7.4f}/{p_nff:7.4f} "
-                    f"| ff_frac: {ff:6.4f}"
+                    f"| ff_frac: {ff:6.4f} "
+                    f"| align(L/pos/neg): {l_align_cb:8.5f}/{align_pos_cb:8.5f}/{align_neg_cb:8.5f}"
                 )
                 if nan_flag:
                     line += " | ALERT: NaN detected"
@@ -714,6 +792,9 @@ def make_train(config):
                 pair_cos_ff,
                 pair_cos_nff,
                 ff_frac,
+                l_align,
+                align_pos,
+                align_neg,
                 has_nan,
                 entropy_low,
             )
@@ -776,6 +857,10 @@ if __name__ == "__main__":
         # Stage 2.1 disambiguation defaults.
         "CTM_ITER_DROPOUT": 0.0,
         "INC_FORCE_ZERO_CONSENSUS": False,
+        # Stage 5 SAAL defaults.
+        "ALIGN_ENABLED": False,
+        "ALIGN_ALPHA": 0.0,
+        "ALIGN_BETA": 0.0,
         "ENV_NAME": "HeuristicEnemySMAX",
         "MAP_NAME": "3m",    # We start with 3m
         "SEED": 42,

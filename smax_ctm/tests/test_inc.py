@@ -16,6 +16,8 @@ if _SMAX_CTM_DIR not in sys.path:
 
 from smax_ctm.ctm_jax import AgentConsensus, CTMCell
 from smax_ctm.train_mappo_ctm import (
+    ActorCTM,
+    compute_saal_alignment_terms,
     compute_focus_fire_mask,
     shuffle_and_split_actor_batch_env_grouped,
 )
@@ -430,3 +432,156 @@ def test_minibatch_permutation_safety_with_agent_major_consensus():
     pooled_back = pooled_permuted[inv_perm]
 
     assert jnp.allclose(base, pooled_back)
+
+
+# ---------------------------------------------------------------------------
+# Stage 5 SAAL tests.
+# ---------------------------------------------------------------------------
+
+
+def test_stage5_alignment_term_finite_and_expected_sign():
+    # ff values: 0.9, 0.8 → mean = 0.85; nff values: 0.2, 0.1 → mean = 0.15
+    pair_cos_ff = jnp.asarray(0.85, dtype=jnp.float32)
+    pair_cos_nff = jnp.asarray(0.15, dtype=jnp.float32)
+
+    l_align, align_pos, align_neg = compute_saal_alignment_terms(
+        pair_cos_ff,
+        pair_cos_nff,
+        align_enabled=True,
+        align_alpha=0.05,
+        align_beta=0.025,
+    )
+
+    expected_pos = -0.05 * 0.85
+    expected_neg = 0.025 * 0.15
+    expected_l = expected_pos + expected_neg
+
+    assert jnp.isfinite(l_align)
+    assert jnp.isfinite(align_pos)
+    assert jnp.isfinite(align_neg)
+    assert jnp.allclose(align_pos, expected_pos)
+    assert jnp.allclose(align_neg, expected_neg)
+    assert jnp.allclose(l_align, expected_l)
+    assert float(l_align) < 0.0
+
+
+def test_stage5_alignment_off_switch_returns_exact_zeros():
+    pair_cos_ff = jnp.asarray(0.7, dtype=jnp.float32)
+    pair_cos_nff = jnp.asarray(0.6, dtype=jnp.float32)
+    l_align, align_pos, align_neg = compute_saal_alignment_terms(
+        pair_cos_ff,
+        pair_cos_nff,
+        align_enabled=False,
+        align_alpha=0.05,
+        align_beta=0.025,
+    )
+    assert float(l_align) == 0.0
+    assert float(align_pos) == 0.0
+    assert float(align_neg) == 0.0
+
+
+def test_stage5_alignment_gradient_reaches_ctm_actor_only():
+    config = {
+        "CTM_D_MODEL": 8,
+        "CTM_D_INPUT": 4,
+        "CTM_ITERATIONS": 1,
+        "CTM_N_SYNCH_OUT": 4,
+        "CTM_MEMORY_LENGTH": 3,
+        "CTM_DEEP_NLMS": False,
+        "CTM_NLM_HIDDEN_DIM": 2,
+        "CTM_ACTOR_HEAD_DIM": 8,
+        "CTM_USE_SYNC": True,
+        "CTM_NEURON_SELECT": "first-last",
+        "CTM_DO_LAYERNORM_NLM": False,
+        "INC_NUM_AGENTS": 2,
+        "INC_ENABLED": False,
+        "INC_POOLING": "mean",
+        "INC_CONSENSUS_DROPOUT": 0.0,
+        "INC_USE_ALIVE_MASK_FROM_DONES": True,
+        "CTM_ITER_DROPOUT": 0.0,
+        "INC_FORCE_ZERO_CONSENSUS": False,
+    }
+    actor = ActorCTM(action_dim=5, config=config)
+
+    seq_len = 3
+    num_agents = 2
+    num_envs = 2
+    batch = num_agents * num_envs
+    obs_dim = 6
+
+    hidden = CTMCell.initialize_carry(batch, config["CTM_D_MODEL"], config["CTM_MEMORY_LENGTH"])
+    obs = jnp.ones((seq_len, batch, obs_dim), dtype=jnp.float32)
+    dones = jnp.zeros((seq_len, batch), dtype=bool)
+    avail = jnp.ones((seq_len, batch, 5), dtype=jnp.float32)
+
+    variables = actor.init(jax.random.PRNGKey(0), hidden, (obs, dones, avail), deterministic=True)
+
+    # Agent-major flattened actions: [a0e0,a0e1,a1e0,a1e1]
+    # Build ff events in both timesteps/envs by having same enemy target for >=2 agents.
+    actions = jnp.array(
+        [
+            [6, 6, 6, 6],
+            [7, 7, 7, 7],
+            [6, 6, 7, 7],
+        ],
+        dtype=jnp.int32,
+    )
+
+    params = {
+        "actor": variables["params"],
+        "critic": {"dummy": jnp.ones((4,), dtype=jnp.float32)},
+    }
+
+    def loss_fn(packed):
+        _, _, synch = actor.apply(
+            {"params": packed["actor"]},
+            hidden,
+            (obs, dones, avail),
+            deterministic=True,
+        )
+        synch_am = synch.reshape(seq_len, num_agents, num_envs, -1)
+        s_norm = synch_am / (jnp.linalg.norm(synch_am, axis=-1, keepdims=True) + 1e-8)
+        cos_mat = jnp.einsum("taec,tbec->teab", s_norm, s_norm)
+        iu, ju = jnp.triu_indices(num_agents, k=1)
+        pair_cos = cos_mat[..., iu, ju].mean(axis=-1)
+
+        ff_mask = compute_focus_fire_mask(
+            actions,
+            num_agents=num_agents,
+            num_envs=num_envs,
+            num_movement_actions=6,
+            num_enemies=3,
+        )
+        ff_mask_f = ff_mask.astype(pair_cos.dtype)
+        nff_mask_f = (~ff_mask).astype(pair_cos.dtype)
+        pc_ff = jnp.sum(pair_cos * ff_mask_f) / (jnp.sum(ff_mask_f) + 1e-8)
+        pc_nff = jnp.sum(pair_cos * nff_mask_f) / (jnp.sum(nff_mask_f) + 1e-8)
+        l_align, _, _ = compute_saal_alignment_terms(
+            pc_ff,
+            pc_nff,
+            align_enabled=True,
+            align_alpha=0.05,
+            align_beta=0.025,
+        )
+        return l_align
+
+    grads = jax.grad(loss_fn)(params)
+    actor_flat = traverse_util.flatten_dict(grads["actor"], sep="/")
+
+    synapses_nonzero = any(
+        ("synapses/" in k) and jnp.any(jnp.abs(v) > 0)
+        for k, v in actor_flat.items()
+    )
+    nlm_nonzero = any(
+        ("nlm/" in k) and jnp.any(jnp.abs(v) > 0)
+        for k, v in actor_flat.items()
+    )
+    decay_nonzero = any(
+        ("decay_params_out" in k) and jnp.any(jnp.abs(v) > 0)
+        for k, v in actor_flat.items()
+    )
+
+    assert synapses_nonzero
+    assert nlm_nonzero
+    assert decay_nonzero
+    assert jnp.allclose(grads["critic"]["dummy"], 0.0)
