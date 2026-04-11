@@ -184,7 +184,7 @@ paths load, step, and train. Full-budget training deferred to Stage 7.
 
 ---
 
-## Stage 4 — SAAL pair-cosine logging pass 🟢 NEXT
+## Stage 4 — SAAL pair-cosine logging pass ✅ DONE
 
 **Goal:** before committing to loss weights, measure the baseline cross-agent
 `pair_cos` distribution on a vanilla CTM-MAPPO SMAX 3m run. With parameter
@@ -278,19 +278,66 @@ training dynamics. Outcome is a number (or a histogram) that unblocks Stage 5.
   already learning the alignment on its own — SAAL may only sharpen the effect.
   Set `ALIGN_ALPHA` conservatively.
 
+**Observations (run on 2026-04-11, 1 seed, ~3M steps, `INC_ENABLED=False`,
+`CTM_ITERATIONS=1`, final WR 0.82 — reproduces Stage 0 baseline):**
+
+| Phase | WR | `pair_cos_all` | `pair_cos_ff` | `pair_cos_nff` | gap (ff−nff) | ff_frac |
+|---|---|---|---|---|---|---|
+| init (step 0) | 0.00 | 0.763 | 0.854 | 0.763 | **+0.091** | 0.003 |
+| early (<0.5M) | 0.30 | 0.624 | 0.673 | 0.612 | +0.060 | 0.22 |
+| mid (0.5–1.5M) | 0.68 | 0.566 | 0.583 | 0.554 | +0.029 | 0.42 |
+| late (≥2.5M) | 0.80 | 0.652 | 0.662 | 0.642 | +0.020 | 0.47 |
+| final10 | 0.80 | 0.650 | 0.662 | 0.639 | **+0.023** | 0.47 |
+
+1. **Headroom exists.** Converged `pair_cos_ff ≈ 0.66`, nowhere near the 0.9
+   ceiling. SAAL has room to push.
+2. **Parameter-sharing floor.** At init, both `ff` and `nff` sit at ~0.76 — the
+   non-zero baseline similarity is a weight-sharing artefact, not coordination.
+3. **`ff > nff` holds almost everywhere** (181/183 log points). The Stage 1–3
+   alignment phenomenon *does* surface in the training distribution of a vanilla
+   CTM-MAPPO — but the margin is small.
+4. **The gap shrinks over training** (0.06 → 0.02). Whatever spontaneous
+   alignment the model discovers early is partially *unlearned* as entropy
+   collapses and the policy sharpens. This is a general PG / parameter-sharing
+   homogenisation pressure, independent of INC — and it reframes the Stage 2.1
+   `INC_CONSENSUS_DROPOUT=0.25` win: dropout helps precisely because it *resists
+   this collapse* by preventing agents from leaning on a constant pooled
+   teammate vector. SAAL is the training-time analogue — its β term exists to
+   push back on exactly this homogenisation.
+5. **Non-monotonic trajectory.** All three cosines dip to ~0.55 mid-training
+   (~1M steps) then rise back to ~0.65 — an entropy/exploration artefact rather
+   than a coordination signal. SAAL should be robust to this U-shape.
+6. **`ff_frac` tracks WR cleanly** (0.003 → 0.47). Focus-fire detector fires
+   meaningfully once agents start winning, so the `ff` bucket is not empty
+   during the informative part of training.
+
+**Decision rule match:** case 3 (small-but-real positive gap). Starting
+hyperparameters for Stage 5: **`ALIGN_ALPHA = 0.05, ALIGN_BETA = 0.025`**
+(conservative as the decision rule prescribes). Rationale: the existing gap is
+only ~0.02, so a loss term that dominates the PG signal would over-steer. See
+Stage 5 for the full hyperparameter discussion.
+
 ---
 
-## Stage 5 — SAAL loss implementation + SMAX 3m validation
+## Stage 5 — SAAL loss implementation + SMAX 3m validation 🟢 NEXT
 
 **Goal:** add the sync-alignment auxiliary loss and validate on SMAX 3m. Single
-seed sanity run first, then 3-seed comparison against the Stage 1 baseline.
+seed sanity run first, then 3-seed comparison against the Stage 1 baseline
+(Stage 2.1 cell A).
 
-**Prerequisite:** Stage 4 logging pass complete, starting hyperparameters chosen.
+**Prerequisite:** Stage 4 logging pass complete (done). Hyperparameters locked
+post-Stage-4 (see "Locked hyperparameters" below).
 
-**Files touched:** [smax_ctm/train_mappo_ctm.py](../smax_ctm/train_mappo_ctm.py),
-[smax_ctm/tests/test_inc.py](../smax_ctm/tests/test_inc.py),
-[smax_ctm/scripts/run_saal_stage5.py](../smax_ctm/scripts/run_saal_stage5.py)
-(new).
+**Files touched:**
+- [smax_ctm/train_mappo_ctm.py](../smax_ctm/train_mappo_ctm.py) — loss assembly
+  and config keys.
+- [smax_ctm/tests/test_inc.py](../smax_ctm/tests/test_inc.py) — loss-gate unit
+  test, gradient-flow test.
+- [smax_ctm/scripts/run_saal_stage5.py](../smax_ctm/scripts/run_saal_stage5.py)
+  (new) — sanity + 3-seed runner, modelled on
+  [run_stage2_1_disambig.py](../smax_ctm/scripts/run_stage2_1_disambig.py).
+- [docs/saal_stage5_findings.md](../docs/saal_stage5_findings.md) (new) —
+  results write-up.
 
 **Loss definition:**
 
@@ -301,10 +348,35 @@ L_align  = - ALIGN_ALPHA * mean_{(t,e) ∈ focus_fire} pair_cos(t, e)
 actor_loss_total = loss_actor - ENT_COEF * entropy + L_align
 ```
 
-The β term prevents the degenerate solution of making sync vectors agent-invariant
-under parameter sharing. See
-[docs/iterative_neural_consensus.md](../docs/iterative_neural_consensus.md) §5 for
-the derivation.
+The β term prevents the degenerate solution of making sync vectors
+agent-invariant under parameter sharing. It is also doing load-bearing work
+against the Stage-4 shrinking-gap phenomenon (PG / parameter sharing actively
+*homogenises* sync vectors over training; the β term resists this). See
+[docs/iterative_neural_consensus.md](../docs/iterative_neural_consensus.md) §5
+for the derivation.
+
+**Locked hyperparameters (post-Stage-4):**
+
+- `ALIGN_ALPHA = 0.05`
+- `ALIGN_BETA  = 0.025` (i.e. β = α/2)
+
+Rationale: Stage 4 measured a converged `pair_cos_ff − pair_cos_nff` gap of
+only ~0.02. A loss term on the order of the actor PG loss (~0.03) is a
+meaningful but non-dominant nudge — `α = 0.05` multiplying a cosine in [0, 1]
+lands exactly in that range. `β = α/2` is conservative: `nff ≈ 0.64` is not
+dangerously close to `ff ≈ 0.66`, so anti-collapse pressure can be smaller
+than the positive term for the sanity run. A wider β/α ratio sweep is
+deferred to Stage 6.
+
+**Explicitly deferred to Stage 6:**
+
+- β/α ratio sweep (`0.0, 0.25, 0.5, 1.0`).
+- `ALIGN_ALPHA` magnitude sweep (`0.01, 0.05, 0.1`).
+- Any curriculum / ramp on α. (Judgement call: the Stage-4 U-shape suggests a
+  ramp might help, but adding a schedule hyperparameter before we know
+  constant-α works is premature. Revisit only if constant-α fails on SMAX 3m
+  *and* the simpler fallback list below doesn't recover it. May not be done
+  at all.)
 
 **Implementation:**
 
@@ -319,33 +391,99 @@ the derivation.
   L_align   = -config["ALIGN_ALPHA"] * align_pos + config["ALIGN_BETA"] * align_neg
   actor_loss = actor_loss + L_align
   ```
-  When `ALIGN_ENABLED=False`, `L_align` is not computed at all (keeps the jit
-  graph identical to Stage 4).
-- [ ] **Log `L_align`, `align_pos`, `align_neg`** in `loss_info`.
-- [ ] **Loss-gate unit test:** forward-pass with `ALIGN_ENABLED=True`, confirm
-  `L_align` is finite, correct sign, and that gradients flow from `L_align` back
-  to the CTM parameters (`Synapses`, `NLMs`, `decay_params_out`).
-- [ ] **Sanity training run.** SMAX 3m, 1 seed, same budget as Stage 2 cell A,
-  `ALIGN_ENABLED=True`. Starting hyperparameters from Stage 4 decision rule (my
-  blind guess if Stage 4 is inconclusive: `ALIGN_ALPHA=0.05, ALIGN_BETA=0.025`).
-  Confirm the run does not diverge, entropy does not collapse, `pair_cos_ff`
-  rises above the Stage-4 baseline.
-- [ ] **3-seed comparison run.** Same config, 3 fresh seeds (non-overlapping with
-  Stage 2 / 2.1 seeds). Compare against the 3-seed Stage-1 baseline (cell A).
-  Metrics: final WR, frac ≥ 0.8, first-update rolling-20 ≥ 0.8, final
-  `pair_cos_ff / pair_cos_nff`. Same decision framework as Stage 2.1.
+  `align_pos` and `align_neg` are the **same quantities** Stage 4 already
+  computes for logging — reuse them; do not recompute. When
+  `ALIGN_ENABLED=False`, `L_align` is not computed at all (keeps the jit graph
+  identical to Stage 4 so pre- and post-Stage-5 baselines remain bit-for-bit
+  comparable).
+- [ ] **Logging.** Add to `loss_info`:
+  - `L_align` (total weighted term)
+  - `align_pos` (raw weighted-positive scalar: `-α · pair_cos_ff`)
+  - `align_neg` (raw weighted-negative scalar: `+β · pair_cos_nff`)
+  - **Keep Stage 4's raw `pair_cos_all / pair_cos_ff / pair_cos_nff / ff_frac`
+    live during SAAL runs** (they remain unchanged — we already log them). This
+    is the load-bearing diagnostic: SAAL should visibly *move the underlying
+    cosine*, not just the weighted sum. If `L_align` drops but `pair_cos_ff`
+    doesn't rise, something is wrong with the gradient path.
+- [ ] **Loss-gate unit test** in
+  [tests/test_inc.py](../smax_ctm/tests/test_inc.py):
+  - Forward-pass with `ALIGN_ENABLED=True, ALIGN_ALPHA=0.05, ALIGN_BETA=0.025`,
+    confirm `L_align` is finite.
+  - Confirm sign: with a synthetic batch where `pair_cos_ff > pair_cos_nff`,
+    `L_align = -α·pos + β·neg` should be negative (we want to *minimise* this,
+    which *increases* the ff term).
+  - Gradient-flow test: `jax.grad` of `L_align` w.r.t. actor params produces
+    non-zero gradients on `Synapses`, `NLMs`, and `decay_params_out` (the three
+    CTM param groups that feed the sync vector). Cross-check: gradient on
+    `critic` params is zero (SAAL must not leak into the critic).
+  - Off-switch test: with `ALIGN_ENABLED=False`, the loss value and gradient
+    match the Stage-4 baseline exactly (regression guard against accidental
+    jit-graph divergence).
+- [ ] **Sanity training run.** SMAX 3m, 1 seed (seed `200`), same budget as
+  Stage 2.1 cell A (≈3M timesteps), `ALIGN_ENABLED=True`, `ALIGN_ALPHA=0.05`,
+  `ALIGN_BETA=0.025`, `INC_ENABLED=False`, `CTM_ITERATIONS=1`. Confirm:
+  - Run completes without NaN and without entropy collapse.
+  - `pair_cos_ff` at convergence rises **meaningfully above the Stage-4
+    baseline of 0.66** (target: ≥ 0.70).
+  - `L_align` is monotonic-ish downward over training and is the expected
+    magnitude (|L_align| < actor_loss throughout).
+  - Final WR is at least not *worse* than Stage-2.1 cell A (0.793) —
+    regression guard.
+  - If any of these fail, halt before the 3-seed run and diagnose.
+- [ ] **3-seed comparison run.** Same config, seeds `[201, 202, 203]`
+  (non-overlapping with Stage 2.1's `[103, 104, 105]`). Compare against the
+  3-seed Stage-2.1 cell A baseline (already on disk). Runner should mirror
+  [run_stage2_1_disambig.py](../smax_ctm/scripts/run_stage2_1_disambig.py): one
+  cell ("SAAL-α05β025"), 3 seeds sequentially, per-seed WR/loss/cosine dumps
+  into `analysis_results_inc/stage5/`.
+- [ ] **Metrics reported** (same framework as Stage 2.1 for direct
+  comparability):
+  - Final WR (mean ± std across seeds).
+  - Frac of updates with WR ≥ 0.8.
+  - First update where rolling-20 WR ≥ 0.8.
+  - Final `pair_cos_ff`, `pair_cos_nff`, and gap at convergence.
+  - `L_align` trajectory plot (average across seeds).
+- [ ] **Write findings note** at
+  [docs/saal_stage5_findings.md](../docs/saal_stage5_findings.md). Report the
+  3-seed table, plot the cosine trajectories overlaid on the Stage-4 baseline,
+  state explicitly which pre-registered bar was hit.
+
+**Pre-registered success bars** (locked before the 3-seed run — written here
+so post-hoc reinterpretation is visibly dishonest):
+
+| Outcome | Criterion (both conditions required) |
+|---|---|
+| **Clear win** | final WR ≥ 0.822 **and** frac(WR ≥ 0.8) > 20% |
+| **Minimum viable** | final WR ≥ 0.81 **and** `pair_cos_ff` at convergence ≥ 0.70 |
+| **Null** | final WR within ±0.01 of cell A (0.793) **and** `pair_cos_ff` lift < 0.02 |
+| **Regression** | final WR < cell A − 0.01 **or** NaN / entropy collapse during training |
+
+- **Clear win** → proceed directly to Stage 6.
+- **Minimum viable** → proceed to Stage 6 but prioritise the α/β sweep; a
+  stronger α may be leaving performance on the table.
+- **Null** → enter the fallback list below. Do not proceed to Stage 6 until a
+  retune produces at least "minimum viable".
+- **Regression** → hard stop; debug the loss wiring or revisit the formulation.
 
 **Exit criterion:** SAAL sanity run completes without NaN/entropy collapse;
-3-seed SMAX 3m comparison shows either a win over cell A (proceed to Stage 6) or
-a clear null result (retune or reformulate the loss before proceeding).
+3-seed SMAX 3m comparison hits at least the "minimum viable" bar, and the
+findings doc records which bar was hit with per-seed numbers. A go/no-go for
+Stage 6 is written at the bottom of the findings doc.
 
-**If SAAL fails on SMAX 3m:** options to try in order:
+**If SAAL fails on SMAX 3m (null or regression):** options to try in order:
+
 1. Hyperparameter retune: sweep `ALIGN_ALPHA ∈ {0.01, 0.05, 0.1, 0.2}` with
-   `ALIGN_BETA = ALIGN_ALPHA / 2`.
-2. Event detector widening: add grouping and enemy-kill events (requires
+   `ALIGN_BETA = ALIGN_ALPHA / 2`. Cheapest fix — no code changes.
+2. Ratio retune: with whichever `ALIGN_ALPHA` did best in (1), sweep
+   `ALIGN_BETA / ALIGN_ALPHA ∈ {0.0, 0.5, 1.0, 2.0}`. Informs whether the
+   collapse-prevention term is doing the work or the positive alignment term is.
+3. Event-detector widening: add grouping and enemy-kill events (requires
    plumbing raw SMAX state through `Transition` — ~50 lines).
-3. Advantage-gated formulation: replace `ff_mask` with `advantage > 0` as a soft
-   gate. Cheaper than plumbing state; not tied to hand-crafted events.
+4. Advantage-gated formulation: replace `ff_mask` with `advantage > 0` as a
+   soft gate. Cheaper than plumbing state; not tied to hand-crafted events.
+5. (Last resort) α curriculum: start `ALIGN_ALPHA` at 0, ramp linearly to 0.05
+   over the first 500k steps. Only try if (1)–(4) fail — this adds a schedule
+   hyperparameter that's hard to defend in the paper.
 
 If none of these work, SAAL is dead as an idea and we return to the direction
 doc for a re-plan before spending more compute.
