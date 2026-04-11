@@ -93,21 +93,15 @@ class ActorCTM(nn.Module):
     config: Dict
 
     @nn.compact
-    def __call__(self, hidden, x):
+    def __call__(self, hidden, x, deterministic: bool = True):
         obs, dones, avail_actions = x
-        num_consensus_iterations = int(self.config.get("NUM_CONSENSUS_ITERATIONS", 0))
-        if num_consensus_iterations < 0:
-            raise ValueError(
-                f"NUM_CONSENSUS_ITERATIONS must be >= 0, got {num_consensus_iterations}."
-            )
-        if num_consensus_iterations != 0:
-            raise NotImplementedError(
-                "Stage 1 only supports NUM_CONSENSUS_ITERATIONS == 0. "
-                "Consensus pooling will be added in the next stage."
-            )
-
-        ctm_in = (obs, dones, avail_actions)
-        hidden, synch = ScannedCTM(self.config)(hidden, ctm_in)
+        # `deterministic` is a Python bool and must stay one all the way down to
+        # nn.Dropout, which branches on it with a Python `if`. Propagating it as a
+        # scanned JAX array would raise ConcretizationTypeError under JIT once
+        # INC_CONSENSUS_DROPOUT > 0. Pass it as a static module attribute instead.
+        hidden, synch = ScannedCTM(self.config, deterministic=deterministic)(
+            hidden, (obs, dones, avail_actions)
+        )
 
         x_head = nn.Dense(self.config["CTM_ACTOR_HEAD_DIM"])(synch)
         x_head = nn.relu(x_head)
@@ -167,8 +161,61 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     return {a: x[i] for i, a in enumerate(agent_list)}
 
 
+def shuffle_and_split_actor_batch_env_grouped(
+    batch_tree,
+    env_permutation: jnp.ndarray,
+    num_agents: int,
+    num_envs: int,
+    num_minibatches: int,
+):
+    """Shuffle envs and build minibatches without mixing agents across env groups."""
+    if num_envs % num_minibatches != 0:
+        raise ValueError(
+            f"NUM_ENVS ({num_envs}) must be divisible by NUM_MINIBATCHES ({num_minibatches})."
+        )
+    if env_permutation.shape != (num_envs,):
+        raise ValueError(
+            f"env_permutation must have shape ({num_envs},), got {env_permutation.shape}."
+        )
+    envs_per_mb = num_envs // num_minibatches
+
+    def _transform(x):
+        if x.ndim < 2:
+            raise ValueError(f"Expected rank>=2 tensor in batch tree, got shape {x.shape}.")
+        expected_actor_dim = num_agents * num_envs
+        if x.shape[1] != expected_actor_dim:
+            raise ValueError(
+                f"Actor axis mismatch: expected {expected_actor_dim}, got {x.shape[1]}."
+            )
+
+        grouped = jnp.reshape(x, (x.shape[0], num_agents, num_envs) + x.shape[2:])
+        shuffled = jnp.take(grouped, env_permutation, axis=2)
+        mb_grouped = jnp.reshape(
+            shuffled,
+            (x.shape[0], num_agents, num_minibatches, envs_per_mb) + x.shape[2:],
+        )
+        rest_axes = tuple(range(4, mb_grouped.ndim))
+        mb_first = jnp.transpose(mb_grouped, (2, 0, 1, 3) + rest_axes)
+        return jnp.reshape(
+            mb_first,
+            (num_minibatches, x.shape[0], num_agents * envs_per_mb) + x.shape[2:],
+        )
+
+    return jax.tree.map(_transform, batch_tree)
+
+
 def make_train(config):
     config.setdefault("NUM_CONSENSUS_ITERATIONS", 0)
+    config.setdefault("INC_ENABLED", False)
+    config.setdefault("INC_POOLING", "mean")
+    config.setdefault("INC_CONSENSUS_DROPOUT", 0.0)
+    config.setdefault("INC_DEBUG_SHAPES", False)
+    # Hanabi agents are not individually killed mid-episode; use identity alive mask.
+    config.setdefault("INC_USE_ALIVE_MASK_FROM_DONES", False)
+    if config["INC_CONSENSUS_DROPOUT"] < 0.0 or config["INC_CONSENSUS_DROPOUT"] >= 1.0:
+        raise ValueError(
+            f"INC_CONSENSUS_DROPOUT must be in [0.0, 1.0), got {config['INC_CONSENSUS_DROPOUT']}."
+        )
     if config.get("CTM_NEURON_SELECT", "first-last") != "first-last":
         raise ValueError(
             f"Unsupported CTM_NEURON_SELECT={config.get('CTM_NEURON_SELECT')}. "
@@ -180,6 +227,7 @@ def make_train(config):
         )
 
     env = HanabiEnv(num_agents=config["NUM_AGENTS"], **config.get("ENV_KWARGS", {}))
+    config["INC_NUM_AGENTS"] = env.num_agents
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
     config["NUM_UPDATES"] = config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
     config["MINIBATCH_SIZE"] = config["NUM_ACTORS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
@@ -207,7 +255,7 @@ def make_train(config):
             jnp.zeros((1, config["NUM_ENVS"], action_dim)),
         )
         ac_init_hstate = CTMCell.initialize_carry(config["NUM_ENVS"], config["CTM_D_MODEL"], config["CTM_MEMORY_LENGTH"])
-        actor_network_params = actor_network.init(_rng_actor, ac_init_hstate, ac_init_x)
+        actor_network_params = actor_network.init(_rng_actor, ac_init_hstate, ac_init_x, deterministic=True)
 
         cr_init_x = (
             jnp.zeros((1, config["NUM_ENVS"], env.world_state_size())),
@@ -239,9 +287,10 @@ def make_train(config):
 
             def _env_step(runner_state, unused):
                 train_states, env_state, last_obs, last_done, hstates, rng = runner_state
+                inc_dropout_active = config["INC_ENABLED"] and (config["INC_CONSENSUS_DROPOUT"] > 0.0)
 
                 # SELECT ACTION
-                rng, _rng = jax.random.split(rng)
+                rng, _rng_policy, _rng_dropout = jax.random.split(rng, 3)
 
                 # HanabiEnv.get_legal_moves returns a dict {agent: (num_moves,)};
                 # vmapping over envs yields {agent: (num_envs, num_moves)}.
@@ -252,8 +301,22 @@ def make_train(config):
                 # CTM ScannedCTM expects time axis on all three inputs
                 ac_in = (obs_batch[np.newaxis, :], last_done[np.newaxis, :], avail_actions[np.newaxis, :])
 
-                ac_hstate, pi = actor_network.apply(train_states[0].params, hstates[0], ac_in)
-                action = pi.sample(seed=_rng)
+                if inc_dropout_active:
+                    ac_hstate, pi = actor_network.apply(
+                        train_states[0].params,
+                        hstates[0],
+                        ac_in,
+                        deterministic=False,
+                        rngs={"dropout": _rng_dropout},
+                    )
+                else:
+                    ac_hstate, pi = actor_network.apply(
+                        train_states[0].params,
+                        hstates[0],
+                        ac_in,
+                        deterministic=False,
+                    )
+                action = pi.sample(seed=_rng_policy)
                 log_prob = pi.log_prob(action)
 
                 env_act = unbatchify(action, env.agents, config["NUM_ENVS"], env.num_agents)
@@ -290,6 +353,25 @@ def make_train(config):
             initial_hstates = runner_state[-2]
             runner_state, traj_batch = jax.lax.scan(_env_step, runner_state, None, config["NUM_STEPS"])
 
+            if config["INC_DEBUG_SHAPES"]:
+                def _shape_cb(t_dim, b_dim, n_agents):
+                    print(
+                        f"INC shape check | traj obs shape=(T={int(t_dim)}, B={int(b_dim)}, ...) "
+                        f"| INC_NUM_AGENTS={int(n_agents)} | inferred num_envs={int(b_dim // n_agents)}"
+                    )
+
+                jax.lax.cond(
+                    update_steps == 0,
+                    lambda _: jax.debug.callback(
+                        _shape_cb,
+                        jnp.asarray(traj_batch.obs.shape[0]),
+                        jnp.asarray(traj_batch.obs.shape[1]),
+                        jnp.asarray(config["INC_NUM_AGENTS"]),
+                    ),
+                    lambda _: None,
+                    operand=None,
+                )
+
             train_states, env_state, last_obs, last_done, hstates, rng = runner_state
 
             last_world_state = last_obs["world_state"].swapaxes(0, 1)
@@ -320,13 +402,26 @@ def make_train(config):
             def _update_epoch(update_state, unused):
                 def _update_minbatch(train_states, batch_info):
                     actor_train_state, critic_train_state = train_states
-                    ac_init_hstate, cr_init_hstate, traj_batch, advantages, targets = batch_info
+                    minibatch_tensors, dropout_key = batch_info
+                    ac_init_hstate, cr_init_hstate, traj_batch, advantages, targets = minibatch_tensors
+                    inc_dropout_active = config["INC_ENABLED"] and (config["INC_CONSENSUS_DROPOUT"] > 0.0)
 
-                    def _actor_loss_fn(actor_params, init_hstate, traj_batch, gae):
-                        _, pi = actor_network.apply(
-                            actor_params, jax.tree.map(lambda x: x[0], init_hstate),
-                            (traj_batch.obs, traj_batch.done, traj_batch.avail_actions)
-                        )
+                    def _actor_loss_fn(actor_params, init_hstate, traj_batch, gae, rng_dropout):
+                        if inc_dropout_active:
+                            _, pi = actor_network.apply(
+                                actor_params,
+                                jax.tree.map(lambda x: x[0], init_hstate),
+                                (traj_batch.obs, traj_batch.done, traj_batch.avail_actions),
+                                deterministic=False,
+                                rngs={"dropout": rng_dropout},
+                            )
+                        else:
+                            _, pi = actor_network.apply(
+                                actor_params,
+                                jax.tree.map(lambda x: x[0], init_hstate),
+                                (traj_batch.obs, traj_batch.done, traj_batch.avail_actions),
+                                deterministic=False,
+                            )
                         log_prob = pi.log_prob(traj_batch.action)
                         logratio = log_prob - traj_batch.log_prob
                         ratio = jnp.exp(logratio)
@@ -350,7 +445,13 @@ def make_train(config):
                         return critic_loss, value_loss
 
                     actor_grad_fn = jax.value_and_grad(_actor_loss_fn, has_aux=True)
-                    actor_loss, actor_grads = actor_grad_fn(actor_train_state.params, ac_init_hstate, traj_batch, advantages)
+                    actor_loss, actor_grads = actor_grad_fn(
+                        actor_train_state.params,
+                        ac_init_hstate,
+                        traj_batch,
+                        advantages,
+                        dropout_key,
+                    )
                     critic_grad_fn = jax.value_and_grad(_critic_loss_fn, has_aux=True)
                     critic_loss, critic_grads = critic_grad_fn(critic_train_state.params, cr_init_hstate, traj_batch, targets)
 
@@ -373,19 +474,25 @@ def make_train(config):
                     return (actor_train_state, critic_train_state), loss_info
 
                 train_states, init_hstates, traj_batch, advantages, targets, rng = update_state
-                rng, _rng = jax.random.split(rng)
+                rng, _rng_perm, _rng_dropout = jax.random.split(rng, 3)
                 init_hstates = jax.tree.map(lambda x: jnp.expand_dims(x, axis=0), init_hstates)
 
                 batch = (init_hstates[0], init_hstates[1], traj_batch, advantages.squeeze(), targets.squeeze())
-                permutation = jax.random.permutation(_rng, config["NUM_ACTORS"])
-                shuffled_batch = jax.tree.map(lambda x: jnp.take(x, permutation, axis=1), batch)
-                minibatches = jax.tree.map(
-                    lambda x: jnp.swapaxes(
-                        jnp.reshape(x, [x.shape[0], config["NUM_MINIBATCHES"], -1] + list(x.shape[2:])), 1, 0
-                    ), shuffled_batch
+                env_permutation = jax.random.permutation(_rng_perm, config["NUM_ENVS"])
+                minibatches = shuffle_and_split_actor_batch_env_grouped(
+                    batch,
+                    env_permutation,
+                    num_agents=env.num_agents,
+                    num_envs=config["NUM_ENVS"],
+                    num_minibatches=config["NUM_MINIBATCHES"],
                 )
+                mb_dropout_rngs = jax.random.split(_rng_dropout, config["NUM_MINIBATCHES"])
 
-                train_states, loss_info = jax.lax.scan(_update_minbatch, train_states, minibatches)
+                train_states, loss_info = jax.lax.scan(
+                    _update_minbatch,
+                    train_states,
+                    (minibatches, mb_dropout_rngs),
+                )
                 update_state = (train_states, jax.tree.map(lambda x: x[0], init_hstates), traj_batch, advantages, targets, rng)
                 return update_state, loss_info
 
@@ -484,6 +591,11 @@ if __name__ == "__main__":
         "CTM_NEURON_SELECT": "first-last",
         "CTM_ACTOR_HEAD_DIM": 256,
         "NUM_CONSENSUS_ITERATIONS": 0,
+        "INC_ENABLED": False,
+        "INC_POOLING": "mean",
+        "INC_CONSENSUS_DROPOUT": 0.0,
+        "INC_DEBUG_SHAPES": False,
+        "INC_USE_ALIVE_MASK_FROM_DONES": False,
         "SEED": 42,
         "ENV_KWARGS": {},  # passed to HanabiEnv (num_colors, num_ranks, hand_size, etc.)
         "ANNEAL_LR": True,

@@ -46,7 +46,7 @@
 
 **Relationship to `ScannedCTM` / `nn.scan`:** `ScannedCTM` uses `nn.scan` to iterate `CTMCell` over the **time axis** of a rollout/minibatch. The CTM's internal `CTM_ITERATIONS` loop lives **inside** each scan step — it is unrolled at compile time, not scanned. The INC refactor only touches this inner unrolled loop. `nn.scan`'s carry stays exactly as today: `(state_trace, activated_state_trace)`. Consensus is *not* carried across time — it is recomputed fresh every time step, consistent with the "zero inter-step bandwidth" framing.
 
-- [ ] In `CTMCell.__call__`, replace the `for _ in range(self.iterations)` body with a helper `_single_iter(state_trace, activated_state_trace, features, consensus_in)` that returns `(new_state_trace, new_activated_state_trace, synch)`. Signature:
+- [x] In `CTMCell.__call__`, replace the `for _ in range(self.iterations)` body with a helper `_single_iter(state_trace, activated_state_trace, features, consensus_in)` that returns `(new_state_trace, new_activated_state_trace, synch)`. Signature:
   ```python
   def _single_iter(
       self,
@@ -58,10 +58,15 @@
       # returns (new_state_trace, new_activated_state_trace, synch)
   ```
   Keep the helper as a regular Python method (not `@nn.compact`) and call the existing `Synapses` / `NLMs` / `compute_synchronisation` submodules from it — Flax will register them once at module init time.
-- [ ] The helper must compute the per-iteration sync vector using the existing `compute_synchronisation` against the current `activated_state_trace`, not just the final one. The `decay_params_out` parameter stays shared across iterations.
-- [ ] Add a new argument `consensus_in` (shape `(batch, synch_size)` or `None`) to `_single_iter`. When non-None, it is concatenated with `[features, last_activated]` before the synapses: `pre_synapse = concat([features, last_activated, consensus_in])`. Widen the Synapses' first Dense input accordingly (JAX handles this automatically since `nn.Dense` infers the input dim, but confirm shape logs).
-- [ ] For Stage 1, pass `consensus_in = None` on every iteration — this reproduces the current code path exactly but through the refactored helper. The final `synch` return value stays the last iteration's.
-- [ ] Run the Stage 0 baseline command again. The win-rate curve should overlay the original within noise (same seed → bit-identical, ideally).
+- [x] The helper must compute the per-iteration sync vector using the existing `compute_synchronisation` against the current `activated_state_trace`, not just the final one. The `decay_params_out` parameter stays shared across iterations.
+- [x] Add a new argument `consensus_in` (shape `(batch, synch_size)` or `None`) to `_single_iter`. When non-None, it is concatenated with `[features, last_activated]` before the synapses: `pre_synapse = concat([features, last_activated, consensus_in])`. Widen the Synapses' first Dense input accordingly (JAX handles this automatically since `nn.Dense` infers the input dim, but confirm shape logs).
+- [x] For Stage 1, pass `consensus_in = None` on every iteration — this reproduces the current code path exactly but through the refactored helper. The final `synch` return value stays the last iteration's.
+- [x] Run the Stage 0 baseline command again. The win-rate curve should overlay the original within noise (same seed → bit-identical, ideally).
+
+**Stage 1 evidence (2026-04-11):**
+- `CTMCell` refactored to `_single_iter(...)` with per-iteration sync emission and optional `consensus_in` input.
+- Training scripts wired with `NUM_CONSENSUS_ITERATIONS` Stage-1 guard (`0` only), preserving no-op behavior.
+- SMAX baseline after refactor is very similar to Stage 0 (within expected run noise), so Stage 1 is accepted as complete.
 
 **Exit criterion:** refactor is a no-op; SMAX 3m training curve matches pre-refactor run.
 
@@ -95,6 +100,21 @@
 - [ ] The final `synch` returned from `CTMCell` remains the last iteration's sync (same shape as before), so the actor head is unchanged.
 
 **Exit criterion:** with `INC_ENABLED=True, INC_POOLING="mean", CTM_ITERATIONS=3`, training runs without shape errors and produces a different (hopefully better) learning curve. With `INC_ENABLED=False` behaviour is bit-identical to Stage 1.
+
+---
+
+## Stage 2.5 — Unit tests for INC plumbing
+
+**Goal:** lock in the non-obvious invariants before they regress silently during later stages.
+
+- [ ] **Axis round-trip test.** Build a dummy `(num_actors, synch_size)` tensor where row `i` equals `i // num_envs` (so agent 0 rows are all 0, agent 1 rows are all 1, etc.). Reshape via the Stage-1 helper, confirm the agent axis is `[0, 1, ..., num_agents-1]` as expected.
+- [ ] **Leave-one-out mean test.** With `num_agents=3`, sync = `[[1], [2], [3]]` broadcast over envs, confirm pooled result is `[[2.5], [2.0], [1.5]]`.
+- [ ] **No-op equivalence.** With `INC_ENABLED=False`, the per-step output of `CTMCell` (including `synch`, action logits) must be bit-identical to the pre-refactor code on the same seed. Use `jnp.allclose(..., atol=0, rtol=0)`.
+- [ ] **Dead-agent masking.** With `num_agents=3` and agent 1 dead (`alive_mask=[1,0,1]`), the leave-one-out mean for agent 0 should equal agent 2's sync exactly, and vice versa; agent 1's pooled input should be a deterministic zero (or last-alive value — pick one and document it).
+- [ ] **Gradient flow.** Run one backward pass through an `INC_ENABLED=True` forward, confirm gradients are non-zero on the `AgentConsensus` parameters and on the widened `Synapses` first-layer kernel.
+- [ ] **Minibatch permutation safety.** Construct a fake update-step minibatch that permutes the flat actor axis, run `CTMCell` over it twice (once with the permutation, once without), and confirm the INC pooling yields the same per-agent result up to the permutation. Fails if the permutation scrambles agent groupings — in which case Stage 2's permutation-fix is required.
+
+**Exit criterion:** all tests pass as a single `pytest` file `smax_ctm/tests/test_inc.py`. This file is checked in before Stage 4 begins.
 
 ---
 
@@ -210,19 +230,6 @@ where `K` is the default chosen in Stage 4.
 **Exit criterion:** negative control confirms INC does nothing where it shouldn't; compute-matched GRU still loses; headline numbers reproduce on fresh seeds.
 
 ---
-
-## Stage 2.5 — Unit tests for INC plumbing
-
-**Goal:** lock in the non-obvious invariants before they regress silently during later stages.
-
-- [ ] **Axis round-trip test.** Build a dummy `(num_actors, synch_size)` tensor where row `i` equals `i // num_envs` (so agent 0 rows are all 0, agent 1 rows are all 1, etc.). Reshape via the Stage-1 helper, confirm the agent axis is `[0, 1, ..., num_agents-1]` as expected.
-- [ ] **Leave-one-out mean test.** With `num_agents=3`, sync = `[[1], [2], [3]]` broadcast over envs, confirm pooled result is `[[2.5], [2.0], [1.5]]`.
-- [ ] **No-op equivalence.** With `INC_ENABLED=False`, the per-step output of `CTMCell` (including `synch`, action logits) must be bit-identical to the pre-refactor code on the same seed. Use `jnp.allclose(..., atol=0, rtol=0)`.
-- [ ] **Dead-agent masking.** With `num_agents=3` and agent 1 dead (`alive_mask=[1,0,1]`), the leave-one-out mean for agent 0 should equal agent 2's sync exactly, and vice versa; agent 1's pooled input should be a deterministic zero (or last-alive value — pick one and document it).
-- [ ] **Gradient flow.** Run one backward pass through an `INC_ENABLED=True` forward, confirm gradients are non-zero on the `AgentConsensus` parameters and on the widened `Synapses` first-layer kernel.
-- [ ] **Minibatch permutation safety.** Construct a fake update-step minibatch that permutes the flat actor axis, run `CTMCell` over it twice (once with the permutation, once without), and confirm the INC pooling yields the same per-agent result up to the permutation. Fails if the permutation scrambles agent groupings — in which case Stage 2's permutation-fix is required.
-
-**Exit criterion:** all tests pass as a single `pytest` file `smax_ctm/tests/test_inc.py`. This file is checked in before Stage 4 begins.
 
 ---
 
