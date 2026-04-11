@@ -365,9 +365,16 @@ class CTMCell(nn.Module):
             )
         num_envs = batch_size // self.num_agents
 
-        consensus_in = None
         if self.iterations <= 0:
             raise ValueError(f"CTM iterations must be >= 1, got {self.iterations}.")
+        # When INC is enabled with >1 iterations, the synapses input concatenates
+        # a consensus vector. To keep the synapses Dense kernel shape consistent
+        # across iterations, seed consensus_in with zeros on the first iteration.
+        if self.inc_enabled and self.iterations > 1:
+            synch_size = self.n_synch_out * (self.n_synch_out + 1) // 2
+            consensus_in = jnp.zeros((batch_size, synch_size), dtype=features.dtype)
+        else:
+            consensus_in = None
         for iter_idx in range(self.iterations):
             state_trace, activated_state_trace, synch = self._single_iter(
                 state_trace,
