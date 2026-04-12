@@ -283,9 +283,10 @@ def test_stage2_1_defaults_are_noop_vs_prerefactor():
     vars_base = cell_base.init(key, carry, (obs, dones, avail_actions))
     vars_def = cell_defaulted.init(key, carry, (obs, dones, avail_actions))
 
-    _, s_base = cell_base.apply(vars_base, carry, (obs, dones, avail_actions))
-    _, s_def = cell_defaulted.apply(vars_def, carry, (obs, dones, avail_actions))
-    assert jnp.allclose(s_base, s_def, atol=0.0, rtol=0.0)
+    _, (synch_base, act_base) = cell_base.apply(vars_base, carry, (obs, dones, avail_actions))
+    _, (synch_def, act_def) = cell_defaulted.apply(vars_def, carry, (obs, dones, avail_actions))
+    assert jnp.allclose(synch_base, synch_def, atol=0.0, rtol=0.0)
+    assert jnp.allclose(act_base, act_def, atol=0.0, rtol=0.0)
 
 
 def test_stage2_1_force_zero_consensus_zeroes_pooled_before_dropout():
@@ -327,9 +328,10 @@ def test_stage2_1_ctm_iter_dropout_deterministic_is_noop():
     v_off = cell_off.init(key, carry, (obs, dones, avail_actions))
     v_on = cell_on.init(key, carry, (obs, dones, avail_actions))
 
-    _, s_off = cell_off.apply(v_off, carry, (obs, dones, avail_actions))
-    _, s_on = cell_on.apply(v_on, carry, (obs, dones, avail_actions))
-    assert jnp.allclose(s_off, s_on, atol=0.0, rtol=0.0)
+    _, (synch_off, act_off) = cell_off.apply(v_off, carry, (obs, dones, avail_actions))
+    _, (synch_on, act_on) = cell_on.apply(v_on, carry, (obs, dones, avail_actions))
+    assert jnp.allclose(synch_off, synch_on, atol=0.0, rtol=0.0)
+    assert jnp.allclose(act_off, act_on, atol=0.0, rtol=0.0)
 
 
 def test_stage2_1_ctm_iter_dropout_train_changes_with_rng():
@@ -350,13 +352,13 @@ def test_stage2_1_ctm_iter_dropout_train_changes_with_rng():
         (obs, dones, avail_actions),
     )
 
-    _, s_a = cell.apply(
+    _, (synch_a, act_a) = cell.apply(
         variables, carry, (obs, dones, avail_actions), rngs={"dropout": jax.random.PRNGKey(100)}
     )
-    _, s_b = cell.apply(
+    _, (synch_b, act_b) = cell.apply(
         variables, carry, (obs, dones, avail_actions), rngs={"dropout": jax.random.PRNGKey(200)}
     )
-    assert not jnp.allclose(s_a, s_b)
+    assert not jnp.allclose(synch_a, synch_b) or not jnp.allclose(act_a, act_b)
 
 
 def test_stage2_1_force_zero_gradient_still_flows_to_synapses():
