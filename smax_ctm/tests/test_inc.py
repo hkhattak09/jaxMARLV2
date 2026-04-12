@@ -140,8 +140,8 @@ def test_no_op_proxy_inc_disabled_matches_single_iteration_enabled():
     vars_off = cell_off.init(key, carry, (obs, dones, avail_actions))
     vars_on = cell_on.init(key, carry, (obs, dones, avail_actions))
 
-    _, synch_off = cell_off.apply(vars_off, carry, (obs, dones, avail_actions))
-    _, synch_on = cell_on.apply(vars_on, carry, (obs, dones, avail_actions))
+    _, (synch_off, _) = cell_off.apply(vars_off, carry, (obs, dones, avail_actions))
+    _, (synch_on, _) = cell_on.apply(vars_on, carry, (obs, dones, avail_actions))
     assert jnp.allclose(synch_off, synch_on, atol=0.0, rtol=0.0)
 
 
@@ -156,7 +156,7 @@ def test_gradient_flow_through_consensus_and_synapses():
     variables = cell.init(jax.random.PRNGKey(11), carry, (obs, dones, avail_actions))
 
     def loss_fn(params):
-        _, synch = cell.apply({"params": params}, carry, (obs, dones, avail_actions))
+        _, (synch, _) = cell.apply({"params": params}, carry, (obs, dones, avail_actions))
         return jnp.sum(synch)
 
     grads = jax.grad(loss_fn)(variables["params"])
@@ -386,7 +386,7 @@ def test_stage2_1_force_zero_gradient_still_flows_to_synapses():
     )
 
     def loss_fn(params):
-        _, synch = cell.apply(
+        _, (synch, _) = cell.apply(
             {"params": params},
             carry,
             (obs, dones, avail_actions),

@@ -446,7 +446,8 @@ class CTMCell(nn.Module):
                 consensus_in = None
         
         new_carry = (state_trace, activated_state_trace)
-        return new_carry, synch
+        last_activated = activated_state_trace[:, :, -1]
+        return new_carry, (synch, last_activated)
 
 class ScannedCTM(nn.Module):
     config: Dict[str, Any]

@@ -174,25 +174,26 @@ dones = jnp.zeros((batch,))
 avail = jnp.ones((batch, n_actions))
 
 params = cell.init(key, carry, (obs, dones, avail))
-new_carry, synch = cell.apply(params, carry, (obs, dones, avail))
+new_carry, (synch, last_activated) = cell.apply(params, carry, (obs, dones, avail))
 
 assert new_carry[0].shape == (batch, d_model, mem_len)
 assert new_carry[1].shape == (batch, d_model, mem_len)
 assert synch.shape == (batch, synch_size)
+assert last_activated.shape == (batch, d_model)
 
 dones_all = jnp.ones((batch,))
-_, synch_reset = cell.apply(params, carry, (obs, dones_all, avail))
+_, (synch_reset, _) = cell.apply(params, carry, (obs, dones_all, avail))
 assert jnp.allclose(synch_reset[0], synch_reset[1], atol=1e-5), "Reset-on-done mismatch"
 
 @jax.jit
 def _jit_cell(p, c, i):
     return cell.apply(p, c, i)
 
-_, synch_jit = _jit_cell(params, carry, (obs, dones, avail))
+_, (synch_jit, _) = _jit_cell(params, carry, (obs, dones, avail))
 assert jnp.allclose(synch, synch_jit, atol=1e-6), "JIT vs eager mismatch for CTMCell"
 
 def _cell_loss(p):
-    _, s = cell.apply(p, carry, (obs, dones, avail))
+    _, (s, _) = cell.apply(p, carry, (obs, dones, avail))
     return jnp.sum(s)
 
 cell_grads = jax.grad(_cell_loss)(params)
@@ -206,10 +207,11 @@ scan_obs = jnp.ones((seq_len, batch, obs_dim))
 scan_dones = jnp.zeros((seq_len, batch))
 scan_avail = jnp.ones((seq_len, batch, n_actions))
 scan_params = scanned.init(key, carry, (scan_obs, scan_dones, scan_avail))
-scan_carry, scan_synch = scanned.apply(scan_params, carry, (scan_obs, scan_dones, scan_avail))
+scan_carry, (scan_synch, scan_last_activated) = scanned.apply(scan_params, carry, (scan_obs, scan_dones, scan_avail))
 assert scan_carry[0].shape == (batch, d_model, mem_len)
 assert scan_carry[1].shape == (batch, d_model, mem_len)
 assert scan_synch.shape == (seq_len, batch, synch_size)
+assert scan_last_activated.shape == (seq_len, batch, d_model)
 print("  ScannedCTM sequence checks passed")
 
 

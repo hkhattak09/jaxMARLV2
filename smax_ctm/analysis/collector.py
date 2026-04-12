@@ -190,7 +190,7 @@ def collect_episodes(
             if avail_batch.shape != (env.num_agents, action_dim):
                 raise ValueError(f"Unexpected avail_actions shape at step {t}: {avail_batch.shape}")
 
-            carry, synch = ctm_cell.apply(ctm_params, carry, (obs_batch, done_batch, avail_batch))
+            carry, (synch, _) = ctm_cell.apply(ctm_params, carry, (obs_batch, done_batch, avail_batch))
             if synch.shape != (env.num_agents, synch_size):
                 raise ValueError(f"Unexpected synch shape at step {t}: {synch.shape}")
 

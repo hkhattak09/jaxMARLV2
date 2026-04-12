@@ -142,15 +142,32 @@ class ActorCTM(nn.Module):
         # nn.Dropout, which branches on it with a Python `if`. Propagating it as a
         # scanned JAX array would raise ConcretizationTypeError under JIT once
         # INC_CONSENSUS_DROPOUT > 0. Pass it as a static module attribute instead.
-        hidden, synch = ScannedCTM(self.config, deterministic=deterministic)(
+        hidden, (synch, last_activated) = ScannedCTM(self.config, deterministic=deterministic)(
             hidden, (obs, dones, avail_actions)
         )
-        
-        x_head = nn.Dense(self.config["CTM_ACTOR_HEAD_DIM"])(synch)
+
+        if self.config.get("ACTOR_USE_SYNCH_INPUT", False):
+            head_input = jnp.concatenate([synch, last_activated], axis=-1)
+        else:
+            head_input = last_activated
+
+        x_head = nn.Dense(
+            self.config["CTM_ACTOR_HEAD_DIM"],
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+        )(head_input)
         x_head = nn.relu(x_head)
-        x_head = nn.Dense(self.config["CTM_ACTOR_HEAD_DIM"])(x_head)
+        x_head = nn.Dense(
+            self.config["CTM_ACTOR_HEAD_DIM"],
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+        )(x_head)
         x_head = nn.relu(x_head)
-        x_head = nn.Dense(self.action_dim)(x_head)
+        x_head = nn.Dense(
+            self.action_dim,
+            kernel_init=orthogonal(0.01),
+            bias_init=constant(0.0),
+        )(x_head)
         
         unavail_actions = 1 - avail_actions
         action_logits = x_head - (unavail_actions * 1e10)
@@ -163,7 +180,20 @@ class CriticRNN(nn.Module):
 
     @nn.compact
     def __call__(self, hidden, x):
-        world_state, dones = x
+        critic_use_synch = self.config.get("CRITIC_USE_SYNCH_INPUT", True)
+        if critic_use_synch:
+            if len(x) != 3:
+                raise ValueError(
+                    f"Critic expected (world_state, dones, synch) when CRITIC_USE_SYNCH_INPUT=True, got tuple len {len(x)}."
+                )
+            world_state, dones, synch = x
+        else:
+            if len(x) != 2:
+                raise ValueError(
+                    f"Critic expected (world_state, dones) when CRITIC_USE_SYNCH_INPUT=False, got tuple len {len(x)}."
+                )
+            world_state, dones = x
+            synch = None
         embedding = nn.Dense(
             self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(world_state)
@@ -172,8 +202,14 @@ class CriticRNN(nn.Module):
         rnn_in = (embedding, dones)
         hidden, embedding = ScannedRNN()(hidden, rnn_in)
 
+        if critic_use_synch:
+            # Value head receives coordination features from actor-produced sync vectors.
+            value_input = jnp.concatenate([embedding, synch], axis=-1)
+        else:
+            value_input = embedding
+
         critic = nn.Dense(self.config["GRU_HIDDEN_DIM"], kernel_init=orthogonal(2), bias_init=constant(0.0))(
-            embedding
+            value_input
         )
         critic = nn.relu(critic)
         critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(
@@ -194,6 +230,7 @@ class Transition(NamedTuple):
     world_state: jnp.ndarray
     info: jnp.ndarray
     avail_actions: jnp.ndarray
+    synch: jnp.ndarray
 
 
 def batchify(x: dict, agent_list, num_actors):
@@ -316,6 +353,8 @@ def make_train(config):
     # Stage 2.1 disambiguation flags.
     config.setdefault("CTM_ITER_DROPOUT", 0.0)
     config.setdefault("INC_FORCE_ZERO_CONSENSUS", False)
+    config.setdefault("ACTOR_USE_SYNCH_INPUT", False)
+    config.setdefault("CRITIC_USE_SYNCH_INPUT", True)
     config.setdefault("ALIGN_ENABLED", False)
     config.setdefault("ALIGN_ALPHA", 0.0)
     config.setdefault("ALIGN_BETA", 0.0)
@@ -331,6 +370,14 @@ def make_train(config):
         raise ValueError(f"ALIGN_ALPHA must be >= 0.0, got {config['ALIGN_ALPHA']}.")
     if config["ALIGN_BETA"] < 0.0:
         raise ValueError(f"ALIGN_BETA must be >= 0.0, got {config['ALIGN_BETA']}.")
+    if not isinstance(config["ACTOR_USE_SYNCH_INPUT"], bool):
+        raise ValueError(
+            f"ACTOR_USE_SYNCH_INPUT must be bool, got {type(config['ACTOR_USE_SYNCH_INPUT']).__name__}."
+        )
+    if not isinstance(config["CRITIC_USE_SYNCH_INPUT"], bool):
+        raise ValueError(
+            f"CRITIC_USE_SYNCH_INPUT must be bool, got {type(config['CRITIC_USE_SYNCH_INPUT']).__name__}."
+        )
     if config.get("CTM_NEURON_SELECT", "first-last") != "first-last":
         raise ValueError(
             f"Unsupported CTM_NEURON_SELECT={config.get('CTM_NEURON_SELECT')}. "
@@ -363,6 +410,7 @@ def make_train(config):
         actor_network = ActorCTM(env.action_space(env.agents[0]).n, config=config)
         critic_network = CriticRNN(config=config)
         rng, _rng_actor, _rng_critic = jax.random.split(rng, 3)
+        synch_size = config["CTM_N_SYNCH_OUT"] * (config["CTM_N_SYNCH_OUT"] + 1) // 2
         
         obs_dim = env.observation_space(env.agents[0]).shape[0]
         action_dim = env.action_space(env.agents[0]).n
@@ -374,10 +422,17 @@ def make_train(config):
         ac_init_hstate = CTMCell.initialize_carry(config["NUM_ACTORS"], config["CTM_D_MODEL"], config["CTM_MEMORY_LENGTH"])
         actor_network_params = actor_network.init(_rng_actor, ac_init_hstate, ac_init_x, deterministic=True)
         
-        cr_init_x = (
-            jnp.zeros((1, config["NUM_ENVS"], env.world_state_size(),)),  
-            jnp.zeros((1, config["NUM_ENVS"])),
-        )
+        if config["CRITIC_USE_SYNCH_INPUT"]:
+            cr_init_x = (
+                jnp.zeros((1, config["NUM_ENVS"], env.world_state_size(),)),
+                jnp.zeros((1, config["NUM_ENVS"])),
+                jnp.zeros((1, config["NUM_ENVS"], synch_size)),
+            )
+        else:
+            cr_init_x = (
+                jnp.zeros((1, config["NUM_ENVS"], env.world_state_size(),)),
+                jnp.zeros((1, config["NUM_ENVS"])),
+            )
         cr_init_hstate = ScannedRNN.initialize_carry(config["NUM_ENVS"], config["GRU_HIDDEN_DIM"])
         critic_network_params = critic_network.init(_rng_critic, cr_init_hstate, cr_init_x)
 
@@ -397,13 +452,14 @@ def make_train(config):
         obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng)
         ac_init_hstate = CTMCell.initialize_carry(config["NUM_ACTORS"], config["CTM_D_MODEL"], config["CTM_MEMORY_LENGTH"])
         cr_init_hstate = ScannedRNN.initialize_carry(config["NUM_ACTORS"], config["GRU_HIDDEN_DIM"])
+        init_synch = jnp.zeros((config["NUM_ACTORS"], synch_size))
 
         # TRAIN LOOP
         def _update_step(update_runner_state, unused):
             runner_state, update_steps = update_runner_state
             
             def _env_step(runner_state, unused):
-                train_states, env_state, last_obs, last_done, hstates, rng = runner_state
+                train_states, env_state, last_obs, last_done, hstates, last_synch, rng = runner_state
                 # Dropout RNG is needed if INC consensus dropout OR the
                 # Stage 2.1 iteration-loop dropout control is on.
                 inc_dropout_active = (
@@ -420,7 +476,7 @@ def make_train(config):
                 ac_in = (obs_batch[np.newaxis, :], last_done[np.newaxis, :], avail_actions[np.newaxis, :])
 
                 if inc_dropout_active:
-                    ac_hstate, pi, _ = actor_network.apply(
+                    ac_hstate, pi, synch = actor_network.apply(
                         train_states[0].params,
                         hstates[0],
                         ac_in,
@@ -428,7 +484,7 @@ def make_train(config):
                         rngs={"dropout": _rng_dropout},
                     )
                 else:
-                    ac_hstate, pi, _ = actor_network.apply(
+                    ac_hstate, pi, synch = actor_network.apply(
                         train_states[0].params,
                         hstates[0],
                         ac_in,
@@ -443,7 +499,10 @@ def make_train(config):
                 # VALUE
                 world_state = last_obs["world_state"].swapaxes(0,1)  
                 world_state = world_state.reshape((config["NUM_ACTORS"],-1))
-                cr_in = (world_state[None, :], last_done[np.newaxis, :])
+                if config["CRITIC_USE_SYNCH_INPUT"]:
+                    cr_in = (world_state[None, :], last_done[np.newaxis, :], synch)
+                else:
+                    cr_in = (world_state[None, :], last_done[np.newaxis, :])
                 cr_hstate, value = critic_network.apply(train_states[1].params, hstates[1], cr_in)
 
                 # STEP ENV
@@ -464,11 +523,12 @@ def make_train(config):
                     world_state,
                     info,
                     avail_actions,
+                    synch.squeeze(),
                 )
-                runner_state = (train_states, env_state, obsv, done_batch, (ac_hstate, cr_hstate), rng)
+                runner_state = (train_states, env_state, obsv, done_batch, (ac_hstate, cr_hstate), synch.squeeze(), rng)
                 return runner_state, transition
 
-            initial_hstates = runner_state[-2]
+            initial_hstates = runner_state[4]
             runner_state, traj_batch = jax.lax.scan(_env_step, runner_state, None, config["NUM_STEPS"])
 
             if config["INC_DEBUG_SHAPES"]:
@@ -490,11 +550,14 @@ def make_train(config):
                     operand=None,
                 )
             
-            train_states, env_state, last_obs, last_done, hstates, rng = runner_state
+            train_states, env_state, last_obs, last_done, hstates, last_synch, rng = runner_state
             
             last_world_state = last_obs["world_state"].swapaxes(0,1)
             last_world_state = last_world_state.reshape((config["NUM_ACTORS"],-1))
-            cr_in = (last_world_state[None, :], last_done[np.newaxis, :])
+            if config["CRITIC_USE_SYNCH_INPUT"]:
+                cr_in = (last_world_state[None, :], last_done[np.newaxis, :], last_synch[np.newaxis, :])
+            else:
+                cr_in = (last_world_state[None, :], last_done[np.newaxis, :])
             _, last_val = critic_network.apply(train_states[1].params, hstates[1], cr_in)
             last_val = last_val.squeeze()
 
@@ -616,10 +679,14 @@ def make_train(config):
                         )
 
                     def _critic_loss_fn(critic_params, init_hstate, traj_batch, targets):
+                        if config["CRITIC_USE_SYNCH_INPUT"]:
+                            critic_in = (traj_batch.world_state, traj_batch.done, traj_batch.synch)
+                        else:
+                            critic_in = (traj_batch.world_state, traj_batch.done)
                         _, value = critic_network.apply(
                             critic_params,
                             jax.tree.map(lambda x: x[0], init_hstate),
-                            (traj_batch.world_state, traj_batch.done),
+                            critic_in,
                         )
                         value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(
                             -config["CLIP_EPS"], config["CLIP_EPS"]
@@ -800,7 +867,7 @@ def make_train(config):
             )
 
             update_steps = update_steps + 1
-            runner_state = (train_states, env_state, last_obs, last_done, hstates, update_state[-1])
+            runner_state = (train_states, env_state, last_obs, last_done, hstates, last_synch, update_state[-1])
             return (runner_state, update_steps), metric
 
         rng, _rng = jax.random.split(rng)
@@ -811,6 +878,7 @@ def make_train(config):
             # Force reset-on-done once at rollout start so CTM uses learned start traces.
             jnp.ones((config["NUM_ACTORS"]), dtype=bool),
             (ac_init_hstate, cr_init_hstate),
+            init_synch,
             _rng,
         )
         runner_state, metric = jax.lax.scan(_update_step, (runner_state, 0), None, config["NUM_UPDATES"])
@@ -842,12 +910,15 @@ if __name__ == "__main__":
         "CTM_ITERATIONS": 1,
         "CTM_N_SYNCH_OUT": 32,
         "CTM_MEMORY_LENGTH": 5,
-        "CTM_DEEP_NLMS": True,
+        "CTM_DEEP_NLMS": False,
         "CTM_NLM_HIDDEN_DIM": 2,
         "CTM_DO_LAYERNORM_NLM": False,
         "CTM_USE_SYNC": True,
         "CTM_NEURON_SELECT": "first-last",
         "CTM_ACTOR_HEAD_DIM": 64,
+        # A/B switches for sync routing.
+        "ACTOR_USE_SYNCH_INPUT": False,
+        "CRITIC_USE_SYNCH_INPUT": True,
         "NUM_CONSENSUS_ITERATIONS": 0,
         "INC_ENABLED": False,
         "INC_POOLING": "mean",

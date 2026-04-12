@@ -99,15 +99,29 @@ class ActorCTM(nn.Module):
         # nn.Dropout, which branches on it with a Python `if`. Propagating it as a
         # scanned JAX array would raise ConcretizationTypeError under JIT once
         # INC_CONSENSUS_DROPOUT > 0. Pass it as a static module attribute instead.
-        hidden, synch = ScannedCTM(self.config, deterministic=deterministic)(
+        hidden, (synch, last_activated) = ScannedCTM(self.config, deterministic=deterministic)(
             hidden, (obs, dones, avail_actions)
         )
 
-        x_head = nn.Dense(self.config["CTM_ACTOR_HEAD_DIM"])(synch)
+        head_input = jnp.concatenate([synch, last_activated], axis=-1)
+
+        x_head = nn.Dense(
+            self.config["CTM_ACTOR_HEAD_DIM"],
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+        )(head_input)
         x_head = nn.relu(x_head)
-        x_head = nn.Dense(self.config["CTM_ACTOR_HEAD_DIM"])(x_head)
+        x_head = nn.Dense(
+            self.config["CTM_ACTOR_HEAD_DIM"],
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+        )(x_head)
         x_head = nn.relu(x_head)
-        x_head = nn.Dense(self.action_dim)(x_head)
+        x_head = nn.Dense(
+            self.action_dim,
+            kernel_init=orthogonal(0.01),
+            bias_init=constant(0.0),
+        )(x_head)
 
         unavail_actions = 1 - avail_actions
         action_logits = x_head - (unavail_actions * 1e10)
