@@ -17,10 +17,7 @@ from jaxmarl.environments.smax import map_name_to_scenario, HeuristicEnemySMAX
 from jaxmarl.wrappers.baselines import SMAXLogWrapper
 
 MODEL_DIR = os.path.join(_REPO_ROOT, "model")
-MODEL_FILES = {
-    "gru": "smax_mappo_gru_actor.pkl",
-    "ctm": "smax_mappo_ctm_actor.pkl",
-}
+MODEL_FILE = "smax_mappo_gru_actor.pkl"
 
 def _get_avail_actions(env, env_state):
     """Return available actions for either a single state or a batched state."""
@@ -42,77 +39,62 @@ def _stack_agent_array(values_by_agent, agents):
     return jnp.stack([values_by_agent[a] for a in agents])
 
 
-def _load_checkpoint(model_type):
+def _load_checkpoint():
     os.makedirs(MODEL_DIR, exist_ok=True)
-    ckpt_path = os.path.join(MODEL_DIR, MODEL_FILES[model_type])
+    ckpt_path = os.path.join(MODEL_DIR, MODEL_FILE)
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(
             f"Checkpoint not found: {ckpt_path}. "
-            f"Train and save the {model_type.upper()} model first."
+            "Train and save the GRU model first."
         )
     with open(ckpt_path, "rb") as f:
         return pickle.load(f), ckpt_path
 
 
-def _build_actor_for_eval(model_type, config, env):
+def _build_actor_for_eval(config, env):
     action_dim = env.action_space(env.agents[0]).n
     obs_dim = env.observation_space(env.agents[0]).shape[0]
     num_agents = env.num_agents
 
-    if model_type == "gru":
-        from train_mappo_gru import ActorRNN, ScannedRNN
+    from train_mappo_gru import ActorRNN, ScannedRNN
 
-        actor_network = ActorRNN(action_dim, config=config)
-        hidden = ScannedRNN.initialize_carry(num_agents, config["GRU_HIDDEN_DIM"])
-        init_x = (
-            jnp.zeros((1, num_agents, obs_dim)),
-            jnp.zeros((1, num_agents)),
-            jnp.zeros((1, num_agents, action_dim)),
-        )
-        first_done = jnp.zeros((num_agents,), dtype=bool)
-    elif model_type == "ctm":
-        from train_mappo_ctm import ActorCTM, CTMCell
-
-        actor_network = ActorCTM(action_dim, config=config)
-        hidden = CTMCell.initialize_carry(num_agents, config["CTM_D_MODEL"], config["CTM_MEMORY_LENGTH"])
-        init_x = (
-            jnp.zeros((1, num_agents, obs_dim)),
-            jnp.zeros((1, num_agents)),
-            jnp.zeros((1, num_agents, action_dim)),
-        )
-        # Match CTM training startup behavior.
-        first_done = jnp.ones((num_agents,), dtype=bool)
-    else:
-        raise ValueError(f"Unsupported model_type={model_type}. Choose 'gru' or 'ctm'.")
+    actor_network = ActorRNN(action_dim, config=config)
+    hidden = ScannedRNN.initialize_carry(num_agents, config["GRU_HIDDEN_DIM"])
+    init_x = (
+        jnp.zeros((1, num_agents, obs_dim)),
+        jnp.zeros((1, num_agents)),
+        jnp.zeros((1, num_agents, action_dim)),
+    )
+    first_done = jnp.zeros((num_agents,), dtype=bool)
 
     return actor_network, hidden, init_x, first_done
 
 
-def evaluate_and_render_trained_episode(model_type, map_name=None, seed=42, save_name=None, stochastic=False):
+def evaluate_and_render_trained_episode(map_name=None, seed=42, save_name=None, stochastic=False):
     """
-    Runs a single episode with a trained GRU/CTM actor and saves it to a GIF.
+    Runs a single episode with a trained GRU actor and saves it to a GIF.
     """
-    checkpoint, ckpt_path = _load_checkpoint(model_type)
+    checkpoint, ckpt_path = _load_checkpoint()
     config = checkpoint["config"]
     actor_params = checkpoint["actor_params"]
 
     if map_name is None:
         map_name = config.get("MAP_NAME", "3m")
     if save_name is None:
-        save_name = f"smax_{model_type}_eval.gif"
+        save_name = "smax_gru_eval.gif"
 
     # Ensure visualisations directory exists
     os.makedirs("./visualisations", exist_ok=True)
     save_path = os.path.join("./visualisations", save_name)
 
-    print(f"Loaded {model_type.upper()} checkpoint: {ckpt_path}")
+    print(f"Loaded GRU checkpoint: {ckpt_path}")
     print(f"Initializing {map_name} SMAX environment...")
     scenario = map_name_to_scenario(map_name)
     env_kwargs = config.get("ENV_KWARGS", {})
     env = HeuristicEnemySMAX(scenario=scenario, **env_kwargs)
     env = SMAXLogWrapper(env)
 
-    actor_network, hidden, init_x, done_batch = _build_actor_for_eval(model_type, config, env)
+    actor_network, hidden, init_x, done_batch = _build_actor_for_eval(config, env)
     _ = actor_network.init(jax.random.PRNGKey(0), hidden, init_x)
     
     rng = jax.random.PRNGKey(seed)
@@ -190,8 +172,7 @@ def evaluate_and_render_trained_episode(model_type, map_name=None, seed=42, save
 
 
 def _parse_args():
-    parser = argparse.ArgumentParser(description="Evaluate saved SMAX GRU/CTM actor and render a GIF.")
-    parser.add_argument("--model_type", choices=["gru", "ctm"], required=True, help="Which saved model to evaluate.")
+    parser = argparse.ArgumentParser(description="Evaluate saved SMAX GRU actor and render a GIF.")
     parser.add_argument("--map_name", type=str, default=None, help="SMAX map name. Defaults to map saved in checkpoint config.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for environment/action sampling.")
     parser.add_argument("--save_name", type=str, default=None, help="GIF output name in ./visualisations.")
@@ -202,7 +183,6 @@ def _parse_args():
 if __name__ == "__main__":
     args = _parse_args()
     evaluate_and_render_trained_episode(
-        model_type=args.model_type,
         map_name=args.map_name,
         seed=args.seed,
         save_name=args.save_name,

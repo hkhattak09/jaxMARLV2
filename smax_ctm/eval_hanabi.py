@@ -20,23 +20,20 @@ from jaxmarl.environments.hanabi import Hanabi as HanabiEnv
 
 
 MODEL_DIR = os.path.join(_REPO_ROOT, "model")
-MODEL_FILES = {
-    "gru": "hanabi_mappo_gru_actor.pkl",
-    "ctm": "hanabi_mappo_ctm_actor.pkl",
-}
+MODEL_FILE = "hanabi_mappo_gru_actor.pkl"
 
 
 def _stack_agent_array(values_by_agent, agents):
     return jnp.stack([values_by_agent[a] for a in agents])
 
 
-def _load_checkpoint(model_type, checkpoint_path=None):
+def _load_checkpoint(checkpoint_path=None):
     os.makedirs(MODEL_DIR, exist_ok=True)
-    ckpt_path = checkpoint_path or os.path.join(MODEL_DIR, MODEL_FILES[model_type])
+    ckpt_path = checkpoint_path or os.path.join(MODEL_DIR, MODEL_FILE)
     if not os.path.exists(ckpt_path):
         raise FileNotFoundError(
             f"Checkpoint not found: {ckpt_path}. "
-            f"Train and save the {model_type.upper()} Hanabi model first."
+            "Train and save the GRU Hanabi model first."
         )
     with open(ckpt_path, "rb") as f:
         checkpoint = pickle.load(f)
@@ -48,40 +45,21 @@ def _load_checkpoint(model_type, checkpoint_path=None):
     return checkpoint, ckpt_path
 
 
-def _build_actor_for_eval(model_type, config, env):
+def _build_actor_for_eval(config, env):
     action_dim = env.action_space(env.agents[0]).n
     obs_dim = env.observation_space(env.agents[0]).shape[0]
     num_agents = env.num_agents
 
-    if model_type == "gru":
-        from train_mappo_gru_hanabi import ActorRNN, ScannedRNN
+    from train_mappo_gru_hanabi import ActorRNN, ScannedRNN
 
-        actor_network = ActorRNN(action_dim, config=config)
-        hidden = ScannedRNN.initialize_carry(num_agents, config["GRU_HIDDEN_DIM"])
-        init_x = (
-            jnp.zeros((1, num_agents, obs_dim)),
-            jnp.zeros((1, num_agents)),
-            jnp.zeros((1, num_agents, action_dim)),
-        )
-        first_done = jnp.zeros((num_agents,), dtype=bool)
-    elif model_type == "ctm":
-        from train_mappo_ctm_hanabi import ActorCTM, CTMCell
-
-        actor_network = ActorCTM(action_dim, config=config)
-        hidden = CTMCell.initialize_carry(
-            num_agents,
-            config["CTM_D_MODEL"],
-            config["CTM_MEMORY_LENGTH"],
-        )
-        init_x = (
-            jnp.zeros((1, num_agents, obs_dim)),
-            jnp.zeros((1, num_agents)),
-            jnp.zeros((1, num_agents, action_dim)),
-        )
-        # Match CTM Hanabi training startup behavior.
-        first_done = jnp.ones((num_agents,), dtype=bool)
-    else:
-        raise ValueError(f"Unsupported model_type={model_type}. Choose 'gru' or 'ctm'.")
+    actor_network = ActorRNN(action_dim, config=config)
+    hidden = ScannedRNN.initialize_carry(num_agents, config["GRU_HIDDEN_DIM"])
+    init_x = (
+        jnp.zeros((1, num_agents, obs_dim)),
+        jnp.zeros((1, num_agents)),
+        jnp.zeros((1, num_agents, action_dim)),
+    )
+    first_done = jnp.zeros((num_agents,), dtype=bool)
 
     return actor_network, hidden, init_x, first_done
 
@@ -132,7 +110,6 @@ def _save_text_gif(frames, save_path, fps):
 
 
 def evaluate_and_visualize_hanabi(
-    model_type,
     checkpoint_path=None,
     seed=42,
     max_steps=512,
@@ -141,7 +118,7 @@ def evaluate_and_visualize_hanabi(
     save_gif_name=None,
     fps=2,
 ):
-    checkpoint, ckpt_path = _load_checkpoint(model_type, checkpoint_path=checkpoint_path)
+    checkpoint, ckpt_path = _load_checkpoint(checkpoint_path=checkpoint_path)
     config = checkpoint["config"]
     actor_params = checkpoint["actor_params"]
 
@@ -149,19 +126,19 @@ def evaluate_and_visualize_hanabi(
     num_agents = config.get("NUM_AGENTS", 2)
     env = HanabiEnv(num_agents=num_agents, **env_kwargs)
 
-    actor_network, hidden, init_x, done_batch = _build_actor_for_eval(model_type, config, env)
+    actor_network, hidden, init_x, done_batch = _build_actor_for_eval(config, env)
     _ = actor_network.init(jax.random.PRNGKey(0), hidden, init_x)
 
     os.makedirs("./visualisations", exist_ok=True)
     if save_trace_name is None:
-        save_trace_name = f"hanabi_{model_type}_eval_trace.txt"
+        save_trace_name = "hanabi_gru_eval_trace.txt"
     if save_gif_name is None:
-        save_gif_name = f"hanabi_{model_type}_eval.gif"
+        save_gif_name = "hanabi_gru_eval.gif"
 
     trace_path = os.path.join("./visualisations", save_trace_name)
     gif_path = os.path.join("./visualisations", save_gif_name)
 
-    print(f"Loaded {model_type.upper()} checkpoint: {ckpt_path}")
+    print(f"Loaded GRU checkpoint: {ckpt_path}")
     print(f"Using Hanabi config: num_agents={num_agents}, env_kwargs={env_kwargs}")
 
     rng = jax.random.PRNGKey(seed)
@@ -246,11 +223,10 @@ def evaluate_and_visualize_hanabi(
 def _parse_args():
     parser = argparse.ArgumentParser(
         description=(
-            "Evaluate saved Hanabi GRU/CTM actor, record step-by-step traces, and render a GIF. "
+            "Evaluate saved Hanabi GRU actor, record step-by-step traces, and render a GIF. "
             "Note: this repository's Hanabi renderer is text-based, so GIF frames are rendered text panels."
         )
     )
-    parser.add_argument("--model_type", choices=["gru", "ctm"], required=True, help="Which saved model to evaluate.")
     parser.add_argument("--checkpoint_path", type=str, default=None, help="Optional explicit checkpoint .pkl path.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for environment/action sampling.")
     parser.add_argument("--max_steps", type=int, default=512, help="Fail-loud safety cap on episode length.")
@@ -264,7 +240,6 @@ def _parse_args():
 if __name__ == "__main__":
     args = _parse_args()
     evaluate_and_visualize_hanabi(
-        model_type=args.model_type,
         checkpoint_path=args.checkpoint_path,
         seed=args.seed,
         max_steps=args.max_steps,
