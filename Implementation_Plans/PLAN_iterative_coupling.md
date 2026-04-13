@@ -154,25 +154,62 @@ Each stage ends with a runnable experiment that tells us something.
 **Goal:** Test whether per-agent value decomposition helps AT ALL, before adding
 any complexity.
 
+**Context from first run:** A feedforward (no GRU) critic was tried first. Win rate
+rose briefly then collapsed. Entropy did NOT collapse (~0.18, higher than GRU
+baseline). The diagnosis: without recurrent state the critic can't track episode
+history in partial observability. R-MADDPG confirms this — a recurrent critic is a
+prerequisite for stable training in SMAX, not an optional enhancement. The GRU is
+not the experimental variable here; per-agent value decomposition is.
+
 **What to do:**
-1. Copy `train_mappo_gru.py` to `train_mappo_ic.py` (iterative coupling)
-2. Modify CriticRNN:
-   - Input: receives all agents' observations + actions (flatten across agents)
-   - Instead of one value output, produce N values (one per agent)
-   - Simple version: `e_i = MLP(o_i, a_i)`, then
-     `V_i = MLP(e_i, mean(all e_j for j != i))`
-   - This is basically per-agent value with mean-pool context. No coupling matrix,
-     no iterations.
-3. Modify Transition to store per-agent values (shape changes from (num_actors,)
-   to same shape but values differ per agent)
-4. Modify GAE to compute per-agent advantages
-5. Actor loss uses per-agent advantages
 
-**What we learn:** Does per-agent V_i beat shared V on 3m or 10m? If no, the whole
-approach is dead and we pivot. If yes (or equal on 3m, better on 10m), proceed.
+`train_mappo_ic.py` already exists as a starting point. The CriticRNN needs to be
+rewritten and the runner state needs to carry a critic hidden state. Specific changes:
 
-**Run:** 3m (expect roughly equal to baseline) and smacv2_10_units or 10m_vs_11m
-(expect improvement if credit assignment matters).
+1. **Rewrite `CriticRNN`** — the critic processes trajectories with temporal
+   dependencies, so it needs a GRU. The structure is:
+   ```
+   (obs_i, action_i) -> MLP embed -> e_i          # per-agent, per-timestep
+   e_i -> ScannedRNN (GRU) -> h_i                 # recurrent over time, per-agent
+   context_i = mean(h_j for j != i)               # mean-pool other agents' hidden states
+   V_i = MLP(concat(h_i, context_i))              # per-agent value head
+   ```
+   - The GRU is shared across agents (same parameters, one `ScannedRNN` instance).
+   - The critic takes `(obs, actions, dones)` where `dones` drives GRU resets
+     (same pattern as `ScannedRNN` in the actor: reset state when done=True).
+   - Output shape: `(T, NUM_ACTORS)` — one value per agent per timestep.
+   - The mean-other computation must reshape flat `(T, NUM_ACTORS, D)` into
+     `(T, NUM_ENVS, NUM_AGENTS, D)` before pooling, then flatten back. Agents are
+     stored in env-major order so the reshape is exact.
+
+2. **Add `cr_hstate` to `runner_state`** — the critic needs to carry hidden state
+   across rollout steps (during rollout, the critic is called one step at a time
+   with T=1, so without this the GRU starts from zeros every step):
+   - Initialize: `cr_hstate = ScannedRNN.initialize_carry(NUM_ACTORS, GRU_HIDDEN_DIM)`
+   - Add to `runner_state` tuple alongside `ac_hstate`
+   - In `_env_step`: pass `cr_hstate` to critic, receive updated `cr_hstate` back
+   - The critic's `__call__` must return `(new_hstate, values)` not just `values`
+
+3. **Critic update pass** — during the PPO update epochs, recompute values over the
+   full trajectory starting from `initial_cr_hstate` (same pattern as the actor's
+   `init_hstate`). Pass `initial_hstate` into the critic's apply call. Store
+   `initial_cr_hstate` in `update_state` alongside `initial_hstate`.
+
+4. **Bootstrap value** — when computing `last_val` after rollout, call the critic
+   with the current `cr_hstate` (just like the actor uses `ac_hstate`).
+
+5. **GAE and actor loss** — these are already per-agent in the existing
+   `train_mappo_ic.py`. No changes needed there.
+
+6. **Minibatching constraint** — already enforced: `NUM_ENVS % NUM_MINIBATCHES == 0`.
+   This ensures full agent teams stay together when splitting the flat actor buffer.
+
+**What we learn:** Does per-agent V_i + mean-pool beat shared V(s) from the GRU
+baseline? If no on both maps, the whole approach is dead. If equal on 3m and better
+on 10m (or better on both), proceed to Stage 2.
+
+**Run:** 3m (expect roughly equal to baseline) and 10m or 10m_vs_11m (expect
+improvement if credit assignment matters at larger team size).
 
 ### Stage 2: Add Coupling Matrix (still no iterations)
 
