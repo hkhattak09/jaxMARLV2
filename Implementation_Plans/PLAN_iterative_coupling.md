@@ -213,24 +213,44 @@ improvement if credit assignment matters at larger team size).
 
 ### Stage 2: Add Coupling Matrix (still no iterations)
 
-**Goal:** Test whether learned coupling is better than uniform mean-pooling.
+**Goal:** Test whether learned per-agent coupling beats uniform mean-pooling.
+This is the first real test of the core idea.
 
-**What to do:**
-1. Add coupling computation:
-   ```
-   C_ij = sigmoid(MLP(concat(e_i, e_j)))
-   context_i = sum_j (C_ij * e_j) for j != i
-   V_i = MLP(e_i, context_i)
-   ```
-2. Add alive masking for dead agents
-3. Log coupling matrix values periodically to see if structure emerges
+**Skipping Stage 1:** Stage 1 (mean-pool) is structurally too close to shared V(s)
+to produce a meaningful signal — with world_state as input, all agent embeddings
+are nearly identical (only the one-hot agent ID differs), so mean-pool ≈ shared V.
+Stage 2 is where genuine per-agent differentiation first appears.
 
-**What we learn:** Does learned coupling beat mean-pooling from Stage 1? If the
-coupling matrix converges to near-uniform, it means the network doesn't find
-agent-specific structure useful — and we should stop. If it shows distinct
-structure (some pairs high, some low), proceed.
+**What to do — changes to `CriticRNN` only:**
 
-**Run:** Same maps as Stage 1. Compare.
+Replace the mean-other pooling block with a coupling matrix:
+```
+# h: (T, E, A, D) after GRU
+h_i = h[:, :, :, :]           # (T, E, A, D)
+h_i_exp = h[:, :, :, None, :]  # (T, E, A, 1, D)  — "from" agent
+h_j_exp = h[:, :, None, :, :]  # (T, E, 1, A, D)  — "to" agent
+
+pair = concat([broadcast(h_i_exp, (T,E,A,A,D)),
+               broadcast(h_j_exp, (T,E,A,A,D))], axis=-1)  # (T, E, A, A, 2D)
+
+C = sigmoid(Dense(1)(relu(Dense(COUPLE_HIDDEN)(pair))))  # (T, E, A, A, 1)
+C = C.squeeze(-1) * (1 - eye(A))                         # zero self-coupling
+
+context_i = sum_j(C[:,:,:,j,:] * h[:,:,j,:])            # (T, E, A, D)
+```
+
+Dead-agent masking: not needed explicitly. When agent j dies, ScannedRNN resets
+h_j to zero → C_ij * h_j = 0 regardless of C_ij. Use sum (not normalized mean)
+so dead agents drop out naturally without division by alive count.
+
+Add `COUPLE_HIDDEN_DIM: 64` to config.
+
+**What we learn:** Does learned coupling beat mean-pool? Check two things:
+1. Win rate vs GRU baseline — equal or better?
+2. Does C_ij show structure (non-uniform)? Log `C.mean()` and `C.std()` per update.
+   If std ≈ 0, the network treats all agents equally — coupling adds nothing.
+
+**Run:** 3m first (quick sanity check). Then 10m if 3m looks promising.
 
 ### Stage 3: Add Iterations
 

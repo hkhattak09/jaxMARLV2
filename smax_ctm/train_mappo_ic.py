@@ -130,24 +130,14 @@ class CriticRNN(nn.Module):
 
     @nn.compact
     def __call__(self, hidden, x):
-        obs, actions, dones = x
+        obs, dones = x
 
         if obs.ndim != 3:
             raise ValueError(f"Critic expects obs shape (T, B, obs_dim), got {obs.shape}")
-        if actions.ndim != 2:
-            raise ValueError(f"Critic expects action shape (T, B), got {actions.shape}")
         if dones.ndim != 2:
             raise ValueError(f"Critic expects done shape (T, B), got {dones.shape}")
 
         timesteps, num_actors, _ = obs.shape
-        if actions.shape != (timesteps, num_actors):
-            raise ValueError(
-                f"Critic actions shape {actions.shape} must match (T, B)=({timesteps}, {num_actors})"
-            )
-        if dones.shape != (timesteps, num_actors):
-            raise ValueError(
-                f"Critic done shape {dones.shape} must match (T, B)=({timesteps}, {num_actors})"
-            )
 
         num_agents = self.config["NUM_AGENTS"]
         if num_actors % num_agents != 0:
@@ -156,12 +146,9 @@ class CriticRNN(nn.Module):
             )
         num_envs = num_actors // num_agents
 
-        actions_one_hot = jax.nn.one_hot(actions.astype(jnp.int32), self.config["ACTION_DIM"])
-        critic_input = jnp.concatenate([obs, actions_one_hot], axis=-1)
-
         agent_embed = nn.Dense(
             self.config["AGENT_EMBED_DIM"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(critic_input)
+        )(obs)
         agent_embed = nn.relu(agent_embed)
         agent_embed = nn.Dense(
             self.config["AGENT_EMBED_DIM"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
@@ -172,13 +159,23 @@ class CriticRNN(nn.Module):
         hidden, rnn_out = ScannedRNN()(hidden, rnn_in)
 
         # env-major flat -> (T, E, A, D)
-        rnn_out = rnn_out.reshape((timesteps, num_envs, num_agents, self.config["AGENT_EMBED_DIM"]))
-        embed_sum = jnp.sum(rnn_out, axis=2, keepdims=True)
-        if num_agents <= 1:
-            raise ValueError("NUM_AGENTS must be greater than 1 for mean-other-agent context")
-        mean_others = (embed_sum - rnn_out) / float(num_agents - 1)
+        D = self.config["AGENT_EMBED_DIM"]
+        rnn_out = rnn_out.reshape((timesteps, num_envs, num_agents, D))
 
-        value_input = jnp.concatenate([rnn_out, mean_others], axis=-1)
+        # coupling matrix: C_ij = sigmoid(MLP(h_i, h_j)), zero diagonal
+        h_i = jnp.broadcast_to(rnn_out[:, :, :, None, :], (timesteps, num_envs, num_agents, num_agents, D))
+        h_j = jnp.broadcast_to(rnn_out[:, :, None, :, :], (timesteps, num_envs, num_agents, num_agents, D))
+        pair = jnp.concatenate([h_i, h_j], axis=-1)  # (T, E, A, A, 2D)
+        C = nn.Dense(self.config["COUPLE_HIDDEN_DIM"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(pair)
+        C = nn.relu(C)
+        C = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(C)
+        C = nn.sigmoid(C).squeeze(-1)  # (T, E, A, A)
+        C = C * (1.0 - jnp.eye(num_agents))  # zero self-coupling
+
+        # context_i = sum_j C_ij * h_j  (dead agents: h_j=0 after GRU reset -> zero contribution)
+        context = jnp.einsum("teij,tejd->teid", C, rnn_out)  # (T, E, A, D)
+
+        value_input = jnp.concatenate([rnn_out, context], axis=-1)
         critic = nn.Dense(self.config["CRITIC_HIDDEN_DIM"], kernel_init=orthogonal(2), bias_init=constant(0.0))(value_input)
         critic = nn.relu(critic)
         critic = nn.Dense(self.config["CRITIC_HIDDEN_DIM"], kernel_init=orthogonal(2), bias_init=constant(0.0))(critic)
@@ -199,7 +196,6 @@ class Transition(NamedTuple):
     log_prob: jnp.ndarray
     obs: jnp.ndarray
     critic_obs: jnp.ndarray
-    critic_action: jnp.ndarray
     info: jnp.ndarray
     avail_actions: jnp.ndarray
 
@@ -251,7 +247,6 @@ def make_train(config):
         
         cr_init_x = (
             jnp.zeros((1, config["NUM_ACTORS"], env.world_state_size())),
-            jnp.zeros((1, config["NUM_ACTORS"]), dtype=jnp.int32),
             jnp.zeros((1, config["NUM_ACTORS"])),
         )
         cr_init_hstate = ScannedRNN.initialize_carry(config["NUM_ACTORS"], config["AGENT_EMBED_DIM"])
@@ -297,7 +292,8 @@ def make_train(config):
                 env_act = {k: v.squeeze() for k, v in env_act.items()}
 
                 # VALUE
-                cr_in = (obs_batch[None, :], action, last_done[np.newaxis, :])
+                world_state = last_obs["world_state"].reshape((config["NUM_ACTORS"], -1))
+                cr_in = (world_state[None, :], last_done[np.newaxis, :])
                 cr_hstate, value = critic_network.apply(train_states[1].params, cr_hstate, cr_in)
 
                 # STEP ENV
@@ -315,8 +311,7 @@ def make_train(config):
                     batchify(reward, env.agents, config["NUM_ACTORS"]).squeeze(),
                     log_prob.squeeze(),
                     obs_batch,
-                    last_obs["world_state"].reshape((config["NUM_ACTORS"], -1)),
-                    action.squeeze(),
+                    world_state,
                     info,
                     avail_actions,
                 )
@@ -340,7 +335,7 @@ def make_train(config):
             )
             bootstrap_action = bootstrap_pi.sample(seed=_rng_action)
             last_world_state = last_obs["world_state"].reshape((config["NUM_ACTORS"], -1))
-            cr_in = (last_world_state[None, :], bootstrap_action, last_done[np.newaxis, :])
+            cr_in = (last_world_state[None, :], last_done[np.newaxis, :])
             _, last_val = critic_network.apply(train_states[1].params, cr_hstate, cr_in)
             last_val = last_val.squeeze()
 
@@ -390,7 +385,7 @@ def make_train(config):
                         _, value = critic_network.apply(
                             critic_params,
                             init_hstate.squeeze(),
-                            (traj_batch.critic_obs, traj_batch.critic_action, traj_batch.done),
+                            (traj_batch.critic_obs, traj_batch.done),
                         )
                         value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
                         value_losses = jnp.square(value - targets)
@@ -502,6 +497,7 @@ if __name__ == "__main__":
         "FC_DIM_SIZE": 128,
         "GRU_HIDDEN_DIM": 128,
         "AGENT_EMBED_DIM": 128,
+        "COUPLE_HIDDEN_DIM": 128,
         "CRITIC_HIDDEN_DIM": 128,
         "UPDATE_EPOCHS": 4,
         "NUM_MINIBATCHES": 4,
@@ -525,7 +521,7 @@ if __name__ == "__main__":
         "ANNEAL_LR": True
     }
 
-    print(f"Starting {config['MAP_NAME']} MAPPO Iterative Coupling Stage 1...")
+    print(f"Starting {config['MAP_NAME']} MAPPO Iterative Coupling Stage 2...")
     rng = jax.random.PRNGKey(config["SEED"])
     train_jit = jax.jit(make_train(config))
     
