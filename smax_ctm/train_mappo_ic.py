@@ -148,7 +148,7 @@ class CriticRNN(nn.Module):
             agent_embed_dim, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )
         self.update_out = nn.Dense(
-            agent_embed_dim, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
+            agent_embed_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
         )
         self.value_h1 = nn.Dense(
             critic_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0)

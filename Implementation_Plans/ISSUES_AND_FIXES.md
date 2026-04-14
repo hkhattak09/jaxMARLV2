@@ -111,3 +111,36 @@ Any time you run K rounds of `e = f(e, context)` with shared weights, use
 `e = e + f(e, context)` instead. The residual is not optional for K >= 2.
 
 ---
+
+## Issue 4: Residual update MLP corrupts embeddings at initialization
+
+**Stage:** Stage 3 with residual connection
+
+**Observed:** Adding the residual connection fixed the plateau (reaches 0.99)
+but made early learning *worse* than both Stage 2 and Stage 3 without residual.
+Late-stage behaviour resembled Stage 2 but slower.
+
+**Why it happens:** At initialization, the update MLP computes a random
+projection of `concat(e, context)` (256 dims → 128). With residual, this random
+vector is added to `e` at each iteration. With K=2 this corrupts `e` twice before
+the value head sees it. Stage 2 never modifies `rnn_out` — the value head always
+sees clean GRU output. Stage 3 with residual starts by adding random noise to
+`rnn_out` twice, making V_i prediction harder in early training and slowing the
+initial learning curve below Stage 2.
+
+**Fix:** Near-zero initialization for `update_out` output projection:
+```python
+self.update_out = nn.Dense(
+    agent_embed_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
+)
+```
+With the output layer near-zero at init, `delta ≈ 0` and the network behaves
+like Stage 2 (clean embeddings, fast early learning). As the coupling matrix
+sharpens and the update MLP has real signal to work with, it learns to grow
+the residual. This is the standard technique for residual branches in deep networks.
+
+**Lesson:** When adding a residual branch `e = e + f(e)`, always initialize the
+output projection of `f` to near-zero. Otherwise the branch starts as random
+noise rather than identity, degrading early training.
+
+---

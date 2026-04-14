@@ -277,7 +277,7 @@ def setup(self):
     self.couple_h  = nn.Dense(CH, ...)   # shared across K iterations
     self.couple_out= nn.Dense(1, ...)    # shared across K iterations
     self.update_h  = nn.Dense(D, ...)    # shared across K iterations
-    self.update_out= nn.Dense(D, ...)    # shared across K iterations
+    self.update_out= nn.Dense(D, kernel_init=orthogonal(0.01), ...)  # near-zero init (Issue 4)
     self.value_h1  = nn.Dense(CR, ...)
     self.value_h2  = nn.Dense(CR, ...)
     self.value_out = nn.Dense(1, ...)
