@@ -140,7 +140,12 @@ class CriticRNN(nn.Module):
             agent_embed_dim, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )
         self.rnn = ScannedRNN()
-        self.couple_h = nn.Dense(
+        # Split couple_h into left/right projections: W·[h_i;h_j] = W_L·h_i + W_R·h_j.
+        # Avoids materialising the large (T,E,A,A,2D) pair tensor; A× fewer FLOPs.
+        self.couple_h_left = nn.Dense(
+            couple_hidden_dim, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
+        )
+        self.couple_h_right = nn.Dense(
             couple_hidden_dim, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )
         self.couple_out = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))
@@ -148,10 +153,10 @@ class CriticRNN(nn.Module):
             agent_embed_dim, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )
         self.update_out = nn.Dense(
-            agent_embed_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
+            agent_embed_dim, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )
         self.value_h1 = nn.Dense(
-            critic_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0)
+            critic_hidden_dim * 2, kernel_init=orthogonal(2), bias_init=constant(0.0)
         )
         self.value_h2 = nn.Dense(
             critic_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0)
@@ -196,46 +201,50 @@ class CriticRNN(nn.Module):
 
         # env-major flat -> (T, E, A, D)
         D = self.config["AGENT_EMBED_DIM"]
-        e = rnn_out.reshape((timesteps, num_envs, num_agents, D))
+        e_orig = rnn_out.reshape((timesteps, num_envs, num_agents, D))
 
         # Explicitly mask dead agents to prevent dead-state signal propagation.
         alive_mask = (1.0 - dones.astype(jnp.float32)).reshape((timesteps, num_envs, num_agents))
-        e = e * alive_mask[..., None]
+        e_orig = e_orig * alive_mask[..., None]
+
+        # e_coup evolves through coupling iterations; e_orig is never modified.
+        # Value head receives concat(e_orig, e_coup): e_orig provides a clean fallback
+        # so update_out can use normal init without corrupting early training, and the
+        # gradient to update_out is always strong because e_coup feeds the value head
+        # directly. This breaks the chicken-and-egg problem that killed near-zero init.
+        e_coup = e_orig
+
+        # Record pre-loop e_coup norm so we can verify the residual branch is active.
+        self.sow("intermediates", "e_coup_pre_norm", jnp.mean(jnp.linalg.norm(e_orig, axis=-1)))
 
         identity_mask = 1.0 - jnp.eye(num_agents, dtype=jnp.float32)
-        pre_norm_sum = jnp.asarray(0.0, dtype=e.dtype)
-        post_norm_sum = jnp.asarray(0.0, dtype=e.dtype)
         for _ in range(coupling_iterations):
-            pre_norm_sum = pre_norm_sum + jnp.mean(jnp.linalg.norm(e, axis=-1))
+            # Factored coupling MLP: avoids materialising (T,E,A,A,2D) pair tensor.
+            # W·[h_i;h_j] = W_L·h_i + W_R·h_j  — algebraically identical, A× cheaper.
+            pre_i = self.couple_h_left(e_coup)    # (T, E, A, H)
+            pre_j = self.couple_h_right(e_coup)   # (T, E, A, H)
+            C = nn.relu(pre_i[:, :, :, None, :] + pre_j[:, :, None, :, :])  # (T, E, A, A, H)
 
-            h_i = jnp.broadcast_to(e[:, :, :, None, :], (timesteps, num_envs, num_agents, num_agents, D))
-            h_j = jnp.broadcast_to(e[:, :, None, :, :], (timesteps, num_envs, num_agents, num_agents, D))
-            pair = jnp.concatenate([h_i, h_j], axis=-1)  # (T, E, A, A, 2D)
-
-            C = self.couple_h(pair)
-            C = nn.relu(C)
             C = self.couple_out(C)
             C = nn.sigmoid(C).squeeze(-1)  # (T, E, A, A)
             C = C * alive_mask[:, :, None, :] * identity_mask[None, None, :, :]
 
-            context = jnp.einsum("teij,tejd->teid", C, e)  # (T, E, A, D)
+            context = jnp.einsum("teij,tejd->teid", C, e_coup)  # (T, E, A, D)
 
-            update_in = jnp.concatenate([e, context], axis=-1)  # (T, E, A, 2D)
+            update_in = jnp.concatenate([e_coup, context], axis=-1)  # (T, E, A, 2D)
             delta = self.update_h(update_in)
             delta = nn.relu(delta)
             delta = self.update_out(delta)
             delta = nn.relu(delta)
-            e = e + delta
-            e = e * alive_mask[..., None]
+            e_coup = e_coup + delta
+            e_coup = e_coup * alive_mask[..., None]
 
-            post_norm_sum = post_norm_sum + jnp.mean(jnp.linalg.norm(e, axis=-1))
+        self.sow("intermediates", "e_coup_post_norm", jnp.mean(jnp.linalg.norm(e_coup, axis=-1)))
 
-        mean_pre_norm = pre_norm_sum / coupling_iterations
-        mean_post_norm = post_norm_sum / coupling_iterations
-        self.sow("intermediates", "residual_pre_norm", mean_pre_norm)
-        self.sow("intermediates", "residual_post_norm", mean_post_norm)
+        # Concat both tracks: e_orig (clean temporal signal) + e_coup (coordination signal).
+        value_input = jnp.concatenate([e_orig, e_coup], axis=-1)  # (T, E, A, 2D)
 
-        critic = self.value_h1(e)
+        critic = self.value_h1(value_input)
         critic = nn.relu(critic)
         critic = self.value_h2(critic)
         critic = nn.relu(critic)
@@ -383,16 +392,7 @@ def make_train(config):
             train_states, env_state, last_obs, last_done, hstates, rng = runner_state
             ac_hstate, cr_hstate = hstates
             
-            last_obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
-            last_avail_actions = jax.vmap(env.get_avail_actions)(env_state.env_state)
-            last_avail_actions = jax.lax.stop_gradient(batchify(last_avail_actions, env.agents, config["NUM_ACTORS"]))
-            rng, _rng_action = jax.random.split(rng)
-            _, bootstrap_pi = actor_network.apply(
-                train_states[0].params,
-                ac_hstate,
-                (last_obs_batch[np.newaxis, :], last_done[np.newaxis, :], last_avail_actions[np.newaxis, :]),
-            )
-            bootstrap_action = bootstrap_pi.sample(seed=_rng_action)
+            # Bootstrap value only — actor forward pass not needed for state-value critic.
             last_world_state = last_obs["world_state"].reshape((config["NUM_ACTORS"], -1))
             cr_in = (last_world_state[None, :], last_done[np.newaxis, :])
             _, last_val = critic_network.apply(train_states[1].params, cr_hstate, cr_in)
@@ -447,14 +447,14 @@ def make_train(config):
                             (traj_batch.critic_obs, traj_batch.done),
                             mutable=["intermediates"],
                         )
-                        residual_pre_norm = critic_debug["intermediates"]["residual_pre_norm"][0]
-                        residual_post_norm = critic_debug["intermediates"]["residual_post_norm"][0]
+                        e_coup_pre_norm = critic_debug["intermediates"]["e_coup_pre_norm"][0]
+                        e_coup_post_norm = critic_debug["intermediates"]["e_coup_post_norm"][0]
                         value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
                         value_losses = jnp.square(value - targets)
                         value_losses_clipped = jnp.square(value_pred_clipped - targets)
                         value_loss = 0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()
                         critic_loss = config["VF_COEF"] * value_loss
-                        return critic_loss, (value_loss, residual_pre_norm, residual_post_norm)
+                        return critic_loss, (value_loss, e_coup_pre_norm, e_coup_post_norm)
 
                     actor_grad_fn = jax.value_and_grad(_actor_loss_fn, has_aux=True)
                     actor_loss, actor_grads = actor_grad_fn(actor_train_state.params, ac_init_hstate, traj_batch, advantages)
@@ -476,8 +476,8 @@ def make_train(config):
                         "approx_kl": actor_loss[1][3],
                         "actor_grad_norm": actor_grad_norm,
                         "critic_grad_norm": critic_grad_norm,
-                        "residual_pre_norm": critic_loss[1][1],
-                        "residual_post_norm": critic_loss[1][2],
+                        "e_coup_pre_norm": critic_loss[1][1],
+                        "e_coup_post_norm": critic_loss[1][2],
                     }
                     return (actor_train_state, critic_train_state), loss_info
 
@@ -519,15 +519,15 @@ def make_train(config):
             entropy = loss_info["entropy"]
             actor_grad_norm = loss_info["actor_grad_norm"]
             critic_grad_norm = loss_info["critic_grad_norm"]
-            residual_pre_norm = loss_info["residual_pre_norm"]
-            residual_post_norm = loss_info["residual_post_norm"]
+            e_coup_pre_norm = loss_info["e_coup_pre_norm"]
+            e_coup_post_norm = loss_info["e_coup_post_norm"]
 
-            def log_callback(r, w, s, tl, ent, agn, cgn, rpn, rpon):
+            def log_callback(r, w, s, tl, ent, agn, cgn, cpn, cpon):
                 print(
                     f"Step {s:8d} | Return: {r:10.2f} | Win Rate: {w:5.2f} "
                     f"| Loss: {tl:10.4f} | Ent: {ent:8.4f} "
                     f"| GradN(actor/critic): {agn:8.4f}/{cgn:8.4f} "
-                    f"| e_norm(pre/post): {rpn:8.4f}/{rpon:8.4f}"
+                    f"| e_coup(pre/post): {cpn:8.4f}/{cpon:8.4f}"
                 )
 
             step_count = update_steps * config["NUM_ENVS"] * config["NUM_STEPS"]
@@ -535,7 +535,7 @@ def make_train(config):
                 log_callback, None,
                 returns, win_rate, step_count,
                 total_loss, entropy, actor_grad_norm, critic_grad_norm,
-                residual_pre_norm, residual_post_norm,
+                e_coup_pre_norm, e_coup_post_norm,
             )
             
             update_steps = update_steps + 1

@@ -144,3 +144,55 @@ output projection of `f` to near-zero. Otherwise the branch starts as random
 noise rather than identity, degrading early training.
 
 ---
+
+## Issue 5: Near-zero init creates chicken-and-egg — residual branch never activates
+
+**Stage:** Stage 3 with residual + near-zero update_out init
+
+**Observed:** e_norm pre/post difference was ~0.01–0.02 on vectors of magnitude
+~5.5 (0.3% change) throughout 3M steps on smacv2_10_units. The update MLP was
+completely dead. Near-zero init fixed early corruption (Issue 4) but the residual
+never learned to contribute real signal.
+
+**Why it happens:** Near-zero init → delta ≈ 0 at start → value head learns to
+predict V from clean `e` alone → gradient signal to update_out is weak (value
+head doesn't need delta) → delta stays near zero. The two failure modes are exact
+opposites and both fail:
+- Normal init: delta corrupts e early, value head can't learn (Issue 4)
+- Near-zero init: value head learns without delta, delta never grows (Issue 5)
+
+**Root cause:** Asking `e` to serve two conflicting purposes — be a clean
+agent-specific signal for the value head AND be the evolving coupling
+representation. Any modification of e for coupling either corrupts the value
+head (normal init) or gets suppressed by it (near-zero init).
+
+**Fix:** Separate the two tracks. `e_orig` is the clean GRU output, never
+modified. `e_coup` starts as `e_orig` and evolves through K coupling iterations.
+The value head receives `concat(e_orig, e_coup)` explicitly:
+
+```python
+e_orig = rnn_out.reshape(...) * alive_mask[..., None]  # never modified
+e_coup = e_orig  # separate copy for iterative coupling
+
+for _ in range(K):
+    C = coupling_matrix(e_coup)
+    context = einsum(C, e_coup)
+    delta = relu(update_out(relu(update_h(concat(e_coup, context)))))
+    e_coup = e_coup + delta
+    e_coup = e_coup * alive_mask[..., None]
+
+value_input = concat(e_orig, e_coup)  # (T, E, A, 2D)
+```
+
+With this: update_out uses normal init (value head has e_orig as fallback, no
+corruption), gradient to update_out is always strong (e_coup contributes
+directly to value head), no chicken-and-egg. value_h1 input is 2D (same
+capacity as Stage 2).
+
+**Lesson:** When a module must be both (a) transparent at initialization and
+(b) strongly learned later, near-zero init alone is insufficient if the main
+path can solve the task without it. The fix is to give the learning target
+(value head) explicit access to the module's output so gradient always flows
+through it, regardless of the main path.
+
+---

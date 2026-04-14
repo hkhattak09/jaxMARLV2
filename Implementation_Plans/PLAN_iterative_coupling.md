@@ -316,38 +316,55 @@ the value head. Stage 3 needs a real iterative update:
 
 ```python
 K = self.config["COUPLING_ITERATIONS"]
-e = rnn_out.reshape(T, E, A, D)
-e = e * alive_mask[..., None]   # zero dead agents
+e_orig = rnn_out.reshape(T, E, A, D)
+e_orig = e_orig * alive_mask[..., None]   # zero dead agents, never modified again
+
+# e_coup evolves through coupling iterations; e_orig stays clean.
+# Value head receives concat(e_orig, e_coup) so gradient always flows to the
+# update MLP regardless of whether e_orig alone could predict V (Issue 5).
+e_coup = e_orig
 
 for _ in range(K):
-    h_i = jnp.broadcast_to(e[:,:,:,None,:], (T,E,A,A,D))
-    h_j = jnp.broadcast_to(e[:,:,None,:,:], (T,E,A,A,D))
-    pair = jnp.concatenate([h_i, h_j], axis=-1)          # (T, E, A, A, 2D)
+    h_i = jnp.broadcast_to(e_coup[:,:,:,None,:], (T,E,A,A,D))
+    h_j = jnp.broadcast_to(e_coup[:,:,None,:,:], (T,E,A,A,D))
+    pair = jnp.concatenate([h_i, h_j], axis=-1)              # (T, E, A, A, 2D)
 
     C = nn.sigmoid(self.couple_out(nn.relu(self.couple_h(pair)))).squeeze(-1)  # (T,E,A,A)
     C = C * alive_mask[:, :, None, :] * (1.0 - jnp.eye(num_agents))
 
-    context = jnp.einsum("teij,tejd->teid", C, e)        # (T, E, A, D)
+    context = jnp.einsum("teij,tejd->teid", C, e_coup)       # (T, E, A, D)
 
-    update_in = jnp.concatenate([e, context], axis=-1)   # (T, E, A, 2D)
+    update_in = jnp.concatenate([e_coup, context], axis=-1)  # (T, E, A, 2D)
     delta = nn.relu(self.update_out(nn.relu(self.update_h(update_in))))  # (T, E, A, D)
-    e = e + delta                                          # residual: ADD, do not replace
-    e = e * alive_mask[..., None]                         # re-zero dead agents
+    e_coup = e_coup + delta                                    # residual on coupling track
+    e_coup = e_coup * alive_mask[..., None]                   # re-zero dead agents
+
+value_input = jnp.concatenate([e_orig, e_coup], axis=-1)     # (T, E, A, 2D)
 ```
 
-**Why residual, not replace:** Without the residual (`e = delta` instead of
-`e = e + delta`), each iteration replaces the agent's embedding with a blend of
-itself and its neighbours. After K=2 rounds this is mild over-smoothing —
-agent-specific signal is diluted, the value head receives a neighbourhood mean
-rather than a per-agent representation, and V_i prediction degrades. In practice
-this showed up as fast early learning (coupling helps when C is noisy) followed
-by a plateau and slow convergence after C sharpens during training. The residual
-preserves agent identity through all K iterations — the MLP adds coordination
-signal rather than overwriting the original.
+**Two-track design rationale (Issues 3, 4, 5):**
 
-Value head takes `e` (the final updated embedding, shape (T, E, A, D)) — NOT
-`concat(e, context)` as in Stage 2. The context is already baked into `e` through
-K iterations, so concatenating it again would double-count.
+- **Issue 3 (over-smoothing):** `e = f(e, context)` without residual blends
+  agent embeddings into a neighbourhood mean over K iterations. Fix: use
+  `e_coup = e_coup + delta` (residual).
+
+- **Issue 4 (init corruption):** With residual but normal init, delta is a
+  random vector at init that corrupts e. Fix attempted: near-zero init on
+  update_out so delta ≈ 0 early.
+
+- **Issue 5 (dead residual):** Near-zero init creates a chicken-and-egg — value
+  head learns without delta, gradient to update_out stays weak, delta never
+  grows. Root cause: e serves both as the value head's input and the coupling
+  track, so any modification is either corrupting (normal init) or suppressed
+  (near-zero init).
+
+  **Final fix:** Separate the two tracks. `e_orig` is the clean GRU output,
+  passed directly to the value head. `e_coup` evolves through coupling. Value
+  head receives `concat(e_orig, e_coup)`. Now update_out uses normal init
+  (value head has e_orig as fallback) and gradient to update_out is always
+  strong (e_coup contributes explicitly to the value head).
+
+`value_h1` input is 2D = 256 (same capacity as Stage 2's concat(rnn_out, context)).
 
 **4. Config addition:**
 ```python
