@@ -257,18 +257,99 @@ Add `COUPLE_HIDDEN_DIM: 64` to config.
 **Goal:** Test whether iterative refinement of coupling helps — the core hypothesis.
 
 **What to do:**
-1. Wrap the coupling + update step in a loop with shared weights
-2. Start with K=2, test K=3
-3. Take the coupling matrix from the LAST iteration for value computation
-   (no decay yet — keep it simple)
+
+**1. Switch `CriticRNN` from `@nn.compact` to `setup()` style.**
+
+Inside `@nn.compact`, each call to `nn.Dense(...)` registers new parameters. Calling
+the same Dense in a Python loop creates K independent parameter sets — not shared
+weights. To share weights across iterations, define the coupling and update layers
+as named instance attributes in `setup()` and call them repeatedly in `__call__`.
+
+```python
+def setup(self):
+    D  = self.config["AGENT_EMBED_DIM"]
+    CH = self.config["COUPLE_HIDDEN_DIM"]
+    CR = self.config["CRITIC_HIDDEN_DIM"]
+
+    self.embed1    = nn.Dense(D, ...)
+    self.embed2    = nn.Dense(D, ...)
+    self.rnn       = ScannedRNN()
+    self.couple_h  = nn.Dense(CH, ...)   # shared across K iterations
+    self.couple_out= nn.Dense(1, ...)    # shared across K iterations
+    self.update_h  = nn.Dense(D, ...)    # shared across K iterations
+    self.update_out= nn.Dense(D, ...)    # shared across K iterations
+    self.value_h1  = nn.Dense(CR, ...)
+    self.value_h2  = nn.Dense(CR, ...)
+    self.value_out = nn.Dense(1, ...)
+```
+
+**2. Add alive masking.**
+
+`rnn_out` for a dead agent is NOT zero. The GRU reset zeros the carry at the start
+of the next timestep, but then runs the cell on the agent's (zeroed/invalid)
+observation, producing a non-zero output. Without explicit masking:
+- Stage 2: one pass of corrupted coupling from dead agents.
+- Stage 3: corruption compounds K times as dead embeddings propagate through each
+  iteration to every other agent.
+
+Compute the mask from `dones` (already available in the critic):
+```python
+# dones: (T, num_actors) -> alive_mask: (T, E, A)
+alive_mask = 1.0 - dones.reshape(T, num_envs, num_agents)
+
+# Zero dead agents before iterations start
+e = rnn_out * alive_mask[..., None]
+```
+
+Apply at EVERY iteration:
+```python
+# Zero coupling weight to dead agents (column mask on j-axis)
+C = C * alive_mask[:, :, None, :]         # (T, E, A, A)
+# Re-zero dead agents after update so they never inject signal
+e = e * alive_mask[..., None]
+```
+
+**3. Add update MLP and iterative loop.**
+
+Stage 2 has no update step — it reads from fixed `rnn_out` and appends context to
+the value head. Stage 3 needs a real iterative update:
+
+```python
+K = self.config["COUPLING_ITERATIONS"]
+e = rnn_out.reshape(T, E, A, D)
+e = e * alive_mask[..., None]   # zero dead agents
+
+for _ in range(K):
+    h_i = jnp.broadcast_to(e[:,:,:,None,:], (T,E,A,A,D))
+    h_j = jnp.broadcast_to(e[:,:,None,:,:], (T,E,A,A,D))
+    pair = jnp.concatenate([h_i, h_j], axis=-1)          # (T, E, A, A, 2D)
+
+    C = nn.sigmoid(self.couple_out(nn.relu(self.couple_h(pair)))).squeeze(-1)  # (T,E,A,A)
+    C = C * alive_mask[:, :, None, :] * (1.0 - jnp.eye(num_agents))
+
+    context = jnp.einsum("teij,tejd->teid", C, e)        # (T, E, A, D)
+
+    update_in = jnp.concatenate([e, context], axis=-1)   # (T, E, A, 2D)
+    e = nn.relu(self.update_out(nn.relu(self.update_h(update_in))))  # (T, E, A, D)
+    e = e * alive_mask[..., None]                         # re-zero dead agents
+```
+
+Value head takes `e` (the final updated embedding, shape (T, E, A, D)) — NOT
+`concat(e, context)` as in Stage 2. The context is already baked into `e` through
+K iterations, so concatenating it again would double-count.
+
+**4. Config addition:**
+```python
+"COUPLING_ITERATIONS": 2   # start with K=2, then test K=3
+```
 
 **What we learn:** Does K=2 or K=3 beat K=1 (Stage 2)? If yes, iterative coupling
 refinement matters — indirect/transitive dependencies are real and captured.
 If no, iterations add nothing and we stop here (Stage 2 result is the paper if
 it was positive).
 
-**Run:** Primarily the larger map (10 agents). On 3m with only 3 agents, indirect
-coupling barely exists so iterations shouldn't help much.
+**Run:** Primarily the larger map (6h_vs_8z confirmed better in Stage 2). On 3m
+with only 3 agents, indirect coupling barely exists so iterations shouldn't help.
 
 ### Stage 4: Add CTM Components (Decay + NLM)
 

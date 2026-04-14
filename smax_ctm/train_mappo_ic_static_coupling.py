@@ -128,36 +128,7 @@ class ActorRNN(nn.Module):
 class CriticRNN(nn.Module):
     config: Dict
 
-    def setup(self):
-        agent_embed_dim = self.config["AGENT_EMBED_DIM"]
-        couple_hidden_dim = self.config["COUPLE_HIDDEN_DIM"]
-        critic_hidden_dim = self.config["CRITIC_HIDDEN_DIM"]
-
-        self.embed1 = nn.Dense(
-            agent_embed_dim, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )
-        self.embed2 = nn.Dense(
-            agent_embed_dim, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )
-        self.rnn = ScannedRNN()
-        self.couple_h = nn.Dense(
-            couple_hidden_dim, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )
-        self.couple_out = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))
-        self.update_h = nn.Dense(
-            agent_embed_dim, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )
-        self.update_out = nn.Dense(
-            agent_embed_dim, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )
-        self.value_h1 = nn.Dense(
-            critic_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0)
-        )
-        self.value_h2 = nn.Dense(
-            critic_hidden_dim, kernel_init=orthogonal(2), bias_init=constant(0.0)
-        )
-        self.value_out = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))
-
+    @nn.compact
     def __call__(self, hidden, x):
         obs, dones = x
 
@@ -175,59 +146,41 @@ class CriticRNN(nn.Module):
             )
         num_envs = num_actors // num_agents
 
-        coupling_iterations = int(self.config["COUPLING_ITERATIONS"])
-        if coupling_iterations < 1:
-            raise ValueError(
-                f"COUPLING_ITERATIONS must be >= 1, got {coupling_iterations}"
-            )
-
-        if dones.shape != (timesteps, num_actors):
-            raise ValueError(
-                f"Critic done shape mismatch: expected {(timesteps, num_actors)}, got {dones.shape}"
-            )
-
-        agent_embed = self.embed1(obs)
+        agent_embed = nn.Dense(
+            self.config["AGENT_EMBED_DIM"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
+        )(obs)
         agent_embed = nn.relu(agent_embed)
-        agent_embed = self.embed2(agent_embed)
+        agent_embed = nn.Dense(
+            self.config["AGENT_EMBED_DIM"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
+        )(agent_embed)
         agent_embed = nn.relu(agent_embed)
 
         rnn_in = (agent_embed, dones)
-        hidden, rnn_out = self.rnn(hidden, rnn_in)
+        hidden, rnn_out = ScannedRNN()(hidden, rnn_in)
 
         # env-major flat -> (T, E, A, D)
         D = self.config["AGENT_EMBED_DIM"]
-        e = rnn_out.reshape((timesteps, num_envs, num_agents, D))
+        rnn_out = rnn_out.reshape((timesteps, num_envs, num_agents, D))
 
-        # Explicitly mask dead agents to prevent dead-state signal propagation.
-        alive_mask = (1.0 - dones.astype(jnp.float32)).reshape((timesteps, num_envs, num_agents))
-        e = e * alive_mask[..., None]
+        # coupling matrix: C_ij = sigmoid(MLP(h_i, h_j)), zero diagonal
+        h_i = jnp.broadcast_to(rnn_out[:, :, :, None, :], (timesteps, num_envs, num_agents, num_agents, D))
+        h_j = jnp.broadcast_to(rnn_out[:, :, None, :, :], (timesteps, num_envs, num_agents, num_agents, D))
+        pair = jnp.concatenate([h_i, h_j], axis=-1)  # (T, E, A, A, 2D)
+        C = nn.Dense(self.config["COUPLE_HIDDEN_DIM"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(pair)
+        C = nn.relu(C)
+        C = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(C)
+        C = nn.sigmoid(C).squeeze(-1)  # (T, E, A, A)
+        C = C * (1.0 - jnp.eye(num_agents))  # zero self-coupling
 
-        identity_mask = 1.0 - jnp.eye(num_agents, dtype=jnp.float32)
-        for _ in range(coupling_iterations):
-            h_i = jnp.broadcast_to(e[:, :, :, None, :], (timesteps, num_envs, num_agents, num_agents, D))
-            h_j = jnp.broadcast_to(e[:, :, None, :, :], (timesteps, num_envs, num_agents, num_agents, D))
-            pair = jnp.concatenate([h_i, h_j], axis=-1)  # (T, E, A, A, 2D)
+        # context_i = sum_j C_ij * h_j  (dead agents: h_j=0 after GRU reset -> zero contribution)
+        context = jnp.einsum("teij,tejd->teid", C, rnn_out)  # (T, E, A, D)
 
-            C = self.couple_h(pair)
-            C = nn.relu(C)
-            C = self.couple_out(C)
-            C = nn.sigmoid(C).squeeze(-1)  # (T, E, A, A)
-            C = C * alive_mask[:, :, None, :] * identity_mask[None, None, :, :]
-
-            context = jnp.einsum("teij,tejd->teid", C, e)  # (T, E, A, D)
-
-            update_in = jnp.concatenate([e, context], axis=-1)  # (T, E, A, 2D)
-            e = self.update_h(update_in)
-            e = nn.relu(e)
-            e = self.update_out(e)
-            e = nn.relu(e)
-            e = e * alive_mask[..., None]
-
-        critic = self.value_h1(e)
+        value_input = jnp.concatenate([rnn_out, context], axis=-1)
+        critic = nn.Dense(self.config["CRITIC_HIDDEN_DIM"], kernel_init=orthogonal(2), bias_init=constant(0.0))(value_input)
         critic = nn.relu(critic)
-        critic = self.value_h2(critic)
+        critic = nn.Dense(self.config["CRITIC_HIDDEN_DIM"], kernel_init=orthogonal(2), bias_init=constant(0.0))(critic)
         critic = nn.relu(critic)
-        critic = self.value_out(critic)
+        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(critic)
 
         values = jnp.squeeze(critic, axis=-1)  # (T, E, A)
         values = values.reshape((timesteps, num_actors))  # env-major flat
@@ -545,7 +498,6 @@ if __name__ == "__main__":
         "GRU_HIDDEN_DIM": 128,
         "AGENT_EMBED_DIM": 128,
         "COUPLE_HIDDEN_DIM": 128,
-        "COUPLING_ITERATIONS": 2,
         "CRITIC_HIDDEN_DIM": 128,
         "UPDATE_EPOCHS": 4,
         "NUM_MINIBATCHES": 4,
@@ -569,7 +521,7 @@ if __name__ == "__main__":
         "ANNEAL_LR": True
     }
 
-    print(f"Starting {config['MAP_NAME']} MAPPO Iterative Coupling Stage 3...")
+    print(f"Starting {config['MAP_NAME']} MAPPO Iterative Coupling Stage 2...")
     rng = jax.random.PRNGKey(config["SEED"])
     train_jit = jax.jit(make_train(config))
     
@@ -581,20 +533,20 @@ if __name__ == "__main__":
 
     model_dir = os.path.join(_REPO_ROOT, "model")
     os.makedirs(model_dir, exist_ok=True)
-    model_path = os.path.join(model_dir, "smax_mappo_ic_stage3_actor.pkl")
+    model_path = os.path.join(model_dir, "smax_mappo_ic_stage1_actor.pkl")
 
     final_runner_state = out["runner_state"][0]
     final_train_states = final_runner_state[0]
     final_actor_state = final_train_states[0]
     actor_params = jax.device_get(final_actor_state.params)
     checkpoint = {
-        "model_type": "gru_actor_ic_stage3_iterative_critic",
+        "model_type": "gru_actor_ic_stage1_critic",
         "config": config,
         "actor_params": actor_params,
     }
     with open(model_path, "wb") as f:
         pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
-    print(f"Saved Stage 3 actor checkpoint to {model_path}")
+    print(f"Saved Stage 1 actor checkpoint to {model_path}")
     
     # Can optionally save metrics
     # jnp.save("gru_baseline_metrics.npy", out["metric"])
