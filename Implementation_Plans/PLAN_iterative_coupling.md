@@ -274,11 +274,12 @@ def setup(self):
     self.embed1    = nn.Dense(D, ...)
     self.embed2    = nn.Dense(D, ...)
     self.rnn       = ScannedRNN()
-    self.couple_h  = nn.Dense(CH, ...)   # shared across K iterations
+    self.couple_h_left  = nn.Dense(CH, ...)   # factored coupling — left projection
+    self.couple_h_right = nn.Dense(CH, ...)   # factored coupling — right projection
     self.couple_out= nn.Dense(1, ...)    # shared across K iterations
     self.update_h  = nn.Dense(D, ...)    # shared across K iterations
-    self.update_out= nn.Dense(D, kernel_init=orthogonal(0.01), ...)  # near-zero init (Issue 4)
-    self.value_h1  = nn.Dense(CR, ...)
+    self.update_out= nn.Dense(D, ...)    # normal init — no relu on output (Issue 6)
+    self.value_h1  = nn.Dense(CR * 2, ...)
     self.value_h2  = nn.Dense(CR, ...)
     self.value_out = nn.Dense(1, ...)
 ```
@@ -325,17 +326,18 @@ e_orig = e_orig * alive_mask[..., None]   # zero dead agents, never modified aga
 e_coup = e_orig
 
 for _ in range(K):
-    h_i = jnp.broadcast_to(e_coup[:,:,:,None,:], (T,E,A,A,D))
-    h_j = jnp.broadcast_to(e_coup[:,:,None,:,:], (T,E,A,A,D))
-    pair = jnp.concatenate([h_i, h_j], axis=-1)              # (T, E, A, A, 2D)
-
-    C = nn.sigmoid(self.couple_out(nn.relu(self.couple_h(pair)))).squeeze(-1)  # (T,E,A,A)
+    # Factored coupling MLP: W·[h_i;h_j] = W_L·h_i + W_R·h_j
+    # Avoids materialising (T,E,A,A,2D); A× cheaper in FLOPs and memory.
+    pre_i = self.couple_h_left(e_coup)                        # (T, E, A, H)
+    pre_j = self.couple_h_right(e_coup)                       # (T, E, A, H)
+    C = nn.relu(pre_i[:,:,:,None,:] + pre_j[:,:,None,:,:])   # (T, E, A, A, H)
+    C = nn.sigmoid(self.couple_out(C)).squeeze(-1)            # (T, E, A, A)
     C = C * alive_mask[:, :, None, :] * (1.0 - jnp.eye(num_agents))
 
     context = jnp.einsum("teij,tejd->teid", C, e_coup)       # (T, E, A, D)
 
     update_in = jnp.concatenate([e_coup, context], axis=-1)  # (T, E, A, 2D)
-    delta = nn.relu(self.update_out(nn.relu(self.update_h(update_in))))  # (T, E, A, D)
+    delta = self.update_out(nn.relu(self.update_h(update_in)))  # (T, E, A, D) — NO relu on output
     e_coup = e_coup + delta                                    # residual on coupling track
     e_coup = e_coup * alive_mask[..., None]                   # re-zero dead agents
 
@@ -363,6 +365,17 @@ value_input = jnp.concatenate([e_orig, e_coup], axis=-1)     # (T, E, A, 2D)
   head receives `concat(e_orig, e_coup)`. Now update_out uses normal init
   (value head has e_orig as fallback) and gradient to update_out is always
   strong (e_coup contributes explicitly to the value head).
+
+- **Issue 6 (one-sided residual):** A `relu` after `update_out` forces
+  `delta >= 0` element-wise. `e_coup` can only grow from `e_orig` — it can
+  never subtract signal from any dimension. Stage 2's context = `C @ rnn_out`
+  can be positive or negative, so the value head in Stage 2 has bidirectional
+  freedom. Stage 3 with one-sided delta is strictly less expressive, which is
+  why more K helps (more positive signal) but never reaches Stage 2.
+
+  **Fix:** No `relu` on the output of `update_out` before the residual
+  addition. The activation on the output projection is what kills
+  bidirectionality.
 
 `value_h1` input is 2D = 256 (same capacity as Stage 2's concat(rnn_out, context)).
 

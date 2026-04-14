@@ -235,7 +235,9 @@ class CriticRNN(nn.Module):
             delta = self.update_h(update_in)
             delta = nn.relu(delta)
             delta = self.update_out(delta)
-            delta = nn.relu(delta)
+            # No relu here — residual output must be unconstrained so delta can
+            # both add and subtract signal. relu would force delta >= 0, making
+            # e_coup drift monotonically upward and unable to correct directions.
             e_coup = e_coup + delta
             e_coup = e_coup * alive_mask[..., None]
 

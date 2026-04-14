@@ -196,3 +196,45 @@ path can solve the task without it. The fix is to give the learning target
 through it, regardless of the main path.
 
 ---
+
+## Issue 6: One-sided residual — relu after update_out forces delta ≥ 0
+
+**Stage:** Stage 3 two-track architecture on smacv2_10_units
+
+**Observed:** Stage 3 with K=3 reaches ~0.37–0.42 WR at 3M steps on smacv2_10_units.
+K=2 was worse than K=3, and both are below Stage 2.
+e_coup pre/post norms: ~5.6/6.1 — delta is ~8-9% of magnitude (residual is live).
+More K iterations helps, but Stage 3 never catches Stage 2.
+
+**Why it happens:** The delta computation ended with:
+```python
+delta = self.update_h(update_in)
+delta = nn.relu(delta)
+delta = self.update_out(delta)
+delta = nn.relu(delta)   # ← wrong
+e_coup = e_coup + delta
+```
+The final `relu` forces `delta >= 0` element-wise. `e_coup` can only grow
+from `e_orig` — it can never subtract signal from any dimension. After K
+iterations, `e_coup = e_orig + Σ(positive deltas)`.
+
+Stage 2's context = `C @ rnn_out` can be positive or negative (because
+`rnn_out` values span ±). The value head in Stage 2 can both amplify and
+suppress dimensions. Stage 3's value head received `concat(e_orig, e_coup)`
+where `e_coup ≥ e_orig` element-wise — strictly less expressive.
+
+This also explains why K=3 > K=2: more iterations accumulate more positive
+signal, which is directionally correct but still one-sided. More K helps but
+never reaches the bidirectional capacity of Stage 2's direct context.
+
+**Fix:** Remove the `relu` after `update_out`. Standard residual branches
+have no activation on their output before addition — the activation is
+*inside* the branch (after `update_h`), not capping the branch output. The
+delta is then unconstrained and can push `e_coup` in any direction.
+
+**Lesson:** Residual branches (`e = e + f(e)`) must not apply an activation
+to the output of `f` before addition. The activation on the final projection
+is what kills bidirectionality. Only activations on intermediate layers
+(inside `f`) are correct.
+
+---
