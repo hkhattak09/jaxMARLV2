@@ -250,7 +250,7 @@ def make_train(config):
         actor_network_params = actor_network.init(_rng_actor, ac_init_hstate, ac_init_x)
         
         cr_init_x = (
-            jnp.zeros((1, config["NUM_ACTORS"], env.observation_space(env.agents[0]).shape[0])),
+            jnp.zeros((1, config["NUM_ACTORS"], env.world_state_size())),
             jnp.zeros((1, config["NUM_ACTORS"]), dtype=jnp.int32),
             jnp.zeros((1, config["NUM_ACTORS"])),
         )
@@ -315,7 +315,7 @@ def make_train(config):
                     batchify(reward, env.agents, config["NUM_ACTORS"]).squeeze(),
                     log_prob.squeeze(),
                     obs_batch,
-                    obs_batch,
+                    last_obs["world_state"].reshape((config["NUM_ACTORS"], -1)),
                     action.squeeze(),
                     info,
                     avail_actions,
@@ -339,7 +339,8 @@ def make_train(config):
                 (last_obs_batch[np.newaxis, :], last_done[np.newaxis, :], last_avail_actions[np.newaxis, :]),
             )
             bootstrap_action = bootstrap_pi.sample(seed=_rng_action)
-            cr_in = (last_obs_batch[None, :], bootstrap_action, last_done[np.newaxis, :])
+            last_world_state = last_obs["world_state"].reshape((config["NUM_ACTORS"], -1))
+            cr_in = (last_world_state[None, :], bootstrap_action, last_done[np.newaxis, :])
             _, last_val = critic_network.apply(train_states[1].params, cr_hstate, cr_in)
             last_val = last_val.squeeze()
 
@@ -500,7 +501,7 @@ if __name__ == "__main__":
         "TOTAL_TIMESTEPS": int(3e6),  # Train for 3M steps to see convergence
         "FC_DIM_SIZE": 128,
         "GRU_HIDDEN_DIM": 128,
-        "AGENT_EMBED_DIM": 64,
+        "AGENT_EMBED_DIM": 128,
         "CRITIC_HIDDEN_DIM": 128,
         "UPDATE_EPOCHS": 4,
         "NUM_MINIBATCHES": 4,
