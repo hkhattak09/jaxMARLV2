@@ -330,9 +330,20 @@ for _ in range(K):
     context = jnp.einsum("teij,tejd->teid", C, e)        # (T, E, A, D)
 
     update_in = jnp.concatenate([e, context], axis=-1)   # (T, E, A, 2D)
-    e = nn.relu(self.update_out(nn.relu(self.update_h(update_in))))  # (T, E, A, D)
+    delta = nn.relu(self.update_out(nn.relu(self.update_h(update_in))))  # (T, E, A, D)
+    e = e + delta                                          # residual: ADD, do not replace
     e = e * alive_mask[..., None]                         # re-zero dead agents
 ```
+
+**Why residual, not replace:** Without the residual (`e = delta` instead of
+`e = e + delta`), each iteration replaces the agent's embedding with a blend of
+itself and its neighbours. After K=2 rounds this is mild over-smoothing —
+agent-specific signal is diluted, the value head receives a neighbourhood mean
+rather than a per-agent representation, and V_i prediction degrades. In practice
+this showed up as fast early learning (coupling helps when C is noisy) followed
+by a plateau and slow convergence after C sharpens during training. The residual
+preserves agent identity through all K iterations — the MLP adds coordination
+signal rather than overwriting the original.
 
 Value head takes `e` (the final updated embedding, shape (T, E, A, D)) — NOT
 `concat(e, context)` as in Stage 2. The context is already baked into `e` through

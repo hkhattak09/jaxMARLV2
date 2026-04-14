@@ -203,7 +203,11 @@ class CriticRNN(nn.Module):
         e = e * alive_mask[..., None]
 
         identity_mask = 1.0 - jnp.eye(num_agents, dtype=jnp.float32)
+        pre_norm_sum = jnp.asarray(0.0, dtype=e.dtype)
+        post_norm_sum = jnp.asarray(0.0, dtype=e.dtype)
         for _ in range(coupling_iterations):
+            pre_norm_sum = pre_norm_sum + jnp.mean(jnp.linalg.norm(e, axis=-1))
+
             h_i = jnp.broadcast_to(e[:, :, :, None, :], (timesteps, num_envs, num_agents, num_agents, D))
             h_j = jnp.broadcast_to(e[:, :, None, :, :], (timesteps, num_envs, num_agents, num_agents, D))
             pair = jnp.concatenate([h_i, h_j], axis=-1)  # (T, E, A, A, 2D)
@@ -217,11 +221,19 @@ class CriticRNN(nn.Module):
             context = jnp.einsum("teij,tejd->teid", C, e)  # (T, E, A, D)
 
             update_in = jnp.concatenate([e, context], axis=-1)  # (T, E, A, 2D)
-            e = self.update_h(update_in)
-            e = nn.relu(e)
-            e = self.update_out(e)
-            e = nn.relu(e)
+            delta = self.update_h(update_in)
+            delta = nn.relu(delta)
+            delta = self.update_out(delta)
+            delta = nn.relu(delta)
+            e = e + delta
             e = e * alive_mask[..., None]
+
+            post_norm_sum = post_norm_sum + jnp.mean(jnp.linalg.norm(e, axis=-1))
+
+        mean_pre_norm = pre_norm_sum / coupling_iterations
+        mean_post_norm = post_norm_sum / coupling_iterations
+        self.sow("intermediates", "residual_pre_norm", mean_pre_norm)
+        self.sow("intermediates", "residual_post_norm", mean_post_norm)
 
         critic = self.value_h1(e)
         critic = nn.relu(critic)
@@ -429,17 +441,20 @@ def make_train(config):
                         return actor_loss, (loss_actor, entropy, ratio, approx_kl, clip_frac)
                     
                     def _critic_loss_fn(critic_params, init_hstate, traj_batch, targets):
-                        _, value = critic_network.apply(
+                        (_, value), critic_debug = critic_network.apply(
                             critic_params,
                             init_hstate.squeeze(),
                             (traj_batch.critic_obs, traj_batch.done),
+                            mutable=["intermediates"],
                         )
+                        residual_pre_norm = critic_debug["intermediates"]["residual_pre_norm"][0]
+                        residual_post_norm = critic_debug["intermediates"]["residual_post_norm"][0]
                         value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
                         value_losses = jnp.square(value - targets)
                         value_losses_clipped = jnp.square(value_pred_clipped - targets)
                         value_loss = 0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()
                         critic_loss = config["VF_COEF"] * value_loss
-                        return critic_loss, (value_loss)
+                        return critic_loss, (value_loss, residual_pre_norm, residual_post_norm)
 
                     actor_grad_fn = jax.value_and_grad(_actor_loss_fn, has_aux=True)
                     actor_loss, actor_grads = actor_grad_fn(actor_train_state.params, ac_init_hstate, traj_batch, advantages)
@@ -461,6 +476,8 @@ def make_train(config):
                         "approx_kl": actor_loss[1][3],
                         "actor_grad_norm": actor_grad_norm,
                         "critic_grad_norm": critic_grad_norm,
+                        "residual_pre_norm": critic_loss[1][1],
+                        "residual_post_norm": critic_loss[1][2],
                     }
                     return (actor_train_state, critic_train_state), loss_info
 
@@ -502,12 +519,15 @@ def make_train(config):
             entropy = loss_info["entropy"]
             actor_grad_norm = loss_info["actor_grad_norm"]
             critic_grad_norm = loss_info["critic_grad_norm"]
+            residual_pre_norm = loss_info["residual_pre_norm"]
+            residual_post_norm = loss_info["residual_post_norm"]
 
-            def log_callback(r, w, s, tl, ent, agn, cgn):
+            def log_callback(r, w, s, tl, ent, agn, cgn, rpn, rpon):
                 print(
                     f"Step {s:8d} | Return: {r:10.2f} | Win Rate: {w:5.2f} "
                     f"| Loss: {tl:10.4f} | Ent: {ent:8.4f} "
-                    f"| GradN(actor/critic): {agn:8.4f}/{cgn:8.4f}"
+                    f"| GradN(actor/critic): {agn:8.4f}/{cgn:8.4f} "
+                    f"| e_norm(pre/post): {rpn:8.4f}/{rpon:8.4f}"
                 )
 
             step_count = update_steps * config["NUM_ENVS"] * config["NUM_STEPS"]
@@ -515,6 +535,7 @@ def make_train(config):
                 log_callback, None,
                 returns, win_rate, step_count,
                 total_loss, entropy, actor_grad_norm, critic_grad_norm,
+                residual_pre_norm, residual_post_norm,
             )
             
             update_steps = update_steps + 1
