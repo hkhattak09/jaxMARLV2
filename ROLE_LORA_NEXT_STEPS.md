@@ -249,6 +249,66 @@ Drop context gating from the core method.
 Do not run shuffled_context_residual or retained-context variants unless the branch is explicitly reopened later.
 ```
 
+### Role-Trust LoRA
+
+Mechanism:
+
+```text
+Keep the validated Role-LoRA actor.
+Use role-normalized advantages.
+Compute PPO loss per role.
+Average present-role PPO losses equally.
+Add a hinge-squared per-role KL budget.
+```
+
+Empirical status:
+
+```text
+Mechanically healthy.
+Smoke run passed.
+Full seed-42 run underperformed plain Role-LoRA.
+Final WR was around 0.45, with near-end WR around 0.49 before dropping.
+This is below seed-42 Role-LoRA, which reached about 0.54 final WR and 0.55 best WR.
+```
+
+Key diagnostics from the full run:
+
+```text
+role_actor_loss_weight = [1/6, 1/6, 1/6, 1/6, 1/6, 1/6]
+    Equal role weighting was active.
+
+lora_grad_norm_by_adapter > 0
+lora_delta_norm_by_role became large and role-specific.
+    Role-LoRA adapters were alive and training.
+
+role_approx_kl late in training was around 1e-05 to 5e-05.
+ROLE_KL_TARGET = 0.02.
+role_kl_penalty_by_role = 0 for all roles.
+    The trust-region penalty was inactive.
+
+role_clip_frac was near zero late in training.
+role_mean_ratio was about 1.0.
+    PPO updates were already tiny near the end.
+```
+
+Interpretation:
+
+```text
+Role-Trust mostly tested equal role weighting on top of the same MAPPO/team advantage.
+It did not add a genuinely new credit signal.
+The KL-budget part did not matter because the per-role KL stayed far below target.
+Equal role weighting may have distorted useful gradients by forcing all roles to contribute equally even when their tactical importance differs.
+```
+
+Decision:
+
+```text
+Stop tuning Role-Trust.
+Do not spend more full runs on Role-Trust unless a reproduction check is explicitly needed.
+Keep it as a negative actor-side reweighting result.
+Move priority to Role-MACA-Lite, because it changes the advantage/credit signal itself.
+```
+
 ---
 
 ## Research Synthesis
@@ -284,6 +344,9 @@ Freezing LoRA out of normal MAPPO made the residual mechanism clean, but it also
 The residual KL was either weak or mostly inactive, so it did not create a strong trust-region story.
 
 The context gate saturated because the static team-composition context was too weak to tell the model when a residual should matter.
+
+Role-Trust did not improve because it still used the same blunt team/global advantage.
+Its per-role KL budget stayed inactive, and equal role weighting alone was not a useful replacement for credit assignment.
 ```
 
 MACA changes the mental map:
@@ -312,17 +375,18 @@ This gives a role-aware MACA-lite path that uses our existing environment role i
 
 ## Updated Direction
 
-There are now two different next steps:
+The direction is now:
 
 ```text
-Immediate cheap probe:
+Completed cheap probe:
     Role-Trust LoRA MAPPO
+    Result: underperformed Role-LoRA; stop tuning.
 
-Main next research direction:
+Main next implementation:
     Role-MACA-Lite MAPPO
 ```
 
-Role-Trust is already implemented and should still be smoke-tested because it is cheap. But the MACA paper suggests that if Role-Trust does not clearly improve, we should not tune it for long. Move to MACA-lite credit assignment.
+Role-Trust was useful as a diagnostic. It showed that role-balanced actor-side PPO reweighting is not enough when the underlying advantage is still the same blunt team/global signal.
 
 Role-Trust short pitch:
 
@@ -339,14 +403,16 @@ Role-MACA-Lite keeps the Role-LoRA actor, but replaces the blunt MAPPO advantage
 Decision:
 
 ```text
-Do not treat Role-Trust as the final algorithm unless it clearly beats Role-LoRA.
-Treat Role-Trust as a low-cost diagnostic.
-Treat Role-MACA-Lite as the stronger literature-backed improvement path.
+Do not treat Role-Trust as the final algorithm.
+Treat Role-Trust as completed negative evidence.
+Treat Role-MACA-Lite as the stronger literature-backed improvement path and the next implementation target.
 ```
 
 ---
 
 ## Role-Trust Objective
+
+This section is kept as implementation reference only. Role-Trust is implemented and tested, but it underperformed Role-LoRA and should not be tuned further.
 
 Actor remains Role-LoRA:
 
@@ -601,173 +667,88 @@ role_maca_weight_jnt/ind/role
 Decision gate:
 
 ```text
-If Role-Trust does not beat Role-LoRA in the first two full seeds, prioritize Role-MACA-Lite.
-If Role-Trust improves AUC/final WR, still consider Role-MACA-Lite as the stronger paper-backed extension.
+Resolved.
+Role-Trust did not beat Role-LoRA.
+Prioritize Role-MACA-Lite.
 ```
 
 ---
 
-## Implementation Status And Checklist
+## Active Training File Status
 
-Status:
-
-```text
-Implemented in smax_ctm/train_rosa_mappo.py.
-```
-
-The implementation deliberately keeps existing `role_balanced` behavior unchanged as an older ablation. The new mode is separate:
+The active experimental file is now intentionally cleaned up:
 
 ```text
-adapter_mode=role_trust_lora
+smax_ctm/train_rosa_mappo.py
 ```
 
-Completed code changes:
+Currently supported adapter modes:
 
 ```text
-1. Added role_trust_lora to SUPPORTED_ADAPTER_MODES.
-2. Added CLI args:
-   --role_kl_target
-   --role_kl_coef
-   --role_kl_penalty_mode
-
-3. For adapter_mode=role_trust_lora, apply_cli_overrides sets:
-   USE_ROLE_LORA=True
-   ROLE_BALANCED_PPO=True
-   ROLE_EQUALIZE_PPO_LOSS=True
-   ROLE_KL_BUDGET=True
-   FREEZE_LORA_IN_SHARED_UPDATE=False
-   USE_ROLE_RESIDUAL_LOSS=False
-   USE_CONTEXT_GATE=False
-
-4. Added config defaults:
-   ROLE_EQUALIZE_PPO_LOSS=False
-   ROLE_KL_BUDGET=False
-   ROLE_KL_TARGET=0.02
-   ROLE_KL_COEF=0.5
-   ROLE_KL_PENALTY_MODE="hinge_squared"
-
-5. In _actor_loss_fn:
-   role_trust_lora role-normalizes advantages,
-   computes PPO loss per sample,
-   computes role_ppo_loss as mean loss per role,
-   averages present-role losses equally,
-   adds a soft per-role KL budget penalty.
-
-6. Added logging for:
-   role_actor_loss_weight
-   role_kl_penalty_by_role
-   role_kl_penalty
-
-7. Added fail-loud runtime check for role ids outside [0, NUM_UNIT_TYPES).
+none
+role_lora
+global_lora
+agent_lora
+role_maca_lite_jnt
+role_maca_lite_ind
+role_maca_lite_role
+role_maca_lite
 ```
 
-Critical implementation invariant:
+Removed from the active training file:
 
 ```text
-role_trust_lora must NOT be implemented as:
-    role-normalize advantages, then global sample mean
-
-It must be:
-    compute PPO loss per sample
-    compute mean PPO loss within each present role
-    average present-role PPO losses equally
+role_trust_lora
+role_balanced
+sequential_polish
+role_residual
+role_residual_clean
+role_context_residual
+global_residual
+agent_residual
+shuffled_context_residual
 ```
 
-Current code path:
+Why these were removed:
 
 ```text
-role_ppo_loss = role_mean_metric(ppo_loss_per_sample, role_id, NUM_UNIT_TYPES)
-policy_loss = present_role_mean(role_ppo_loss, role_id, NUM_UNIT_TYPES)
+Role-Trust underperformed Role-LoRA and mostly tested equal role weighting with inactive KL.
+Role-Residual and context-gated residual paths were mechanically valid but weak/negative.
+Sequential polish was a small refinement, not the next research direction.
+The next stage needs a clean Role-LoRA baseline surface for Role-MACA-Lite credit assignment.
 ```
 
-The `role_actor_loss_weight` diagnostic should show equal weights for present roles under `role_trust_lora`.
-
-Config additions:
-
-```python
-"ROLE_EQUALIZE_PPO_LOSS": True
-"ROLE_KL_BUDGET": True
-"ROLE_KL_TARGET": 0.02
-"ROLE_KL_COEF": 0.5
-"ROLE_KL_PENALTY_MODE": "hinge_squared"
-```
-
-Optional later:
-
-```python
-"ROLE_MIN_COUNT_FOR_LOSS": 8
-"ROLE_ENTROPY_BALANCED": False
-"ROLE_ADAPTIVE_CLIP": False
-```
-
-CLI additions:
+The active training file should now be treated as:
 
 ```text
---role_kl_target
---role_kl_coef
---role_kl_penalty_mode
+MAPPO baseline pathway
++ Role-LoRA actor pathway
++ global/agent LoRA ablations
++ Role-MACA-Lite first implementation
++ compact role diagnostics
 ```
 
-Startup logging must print:
+Do not re-add deprecated actor-side reweighting/residual/context/sequential paths unless explicitly reopening those experiments.
+
+Role-MACA-Lite implementation status:
 
 ```text
-resolved config
-adapter_mode
-map_name
-seed
-run_name
-role trust config values
-residual/context config values, if any are enabled
+Implemented first pass in smax_ctm/train_rosa_mappo.py.
+Uses a separate action-conditioned feed-forward Q critic.
+Precomputes counterfactual advantages on the full rollout before minibatching.
+Uses fixed MACA weights:
+    role_maca_lite_jnt  = joint only
+    role_maca_lite_ind  = individual only
+    role_maca_lite_role = same-role subgroup only
+    role_maca_lite      = 1/3 joint + 1/3 individual + 1/3 same-role
 ```
 
-Fail-loud checks:
+Important implementation choice:
 
 ```text
-If adapter_mode is unsupported, raise.
-If role ids fall outside [0, NUM_UNIT_TYPES), raise.
-If role bits in observation disagree with env-state role ids, raise.
-If ROLE_KL_BUDGET=True but per-role KL is unavailable, raise.
-```
-
-Diagnostics to log:
-
-```text
-role_count
-role_present_mask
-role_actor_loss_weight
-role_adv_mean
-role_adv_std
-role_ppo_loss
-role_approx_kl
-role_kl_penalty
-role_clip_frac
-role_mean_ratio
-role_max_ratio
-max_role_kl_minus_global
-max_role_clip_frac_minus_global
-min_role_count_over_max
-lora_delta_norm_by_role
-lora_grad_norm_by_adapter
-lora_param_norm_by_adapter
-```
-
-Expected diagnostics if Role-Trust is working:
-
-```text
-role_actor_loss_weight gives each present role a meaningful contribution.
-max_role_kl_minus_global shrinks.
-role_clip_frac becomes less spiky.
-lora_grad_norm_by_adapter is less dominated by common roles.
-Win-rate AUC improves before final win rate does.
-```
-
-Main risks:
-
-```text
-Equal role weighting may overemphasize rare/noisy roles.
-The KL penalty may be too conservative.
-Role-normalized advantages may amplify noise when role counts are tiny.
-The current map may already be stable enough that Role-Trust only matches Role-LoRA.
+Counterfactual joint-action features are built before PPO minibatching because minibatches contain shuffled subsets of agents and cannot reconstruct full joint actions safely.
+The computed A_i^RoleMACA is stop-gradient before entering the PPO actor loss.
+The Q critic is trained toward the same return targets used by the existing value critic.
 ```
 
 ---
@@ -776,108 +757,65 @@ The current map may already be stable enough that Role-Trust only matches Role-L
 
 Do not run a large grid.
 
-### Smoke
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_trust_lora --total_timesteps 300000 --run_name smoke_role_trust_lora_smacv2_10_seed42
-```
-
-Smoke success criteria:
+### Completed Role-Trust Gate
 
 ```text
-no crash or NaN
-role ids pass validation
-role_actor_loss_weight prints and is sensible
-role_kl_penalty is finite
-lora_grad_norm_by_adapter is nonzero
+Role-Trust smoke:
+    passed
+
+Role-Trust full seed 42:
+    underperformed Role-LoRA
+
+Decision:
+    stop Role-Trust
+    do not run seed 1 or KL variants unless explicitly checking reproducibility
+    implement Role-MACA-Lite next
 ```
 
-### Full Runs
+### Next Implementation: Role-MACA-Lite
 
-Start with two seeds:
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_trust_lora --total_timesteps 3000000 --run_name role_trust_lora_smacv2_10_seed42
-```
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 1 --adapter_mode role_trust_lora --total_timesteps 3000000 --run_name role_trust_lora_smacv2_10_seed1
-```
-
-If either seed is unstable or worse than Role-LoRA by more than normal wobble, try exactly one softer KL setting:
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_trust_lora --role_kl_coef 0.1 --total_timesteps 3000000 --run_name role_trust_lora_kl010_smacv2_10_seed42
-```
-
-If seed 42 and seed 1 look promising, add:
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 0 --adapter_mode role_trust_lora --total_timesteps 3000000 --run_name role_trust_lora_smacv2_10_seed0
-```
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 2 --adapter_mode role_trust_lora --total_timesteps 3000000 --run_name role_trust_lora_smacv2_10_seed2
-```
-
-Success criteria:
+Implementation target:
 
 ```text
-Minimum:
-    match Role-LoRA final WR while improving AUC or reducing variance
-
-Good:
-    beat Role-LoRA by >= 0.02 final WR or AUC on at least two checked seeds
-
-Strong:
-    beat sequential_polish mean without adding new architecture
-```
-
-Drop criteria:
-
-```text
-Drop if seed 42 and seed 1 both fail to beat Role-LoRA/sequential polish.
-Drop if role KL penalty stays zero and diagnostics look identical to plain Role-LoRA.
-Drop if role KL penalty dominates and clip fraction collapses.
-Drop if rare-role weighting causes noisy oscillation without AUC gain.
-```
-
-### MACA-Lite Gate
-
-Do not tune Role-Trust for many runs.
-
-```text
-If the 300k smoke passes, run at most two full Role-Trust seeds first: 42 and 1.
-```
-
-Then decide:
-
-```text
-If Role-Trust clearly improves:
-    finish the 4-seed check and report it as a lightweight actor-side credit/stability improvement.
-
-If Role-Trust only matches or underperforms:
-    stop tuning Role-Trust and implement Role-MACA-Lite.
+Keep the Role-LoRA actor.
+Add an action-conditioned Q critic.
+Use Q counterfactual baselines to replace the blunt MAPPO advantage.
+Do not implement learned attention CorrSets or learned MACA weights in the first version.
 ```
 
 Minimal Role-MACA-Lite implementation order:
 
 ```text
-1. Add action-conditioned Q critic that can score:
-   Q(s, taken joint action, i)
-   Q(s, counterfactual joint-action distribution, i)
+1. Add adapter modes:
+   role_maca_lite_jnt
+   role_maca_lite_ind
+   role_maca_lite_role
+   role_maca_lite
 
-2. Add fixed-weight baselines:
+2. Keep Role-LoRA actor unchanged for all role_maca_lite modes.
+
+3. Add an action-conditioned Q critic:
+   Q_phi(world_state, joint_action_features, agent_or_role_id) -> Q_i
+
+4. Store or reconstruct joint action features:
+   taken joint action one-hots
+   current policy action probabilities for counterfactual baselines
+
+5. Train Q_taken toward the same return target used by the existing critic first.
+   Keep the existing V critic/value loss if that is easier for bootstrapping.
+
+6. Add fixed-weight counterfactual baselines:
    b_jnt
    b_ind
    b_role
 
-3. Construct:
+7. Construct:
    A_i = stop_gradient(Q_taken - (b_jnt + b_ind + b_role) / 3)
 
-4. Use A_i in the existing PPO actor loss.
+8. Use A_i in the existing PPO actor loss.
+   Start with the same advantage normalization style as the current Role-LoRA run.
 
-5. Only after this works, consider learned weights or attention CorrSets.
+9. Only after this works, consider learned weights or attention CorrSets.
 ```
 
 First Role-MACA-Lite ablations:
@@ -887,7 +825,7 @@ role_lora:
     current validated baseline
 
 role_trust_lora:
-    actor-side balancing probe
+    completed negative actor-side balancing probe; keep only as reference
 
 role_maca_lite_jnt:
     joint baseline only, should behave closest to MAPPO-style credit
@@ -902,9 +840,59 @@ role_maca_lite:
     fixed average of joint + individual + same-role baselines
 ```
 
+Smoke command after implementation:
+
+```python
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_maca_lite --total_timesteps 300000 --run_name smoke_role_maca_lite_smacv2_10_seed42
+```
+
+Smoke success criteria:
+
+```text
+no crash or NaN
+Q loss finite
+Q_taken finite
+b_jnt / b_ind / b_role finite
+A_i^RoleMACA finite and non-collapsed
+lora_grad_norm_by_adapter nonzero
+role_maca diagnostics print by role
+```
+
+First full runs if smoke passes:
+
+```python
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_maca_lite --total_timesteps 3000000 --run_name role_maca_lite_smacv2_10_seed42
+```
+
+```python
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 1 --adapter_mode role_maca_lite --total_timesteps 3000000 --run_name role_maca_lite_smacv2_10_seed1
+```
+
+Initial success criteria:
+
+```text
+Minimum:
+    not worse than Role-LoRA on seed 42 by more than normal seed wobble
+
+Good:
+    beat Role-LoRA seed-42 final WR or AUC
+
+Strong:
+    beat Role-LoRA on both seed 42 and seed 1, then expand to more seeds
+```
+
+Drop / revise criteria:
+
+```text
+Drop the current Role-MACA-Lite version if Q loss is unstable or A_i collapses.
+Revise baseline construction if one component dominates all advantage variance.
+Revise same-role CorrSet if role baseline is uninformative or clearly harmful.
+Do not add attention CorrSets until fixed same-role CorrSet has been tested cleanly.
+```
+
 ---
 
-## Candidate Directions After Role-Trust
+## Candidate Directions Now
 
 Ranked by implementation priority:
 
@@ -982,7 +970,7 @@ Forced diversity can hurt when roles should sometimes behave similarly.
 
 ### 4. Role-Seq-Trust LoRA
 
-Revisit sequential role updates only after Role-Trust.
+Low-priority fallback. Do not revisit until Role-MACA-Lite has been tested.
 
 Mechanism:
 
@@ -997,6 +985,7 @@ Risk:
 
 ```text
 Prior sequential polish gains were small, so this is not the first bet.
+Role-Trust also underperformed, so more actor-side trust-region shaping is less attractive than credit assignment.
 ```
 
 ---
@@ -1010,17 +999,17 @@ Clean story:
 
 2. Role-LoRA improves MAPPO by adding semantic role-conditioned low-rank policy adapters.
 
-3. We tested natural extensions: sequential role polishing, role residual training, and context-gated residuals.
+3. We tested natural extensions: sequential role polishing, role residual training, context-gated residuals, and Role-Trust role-balanced PPO.
 
-4. These extensions were mechanically valid but did not clearly beat Role-LoRA.
+4. These extensions were mechanically valid but did not clearly beat Role-LoRA. Role-Trust specifically underperformed because it reweighted the same blunt team advantage and its KL budget stayed inactive.
 
-5. This negative result is useful: the bottleneck is probably not more residual capacity.
+5. This negative result is useful: the bottleneck is probably not more residual capacity or actor-side loss weighting.
 
 6. MACA sharpens the diagnosis: MAPPO's joint advantage is too blunt, and good cooperative MARL needs multi-level credit assignment.
 
-7. Role-Trust LoRA is a cheap already-implemented probe that makes PPO's actor update role-aware.
+7. The next method is Role-MACA-Lite: keep the successful Role-LoRA actor, but replace the advantage with a multi-level counterfactual advantage over individual, team, and same-role subgroup credit.
 
-8. The stronger next method is Role-MACA-Lite: keep the successful Role-LoRA actor, but replace the advantage with a multi-level counterfactual advantage over individual, team, and same-role subgroup credit.
+8. This gives a clean literature-backed progression from role-specific capacity to role-specific credit assignment.
 ```
 
 Expected contribution:
@@ -1028,21 +1017,15 @@ Expected contribution:
 ```text
 Role-LoRA shows that semantic unit roles are useful specialization keys in randomized SMAX.
 
-Role-Trust LoRA tests whether actor-side role-balanced PPO is enough.
+Role-Trust LoRA shows that actor-side role-balanced PPO is not enough.
 
 Role-MACA-Lite tests the stronger MACA-inspired hypothesis: the actor needs role-specific capacity and multi-level credit assignment.
 ```
 
-Meeting-safe claim before Role-Trust results:
+Current meeting-safe claim:
 
 ```text
-Our immediate next step is tightly scoped: keep the successful Role-LoRA actor and test whether role-balanced PPO with per-role trust budgets improves stability. The stronger follow-up, motivated by MACA, is to replace the MAPPO advantage with a multi-level role-aware counterfactual advantage.
-```
-
-Meeting-safe claim if Role-Trust fails:
-
-```text
-Role-LoRA remains the robust contribution. Residual auxiliary losses, context gates, and role-balanced trust budgets did not consistently add signal on this benchmark, which supports the MACA diagnosis: actor-side loss shaping is not enough, and the next improvement should change the advantage credit-assignment signal itself.
+Role-LoRA remains the robust contribution. Residual auxiliary losses, context gates, and role-balanced trust budgets did not consistently add signal on this benchmark, which supports the MACA diagnosis: actor-side loss shaping is not enough. The next implementation keeps the successful Role-LoRA actor but replaces MAPPO's blunt team advantage with Role-MACA-Lite multi-level credit assignment.
 ```
 
 ---
