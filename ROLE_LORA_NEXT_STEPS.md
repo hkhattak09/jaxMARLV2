@@ -1,118 +1,52 @@
-# Role-Context Residual MAPPO Next Steps
+# Role-LoRA MAPPO Project Plan
 
-This file records the next plan after the Stage 3 Role-LoRA and sequential ROSA experiments.
+This is the single canonical planning file for the Role-LoRA / ROSA / residual MAPPO project.
 
-Current evidence:
-
-- Stage 3, **joint Role-LoRA MAPPO**, is the best current variant.
-- Sequential ROSA did not beat Stage 3.
-- Sequential polishing, where normal LoRA training remains enabled and a tiny role-local step is added afterward, matched Stage 3 but did not improve it.
-- Therefore, sequential role correction should be treated as an ablation, not the main contribution.
-
-The main weakness of plain Role-LoRA is presentation and novelty:
+It replaces:
 
 ```text
-If the whole method is "we attached a LoRA adapter to MAPPO", it is too easy to dismiss.
+PROJECT_MEMORY_ROLE_CONTEXT_RESIDUAL.md
+ROSA_MAPPO_IMPLEMENTATION_PLAN.md
 ```
 
-The new plan is to keep Stage 3 as the base component, but add a stronger algorithmic idea:
-
-```text
-Role-Context Residual MAPPO
-```
-
-The adapter should not merely be extra capacity. It should have a defined job:
-
-```text
-learn controlled role-specific deviations from the shared policy,
-using role-normalized advantage,
-and modulate those deviations by team-composition context.
-```
+Do not maintain separate project-memory or implementation-plan copies. If the project changes, update this file.
 
 ---
 
-## Research Claim
+## Current State
 
-Shared recurrent MAPPO learns one cooperative policy for all agents. This is efficient, but in heterogeneous teams it can entangle two different things:
-
-```text
-1. general cooperative behavior that should be shared across roles
-2. role-specific action preferences that should differ by unit type
-```
-
-Plain Role-LoRA adds specialization capacity, but it does not explicitly say what the adapter should learn.
-
-Role-Context Residual MAPPO makes the decomposition explicit:
+Repository:
 
 ```text
-shared GRU backbone:
-    learns general cooperative behavior
-
-role adapter:
-    learns role-specific residual deviations from the shared policy
-
-context gate:
-    decides how strongly the role residual should be used under the current team composition
+/Users/hassan/repos/new_marl_llm_implementation
 ```
 
-Formula for agent `i`:
+Untouched baseline:
 
 ```text
-base_logits_i  = f_shared(o_i, h_i)
-delta_i        = LoRA_role_i(h_i)
-gate_i         = sigmoid(g(h_i, role_i, team_context))
-final_logits_i = base_logits_i + gate_i * delta_i
+smax_ctm/train_mappo_gru.py
 ```
 
-Training objective:
+Experimental file:
 
 ```text
-L_total = L_MAPPO + lambda_residual * L_residual + beta_kl * KL(pi_full || pi_base)
+smax_ctm/train_rosa_mappo.py
 ```
 
-Where:
+Primary benchmark:
 
 ```text
-L_MAPPO:
-    normal clipped PPO loss
-
-L_residual:
-    adapter-only role-normalized advantage loss
-
-KL(pi_full || pi_base):
-    keeps the residual policy from completely overriding the shared base policy
+smacv2_10_units with heuristic enemies
 ```
 
-Important implementation rule:
+Training setup:
 
 ```text
-The auxiliary residual loss must not push role-specific gradients back into the shared backbone.
+Training runs happen in Colab/notebook, not locally.
+Local work should be limited to code edits and syntax/import checks.
+Smoke tests use total_timesteps=300000.
+Full comparison runs use total_timesteps=3000000.
 ```
-
-For the residual loss, the implementation must either:
-
-```text
-1. stop_gradient on shared hidden features and base logits before computing the residual policy
-```
-
-or:
-
-```text
-2. compute residual gradients separately and zero every non-adapter/non-gate gradient before applying them
-```
-
-Do not implement a naive combined loss where `L_residual` freely updates the whole actor.
-
----
-
-## Non-Negotiables
-
-- Do not modify `smax_ctm/train_mappo_gru.py`.
-- Use `smax_ctm/train_rosa_mappo.py` or a copied experiment file for all new work.
-- Training will not be run locally by the implementation agent.
-- Local work is limited to editing and syntax checks.
-- Colab/notebook commands should use full paths from `/content`.
-- Follow the error handling policy: **fail loud, never fake**.
 
 Local syntax check:
 
@@ -120,59 +54,661 @@ Local syntax check:
 python -m py_compile /Users/hassan/repos/new_marl_llm_implementation/smax_ctm/train_rosa_mappo.py
 ```
 
-Baseline Colab command:
+Baseline command:
 
 ```python
 !python /content/jaxMARLV2/smax_ctm/train_mappo_gru.py
 ```
 
-Role experiment Colab command:
+Experiment command pattern:
 
 ```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_lora --total_timesteps 3000000 --run_name role_lora_smacv2_10_seed42
 ```
 
-Every stage must answer a question. Do not build all stages first and only then learn that the hypothesis was wrong.
+Error-handling policy:
+
+```text
+Fail loud, never fake.
+Prefer a visible failure over a silent fallback.
+Do not substitute placeholder data that looks valid.
+If a metric is unavailable, say unavailable rather than returning fake zeros.
+Do not modify smax_ctm/train_mappo_gru.py.
+```
 
 ---
 
-## Required Run Modes
+## Validated Result
 
-Before adding new methods, make experiments easy to run.
-
-Add CLI overrides to `smax_ctm/train_rosa_mappo.py`.
-
-Minimum arguments:
+The strongest validated result is:
 
 ```text
---map_name
---seed
---total_timesteps
---adapter_mode
---role_lora_rank
---role_lora_scale
---run_name
+Role-LoRA MAPPO
 ```
 
-Required `adapter_mode` values:
+Actor:
 
 ```text
-none
-role_lora
-global_lora
-agent_lora
-sequential_polish
-role_balanced
-role_residual
-role_context_residual
-global_residual
-agent_residual
-shuffled_context_residual
+local observation -> Dense/ReLU -> GRU -> Dense/ReLU -> base action logits
+role id -> select role-specific LoRA adapter
+final logits = base logits + role LoRA residual logits
 ```
 
-Fail loudly if an unsupported mode is passed.
+Formula:
 
-At startup, print:
+```text
+h_i,t      = GRU_theta(o_i,t, h_i,t-1)
+z_base_i,t = f_theta(h_i,t)
+delta_i,t  = B_role_i A_role_i h_i,t
+z_i,t      = z_base_i,t + alpha * delta_i,t
+pi_i,t     = softmax(mask(z_i,t))
+```
+
+Main result on `smacv2_10_units`, five seeds:
+
+| mode | seeds | final WR mean | final WR std | best WR mean | final return mean | AUC WR mean |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| MAPPO baseline | 5 | 0.4620 | 0.0259 | 0.4940 | 1.3100 | 0.2386 |
+| Role-LoRA | 5 | 0.5060 | 0.0152 | 0.5300 | 1.3640 | 0.2596 |
+| sequential polish | 5 | 0.5120 | 0.0164 | 0.5300 | 1.3760 | 0.2665 |
+
+Interpretation:
+
+```text
+Role-LoRA beats baseline on final win rate in all five seeds.
+Role-LoRA improves AUC and lowers final-win-rate variance.
+Sequential polish gives a small average gain, but the clean effect is Role-LoRA itself.
+```
+
+Recommended wording:
+
+```text
+Across five seeds on randomized smacv2_10_units, role-conditioned LoRA improves final win rate from 46.2% to 50.6% and AUC from 0.2386 to 0.2596. A lightweight role-local polishing step gives a small additional gain to 51.2%, but the larger and cleaner effect is the role-conditioned adapter parameterization.
+```
+
+Earlier seed-42 ablation:
+
+| mode | final WR | best WR | AUC WR |
+| --- | ---: | ---: | ---: |
+| none | 0.4900 | 0.5500 | 0.2956 |
+| role_lora | 0.5400 | 0.5500 | 0.3101 |
+| global_lora | 0.4900 | 0.5400 | 0.2840 |
+| agent_lora | 0.5200 | 0.5500 | 0.2992 |
+| sequential_polish | 0.5500 | 0.5700 | 0.3185 |
+
+Interpretation:
+
+```text
+Role-LoRA beats global LoRA and agent-ID LoRA in the seed-42 ablation.
+This helps answer the "you just added parameters" criticism.
+Agent-ID LoRA is weaker than semantic role conditioning on randomized teams.
+```
+
+---
+
+## Explored Negative Evidence
+
+Do not headline these as the main contribution.
+
+### Sequential ROSA
+
+Original idea:
+
+```text
+Role-Ordered Sequential Adapter MAPPO
+```
+
+Mechanism:
+
+```text
+shared recurrent MAPPO backbone
+role-specific LoRA adapters
+HAPPO-style sequential adapter updates by role
+```
+
+Result:
+
+```text
+Mechanically valid, but did not clearly beat joint Role-LoRA.
+Sequential polish is useful as a small practical refinement, not as a HAPPO-level contribution.
+```
+
+Interpretation:
+
+```text
+HAPPO-style sequential correction does not transfer cleanly when applied only as an adapter-local post-step after a shared MAPPO update.
+```
+
+### Role-Residual
+
+Mechanism:
+
+```text
+L_total = L_MAPPO + lambda_residual * L_residual + beta_kl * KL(pi_base || pi_full)
+```
+
+Clean version:
+
+```text
+LoRA frozen out of normal MAPPO gradients.
+LoRA trained only through residual role-normalized PPO loss.
+Backbone stopped/frozen for residual loss.
+Hinge KL target around 0.02.
+```
+
+Important implementation fix:
+
+```text
+Actor optimizer must call apply_gradients exactly once per update.
+A second Adam step can move parameters even when residual gradients are zero because momentum state is active.
+Residual gradients must be combined with actor gradients, then applied in one optimizer step.
+```
+
+Empirical status:
+
+```text
+Mechanically clean.
+Residual LoRA gradients > 0.
+Residual backbone gradients = 0.
+Hinge KL mostly inactive.
+Did not clearly beat Role-LoRA or sequential polish.
+```
+
+Seed-1 comparison:
+
+| mode | seed-1 final WR | seed-1 best WR |
+| --- | ---: | ---: |
+| none | 0.49 | 0.51 |
+| role_lora | 0.53 | 0.54 |
+| sequential_polish | 0.54 | 0.54 |
+| role_residual | 0.50 | 0.53 |
+
+### Role-Context Residual
+
+Mechanism:
+
+```text
+final logits = base logits + context_gate * role_lora_delta
+context = team role histogram / own-role count
+```
+
+Empirical status:
+
+```text
+Mechanically healthy.
+Gate gradients were nonzero.
+Backbone residual gradients stayed zero.
+Full seed-42 run underperformed Role-Residual.
+Gate saturated high, roughly learning "turn residual on" rather than meaningful context modulation.
+```
+
+Decision:
+
+```text
+Drop context gating from the core method.
+Do not run shuffled_context_residual or retained-context variants unless the branch is explicitly reopened later.
+```
+
+---
+
+## Research Synthesis
+
+The deep research review and the MACA paper support this pivot:
+
+```text
+The missing ingredient is probably not more residual capacity.
+The missing ingredient is a stronger advantage / credit-assignment signal.
+```
+
+The literature pattern:
+
+| Theme | Representative sources | Useful lesson |
+| --- | --- | --- |
+| Strong PPO/MAPPO baseline | [MAPPO](https://openreview.net/forum?id=YVXaxB6L2Pl) | PPO/MAPPO can be very strong when details are right; do not assume architecture novelty is needed. |
+| Sequential trust-region MARL | [HARL/HAPPO/HATRPO](https://jmlr.org/papers/v25/23-0488.html), [A2PO](https://openreview.net/forum?id=Q-neeWNVv1) | Simultaneous updates can hide agent/role instability; per-agent or per-role update budgets are defensible. |
+| Credit assignment | [PRD-MAPPO](https://arxiv.org/abs/2408.04295), [Dr.REINFORCE](https://www.microsoft.com/en-us/research/publication/dr-reinforce/), [Shapley Counterfactual Credits](https://arxiv.org/abs/2106.00285) | Team reward is often too blunt; better credit routing can matter more than extra capacity. |
+| Multi-level advantage credit | [MACA](https://arxiv.org/abs/2508.06836) | MAPPO's joint advantage and COMA's individual advantage are both incomplete; strong tasks need credit at individual, team, and correlated-subgroup levels. |
+| Role specialization | [ROMA](https://proceedings.mlr.press/v119/wang20f.html), [RODE](https://openreview.net/forum?id=TTUVg6vkNjK), [ACORM](https://arxiv.org/abs/2312.04819) | Roles need identifiable responsibilities or behaviorally meaningful separation, not just labels. |
+| Partial sharing/adapters | [LoRASA](https://arxiv.org/abs/2502.05573), [Kaleidoscope](https://arxiv.org/abs/2410.08540) | Shared backbones plus small specialist modules are reasonable, but specialization needs a signal. |
+| Conditional capacity | Switch/ST-MoE/Soft MoE style results | Extra branches or experts help only when routing and regularization prevent collapse or wasted capacity. |
+
+Diagnosis of current failure modes:
+
+```text
+Role-LoRA works because semantic unit type gives the actor a useful specialization key.
+
+Role-Residual did not clearly improve because role-normalized team advantage changes scale but does not create new role credit.
+
+Freezing LoRA out of normal MAPPO made the residual mechanism clean, but it also removed the strongest PPO signal from the adapter.
+
+The residual KL was either weak or mostly inactive, so it did not create a strong trust-region story.
+
+The context gate saturated because the static team-composition context was too weak to tell the model when a residual should matter.
+```
+
+MACA changes the mental map:
+
+```text
+Role-Trust fixes actor-side update weighting, but it still uses the same underlying team advantage.
+
+MACA shows that the larger improvement likely comes from changing the advantage itself:
+    A_i = Q(s, a) - counterfactual baseline_i
+
+The baseline should reason at multiple levels:
+    joint/team action
+    individual agent action
+    correlated subgroup action
+```
+
+For this project, the correlated subgroup should initially be role-based, not learned with a transformer:
+
+```text
+CorrSet C_i = agents in the same semantic unit role as agent i, including i.
+```
+
+This gives a role-aware MACA-lite path that uses our existing environment role ids and avoids a large attention-critic implementation at first.
+
+---
+
+## Updated Direction
+
+There are now two different next steps:
+
+```text
+Immediate cheap probe:
+    Role-Trust LoRA MAPPO
+
+Main next research direction:
+    Role-MACA-Lite MAPPO
+```
+
+Role-Trust is already implemented and should still be smoke-tested because it is cheap. But the MACA paper suggests that if Role-Trust does not clearly improve, we should not tune it for long. Move to MACA-lite credit assignment.
+
+Role-Trust short pitch:
+
+```text
+Role-Trust LoRA MAPPO keeps the validated Role-LoRA actor, but replaces the global actor objective with an equal-role PPO objective and a soft per-role KL budget so rare or unstable roles cannot be drowned out by the average MAPPO update.
+```
+
+Role-MACA-Lite short pitch:
+
+```text
+Role-MACA-Lite keeps the Role-LoRA actor, but replaces the blunt MAPPO advantage with a multi-level counterfactual advantage that credits individual agents, the full team, and same-role subgroups separately.
+```
+
+Decision:
+
+```text
+Do not treat Role-Trust as the final algorithm unless it clearly beats Role-LoRA.
+Treat Role-Trust as a low-cost diagnostic.
+Treat Role-MACA-Lite as the stronger literature-backed improvement path.
+```
+
+---
+
+## Role-Trust Objective
+
+Actor remains Role-LoRA:
+
+```text
+h_i,t      = GRU_theta(o_i,t, h_i,t-1)
+z_base_i,t = f_theta(h_i,t)
+delta_i,t  = B_role_i A_role_i h_i,t
+z_i,t      = z_base_i,t + alpha * delta_i,t
+pi_i,t     = softmax(mask(z_i,t))
+```
+
+For each role `r` present in the minibatch:
+
+```text
+M_r = 1[role_i,t = r]
+
+A_r = (A - mean(A | M_r)) / (std(A | M_r) + eps)
+
+rho_i,t = pi_new(a_i,t | o_i,t) / pi_old(a_i,t | o_i,t)
+
+L_ppo_r =
+    - mean_{M_r} min(
+        rho_i,t * A_r,
+        clip(rho_i,t, 1 - eps, 1 + eps) * A_r
+    )
+
+KL_r = mean_{M_r} [(rho_i,t - 1) - log(rho_i,t)]
+```
+
+Equal-role PPO objective:
+
+```text
+L_role_ppo = mean_{r in present_roles} L_ppo_r
+```
+
+Soft per-role KL budget:
+
+```text
+L_role_kl =
+    mean_{r in present_roles} max(0, KL_r - role_kl_target)^2
+```
+
+Actor loss:
+
+```text
+L_actor =
+    L_role_ppo
+    + role_kl_coef * L_role_kl
+    - ent_coef * mean_entropy
+```
+
+Critic remains standard MAPPO:
+
+```text
+L_critic = clipped value loss on centralized world-state value
+```
+
+Total update:
+
+```text
+L_total = L_actor + vf_coef * L_critic
+```
+
+Parameters updated:
+
+```text
+shared actor backbone:
+    updated by L_actor
+
+role LoRA adapters:
+    updated by L_actor
+
+critic:
+    updated by L_critic
+
+residual auxiliary branch:
+    not used
+
+context gate:
+    not used
+```
+
+Difference from Role-LoRA:
+
+```text
+Same actor.
+Different PPO objective.
+The main actor loss is role-balanced and per-role trust-region aware.
+```
+
+Difference from Role-Residual:
+
+```text
+No separate weak auxiliary objective.
+No adapter-only residual loss.
+The adapter receives the main PPO signal, but that signal is now role-aware.
+```
+
+---
+
+## Role-MACA-Lite Objective
+
+This is the new main research direction suggested by the MACA paper.
+
+Full MACA:
+
+```text
+A_i^MACA(s, a) = Q(s, a) - b_i^MACA(s, a)
+
+b_i^MACA =
+    psi_i^Jnt * b^Jnt
+  + psi_i^Ind * b_i^Ind
+  + psi_i^Cor * b_i^Cor
+```
+
+Where:
+
+```text
+b^Jnt:
+    baseline marginalizing the full joint action under the policy
+
+b_i^Ind:
+    baseline marginalizing only agent i's action
+
+b_i^Cor:
+    baseline marginalizing the action subset C_i of agents correlated with i
+```
+
+Project-specific MACA-lite:
+
+```text
+C_i = {j : role_j = role_i}
+```
+
+So the three credit levels become:
+
+```text
+joint/team:
+    did the whole joint action help?
+
+individual:
+    did this agent's action help?
+
+same-role subgroup:
+    did this unit type's coordinated action help?
+```
+
+Minimal fixed-weight version:
+
+```text
+b_i^RoleMACA =
+    w_jnt  * b^Jnt
+  + w_ind  * b_i^Ind
+  + w_role * b_i^Role
+
+A_i^RoleMACA = stop_gradient(Q_taken - b_i^RoleMACA)
+```
+
+Start with fixed weights to avoid MACA's CMA-ES coefficient optimization:
+
+```text
+w_jnt = 1/3
+w_ind = 1/3
+w_role = 1/3
+```
+
+Then ablate:
+
+```text
+joint only:
+    approximates MAPPO-style advantage
+
+individual only:
+    approximates COMA-style individual counterfactual credit
+
+role only:
+    tests whether same-role subgroup credit is the useful addition
+
+joint + individual + role:
+    main Role-MACA-Lite method
+```
+
+Why this is better aligned than Role-Trust:
+
+```text
+Role-Trust changes how PPO averages role losses.
+Role-MACA-Lite changes the advantage signal before PPO sees it.
+
+The MACA ablations show that stronger critic architecture alone is not enough.
+The multi-level advantage is the key mechanism.
+```
+
+Implementation warning:
+
+```text
+Do not implement Role-MACA-Lite as just another value head V(s).
+It needs an action-conditioned Q critic or an equivalent way to compute counterfactual baselines.
+```
+
+Minimal critic design:
+
+```text
+Q_phi(world_state, joint_action_features, agent_id_or_role_id) -> scalar Q_i
+```
+
+For each transition:
+
+```text
+Q_taken:
+    Q_phi(s, onehot_taken_joint_action, i)
+
+b_i^Ind:
+    Q_phi(s, joint_action_features where only agent i's action is replaced by pi_i(.|o_i), i)
+
+b_i^Role:
+    Q_phi(s, joint_action_features where all same-role agents' actions are replaced by their policy distributions, i)
+
+b^Jnt:
+    Q_phi(s, joint_action_features where all agents' actions are replaced by policy distributions, i)
+```
+
+Actor update:
+
+```text
+Use A_i^RoleMACA in the PPO surrogate.
+Keep Role-LoRA actor unchanged.
+```
+
+Critic training:
+
+```text
+Train Q_taken toward rollout returns / GAE targets first.
+Keep the first implementation simple and observable.
+Do not add transformer attention or learned psi weights in the first version.
+```
+
+Diagnostics:
+
+```text
+q_taken_mean_by_role
+baseline_joint_by_role
+baseline_individual_by_role
+baseline_role_by_role
+adv_maca_mean_by_role
+adv_maca_std_by_role
+component_gap_ind = Q_taken - b_i^Ind
+component_gap_role = Q_taken - b_i^Role
+component_gap_joint = Q_taken - b^Jnt
+role_maca_weight_jnt/ind/role
+```
+
+Decision gate:
+
+```text
+If Role-Trust does not beat Role-LoRA in the first two full seeds, prioritize Role-MACA-Lite.
+If Role-Trust improves AUC/final WR, still consider Role-MACA-Lite as the stronger paper-backed extension.
+```
+
+---
+
+## Implementation Status And Checklist
+
+Status:
+
+```text
+Implemented in smax_ctm/train_rosa_mappo.py.
+```
+
+The implementation deliberately keeps existing `role_balanced` behavior unchanged as an older ablation. The new mode is separate:
+
+```text
+adapter_mode=role_trust_lora
+```
+
+Completed code changes:
+
+```text
+1. Added role_trust_lora to SUPPORTED_ADAPTER_MODES.
+2. Added CLI args:
+   --role_kl_target
+   --role_kl_coef
+   --role_kl_penalty_mode
+
+3. For adapter_mode=role_trust_lora, apply_cli_overrides sets:
+   USE_ROLE_LORA=True
+   ROLE_BALANCED_PPO=True
+   ROLE_EQUALIZE_PPO_LOSS=True
+   ROLE_KL_BUDGET=True
+   FREEZE_LORA_IN_SHARED_UPDATE=False
+   USE_ROLE_RESIDUAL_LOSS=False
+   USE_CONTEXT_GATE=False
+
+4. Added config defaults:
+   ROLE_EQUALIZE_PPO_LOSS=False
+   ROLE_KL_BUDGET=False
+   ROLE_KL_TARGET=0.02
+   ROLE_KL_COEF=0.5
+   ROLE_KL_PENALTY_MODE="hinge_squared"
+
+5. In _actor_loss_fn:
+   role_trust_lora role-normalizes advantages,
+   computes PPO loss per sample,
+   computes role_ppo_loss as mean loss per role,
+   averages present-role losses equally,
+   adds a soft per-role KL budget penalty.
+
+6. Added logging for:
+   role_actor_loss_weight
+   role_kl_penalty_by_role
+   role_kl_penalty
+
+7. Added fail-loud runtime check for role ids outside [0, NUM_UNIT_TYPES).
+```
+
+Critical implementation invariant:
+
+```text
+role_trust_lora must NOT be implemented as:
+    role-normalize advantages, then global sample mean
+
+It must be:
+    compute PPO loss per sample
+    compute mean PPO loss within each present role
+    average present-role PPO losses equally
+```
+
+Current code path:
+
+```text
+role_ppo_loss = role_mean_metric(ppo_loss_per_sample, role_id, NUM_UNIT_TYPES)
+policy_loss = present_role_mean(role_ppo_loss, role_id, NUM_UNIT_TYPES)
+```
+
+The `role_actor_loss_weight` diagnostic should show equal weights for present roles under `role_trust_lora`.
+
+Config additions:
+
+```python
+"ROLE_EQUALIZE_PPO_LOSS": True
+"ROLE_KL_BUDGET": True
+"ROLE_KL_TARGET": 0.02
+"ROLE_KL_COEF": 0.5
+"ROLE_KL_PENALTY_MODE": "hinge_squared"
+```
+
+Optional later:
+
+```python
+"ROLE_MIN_COUNT_FOR_LOSS": 8
+"ROLE_ENTROPY_BALANCED": False
+"ROLE_ADAPTIVE_CLIP": False
+```
+
+CLI additions:
+
+```text
+--role_kl_target
+--role_kl_coef
+--role_kl_penalty_mode
+```
+
+Startup logging must print:
 
 ```text
 resolved config
@@ -180,710 +716,355 @@ adapter_mode
 map_name
 seed
 run_name
-all residual/context config values
+role trust config values
+residual/context config values, if any are enabled
 ```
 
-Save the resolved config with the checkpoint.
-
-Decision gate:
-
-- If CLI overrides are silently ignored, stop and fix this first.
-- If the printed config does not make the active method obvious, stop and fix logging.
-
----
-
-## Stage 3: Freeze The Current Base Method
-
-Goal: preserve the current best method as the clean baseline for all future comparisons.
-
-Config:
-
-```python
-"USE_ROLE_LORA": True
-"USE_SEQUENTIAL_ROLE_UPDATES": False
-"ROLE_LORA_RANK": 4
-"ROLE_LORA_SCALE": 1.0
-"ROLE_ID_SOURCE": "env_state_unit_type"
-"LOG_ROLE_DIAGNOSTICS": True
-```
-
-Suggested CLI:
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name 3m --seed 42 --adapter_mode role_lora --total_timesteps 3000000 --run_name stage3_role_lora_3m_seed42
-```
-
-Collect:
+Fail-loud checks:
 
 ```text
-win_rate curve
-return curve
-wall-clock time
-lora_delta_norm_by_role
-lora_grad_norm_by_role
-lora_param_norm_by_role
-role_approx_kl
-role_clip_frac
+If adapter_mode is unsupported, raise.
+If role ids fall outside [0, NUM_UNIT_TYPES), raise.
+If role bits in observation disagree with env-state role ids, raise.
+If ROLE_KL_BUDGET=True but per-role KL is unavailable, raise.
+```
+
+Diagnostics to log:
+
+```text
+role_count
+role_present_mask
+role_actor_loss_weight
 role_adv_mean
 role_adv_std
-role_count
-```
-
-Question answered:
-
-```text
-What does the strongest simple Role-LoRA baseline look like?
-```
-
-Decision gate:
-
-- If Stage 3 is unstable, do not build on it.
-- If Stage 3 is stable but only marginally better than baseline, future stages must show clear additional value.
-
----
-
-## Stage 3B: Capacity And Identity Ablations
-
-Goal: defend against the criticism that Stage 3 only adds parameters.
-
-Run:
-
-```text
-1. baseline GRU MAPPO
-2. Role-LoRA MAPPO
-3. global LoRA MAPPO
-4. agent-ID LoRA MAPPO
-5. sequential polishing
-```
-
-Commands:
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_mappo_gru.py
-```
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_lora --total_timesteps 3000000 --run_name stage3_role_lora_smacv2_10_seed42
-```
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode global_lora --total_timesteps 3000000 --run_name global_lora_smacv2_10_seed42
-```
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode agent_lora --total_timesteps 3000000 --run_name agent_lora_smacv2_10_seed42
-```
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode sequential_polish --total_timesteps 3000000 --run_name seq_polish_smacv2_10_seed42
-```
-
-Question answered:
-
-```text
-Is role conditioning doing anything beyond adding adapter capacity?
-```
-
-Decision gate:
-
-- If global LoRA matches Role-LoRA, plain role adapters are probably not enough.
-- If agent-ID LoRA matches Role-LoRA on randomized maps, semantic roles are not yet proven useful.
-- If sequential polishing matches Role-LoRA, keep it as a negative/redundant ablation.
-
----
-
-## Stage 4A.0: Residual Wiring Sanity Check
-
-Goal: prove that adding residual-mode code does not change behavior when the new loss is disabled.
-
-This stage is mandatory before running a real Role-Residual experiment. It catches accidental behavior changes from refactoring.
-
-Implement `adapter_mode=role_residual`, but set:
-
-```python
-"USE_ROLE_LORA": True
-"USE_ROLE_RESIDUAL_LOSS": True
-"USE_CONTEXT_GATE": False
-"ROLE_BALANCED_PPO": False
-"RESIDUAL_LOSS_COEF": 0.0
-"RESIDUAL_KL_COEF": 0.0
-"RESIDUAL_ADV_NORM": "role"
-"RESIDUAL_STOP_BACKBONE": True
-"LOG_RESIDUAL_DIAGNOSTICS": True
-```
-
-Expected result:
-
-```text
-role_residual with zero residual coefficients should match Stage 3 role_lora within normal seed noise.
-```
-
-Suggested CLI:
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_residual --residual_loss_coef 0.0 --residual_kl_coef 0.0 --total_timesteps 3000000 --run_name role_residual_zero_coef_smacv2_10_seed42
-```
-
-Diagnostics to verify:
-
-```text
-residual_loss_by_role should be computed but multiplied by zero in total loss
-residual_kl_to_base_by_role should be computed but multiplied by zero in total loss
-residual_lora_grad_norm should be available
-residual_backbone_grad_norm should be zero or numerically near zero for the residual loss
-```
-
-Decision gate:
-
-- If zero-coefficient residual mode behaves very differently from Stage 3 Role-LoRA, stop and fix the wiring.
-- If residual gradients leak into the backbone, stop and fix gradient blocking before interpreting any Stage 4 result.
-- If diagnostics are unavailable, do not print fake zeros; fail loudly or print an explicit unavailable marker.
-
----
-
-## Stage 4A.1: Role-Residual MAPPO
-
-Goal: test whether an adapter-only role-normalized PPO objective improves over plain Stage 3.
-
-This is the first real post-Stage-3 algorithmic change.
-
-Actor:
-
-```text
-base_logits_i  = shared actor logits
-delta_i        = role LoRA residual
-final_logits_i = base_logits_i + delta_i
-```
-
-Training:
-
-```text
-L_MAPPO:
-    normal PPO on the final policy
-
-L_residual:
-    adapter-only clipped PPO loss using role-normalized advantage
-
-L_KL:
-    small KL keeping the residual policy near the base policy
-```
-
-Do **not** implement the residual objective as plain `-A_role * log pi_full(a)` for the main experiment. Use a PPO-style clipped objective.
-
-Residual PPO loss:
-
-```text
-A_role = normalize advantage within each role
-
-ratio_residual = pi_full(a) / pi_old(a)
-
-L_residual =
-    -mean(
-        min(
-            ratio_residual * A_role,
-            clip(ratio_residual, 1 - CLIP_EPS, 1 + CLIP_EPS) * A_role
-        )
-    )
-```
-
-But for this loss:
-
-```text
-shared hidden features are stop_gradient
-base logits are stop_gradient
-only role LoRA params receive residual gradients
-```
-
-Implementation requirement:
-
-```text
-Compute residual gradients separately from the normal MAPPO actor gradients.
-Before applying residual gradients, zero every parameter gradient except:
-    role_lora_A
-    role_lora_B
-    context gate parameters, only when USE_CONTEXT_GATE=True
-
-Then add the filtered residual gradients to the normal actor gradients and call
-actor_train_state.apply_gradients exactly once.
-
-Do not call apply_gradients once for MAPPO and a second time for residual.
-With Adam, a second optimizer step can move parameters even when residual
-gradients are zero, because the optimizer momentum state is nonzero.
-```
-
-This explicit gradient filtering is preferred even if `stop_gradient` is used, because it gives a visible safety check that residual gradients cannot update the shared backbone.
-
-KL regularizer:
-
-```text
-L_KL = KL(stopgrad(pi_base) || pi_full)
-```
-
-Use the stopped base policy as the anchor. The residual should not be allowed to pull the shared policy through this auxiliary term.
-
-Suggested config:
-
-```python
-"USE_ROLE_LORA": True
-"USE_ROLE_RESIDUAL_LOSS": True
-"USE_CONTEXT_GATE": False
-"ROLE_BALANCED_PPO": False
-"RESIDUAL_LOSS_COEF": 0.1
-"RESIDUAL_KL_COEF": 0.01
-"RESIDUAL_ADV_NORM": "role"
-"RESIDUAL_STOP_BACKBONE": True
-"LOG_RESIDUAL_DIAGNOSTICS": True
-```
-
-Suggested CLI:
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_residual --residual_loss_coef 0.1 --residual_kl_coef 0.01 --total_timesteps 3000000 --run_name role_residual_smacv2_10_seed42
-```
-
-New diagnostics to log:
-
-```text
-residual_loss_by_role
-residual_kl_to_base_by_role
-residual_adv_alignment_by_role
-residual_logprob_margin_by_role
-residual_lora_grad_norm_by_role
-residual_backbone_grad_norm
-residual_gate_grad_norm, if context gate is enabled
-residual_clip_frac_by_role
-residual_ratio_mean_by_role
-residual_ratio_max_by_role
+role_ppo_loss
+role_approx_kl
+role_kl_penalty
+role_clip_frac
+role_mean_ratio
+role_max_ratio
+max_role_kl_minus_global
+max_role_clip_frac_minus_global
+min_role_count_over_max
 lora_delta_norm_by_role
+lora_grad_norm_by_adapter
+lora_param_norm_by_adapter
 ```
 
-Definitions:
+Expected diagnostics if Role-Trust is working:
 
 ```text
-residual_logprob_margin = log pi_full(a) - log pi_base(a)
-residual_adv_alignment = mean(A_role * residual_logprob_margin)
+role_actor_loss_weight gives each present role a meaningful contribution.
+max_role_kl_minus_global shrinks.
+role_clip_frac becomes less spiky.
+lora_grad_norm_by_adapter is less dominated by common roles.
+Win-rate AUC improves before final win rate does.
 ```
 
-Expected gradient behavior:
+Main risks:
 
 ```text
-residual_lora_grad_norm_by_role > 0 for roles present in the batch
-residual_backbone_grad_norm ~= 0
-residual_gate_grad_norm is unavailable or 0 when USE_CONTEXT_GATE=False
-```
-
-Question answered:
-
-```text
-Does giving the adapter a role-specific clipped PPO objective improve over simply attaching Role-LoRA?
-```
-
-Decision gate:
-
-- If Role-Residual beats Stage 3, continue to context gating.
-- If Role-Residual matches Stage 3 but diagnostics show positive residual alignment, it may still be useful but needs context to matter.
-- If Role-Residual hurts performance or residual KL explodes, reduce `RESIDUAL_LOSS_COEF` or increase `RESIDUAL_KL_COEF`.
-- If residual gradients leak into the backbone, stop and fix implementation before interpreting results.
-
----
-
-## Stage 4A.2: Residual Coefficient Sweep
-
-Goal: avoid over-interpreting one arbitrary residual-loss weight.
-
-Only do this after Stage 4A.0 passes.
-
-Run at least:
-
-```text
-RESIDUAL_LOSS_COEF = 0.03, RESIDUAL_KL_COEF = 0.01
-RESIDUAL_LOSS_COEF = 0.10, RESIDUAL_KL_COEF = 0.01
-```
-
-Optional if residual KL is too large:
-
-```text
-RESIDUAL_LOSS_COEF = 0.10, RESIDUAL_KL_COEF = 0.03
-```
-
-Suggested commands:
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_residual --residual_loss_coef 0.03 --residual_kl_coef 0.01 --total_timesteps 3000000 --run_name role_residual_lam003_kl001_smacv2_10_seed42
-```
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_residual --residual_loss_coef 0.10 --residual_kl_coef 0.01 --total_timesteps 3000000 --run_name role_residual_lam010_kl001_smacv2_10_seed42
-```
-
-Question answered:
-
-```text
-Is Role-Residual sensitive to the auxiliary loss weight, and is there a safe useful range?
-```
-
-Decision gate:
-
-- If `0.03` is safer but weaker and `0.10` improves without KL explosion, use `0.10`.
-- If `0.10` hurts or residual KL grows too much, use `0.03` or increase `RESIDUAL_KL_COEF`.
-- If all weights match Stage 3 and residual alignment is near zero, the residual objective is not yet useful.
-
----
-
-## Stage 4B: Role-Context Residual MAPPO
-
-Goal: test whether role residuals should depend on team composition.
-
-This borrows the useful intuition from Sable and Multi-Agent Mamba:
-
-```text
-agent behavior should depend on agent/team context, not only local role identity
-```
-
-Do not implement a full Sable, retention, or Mamba architecture for the first version. Use a cheap context gate.
-
-Actor:
-
-```text
-base_logits_i  = f_shared(o_i, h_i)
-delta_i        = LoRA_role_i(h_i)
-context_i      = team role histogram and own-role count
-gate_i         = sigmoid(MLP([stopgrad(h_i), role_onehot_i, context_i]))
-final_logits_i = base_logits_i + gate_i * delta_i
-```
-
-Recommended first context:
-
-```text
-team role histogram
-own role count
-```
-
-Avoid using mean teammate hidden states, teammate actions, or privileged enemy state in the first context version. Those turn the method into a communication/centralized-information method. Team-composition context is easier to defend as a known roster signal.
-
-Suggested config:
-
-```python
-"USE_ROLE_LORA": True
-"USE_ROLE_RESIDUAL_LOSS": True
-"USE_CONTEXT_GATE": True
-"CONTEXT_SOURCE": "team_role_histogram"
-"CONTEXT_SHUFFLE": False
-"CONTEXT_GATE_HIDDEN_DIM": 32
-"RESIDUAL_GATE_INIT_BIAS": 0.0
-"RESIDUAL_LOSS_COEF": 0.1
-"RESIDUAL_KL_COEF": 0.01
-"RESIDUAL_ADV_NORM": "role"
-"RESIDUAL_STOP_BACKBONE": True
-"LOG_RESIDUAL_DIAGNOSTICS": True
-```
-
-Suggested CLI:
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_context_residual --total_timesteps 3000000 --run_name role_context_residual_smacv2_10_seed42
-```
-
-New diagnostics to log:
-
-```text
-context_gate_mean_by_role
-context_gate_std_by_role
-context_gate_min_by_role
-context_gate_max_by_role
-residual_kl_to_base_by_role
-residual_adv_alignment_by_role
-role_context_histogram_mean
-```
-
-Question answered:
-
-```text
-Does team composition/context help decide when role-specific residuals should be active?
-```
-
-Decision gate:
-
-- If Role-Context Residual beats Role-Residual, context is useful.
-- If gate values collapse to all zeros, residual is being ignored.
-- If gate values saturate to all ones, the context gate is not doing useful modulation.
-- If context improves random-team maps but not fixed maps, that supports the generalization story.
-
----
-
-## Stage 4B.1: Retained Team-Context Gate
-
-Goal: test the small Sable-inspired idea after the static context gate is working.
-
-Do not implement this before Stage 4B unless Stage 4A is already promising. This is a second-order addition.
-
-Retained context:
-
-```text
-x_t = team role histogram and own-role count
-c_t = (1 - done_t) * (rho * c_{t-1} + phi(x_t))
-```
-
-Where:
-
-```text
-rho is a fixed decay such as 0.95 for the first version
-phi is a small linear layer or MLP
-done_t resets context at episode boundaries
-```
-
-Suggested config:
-
-```python
-"USE_CONTEXT_GATE": True
-"CONTEXT_SOURCE": "retained_team_role_histogram"
-"CONTEXT_DECAY": 0.95
-"CONTEXT_SHUFFLE": False
-```
-
-Diagnostics:
-
-```text
-retained_context_norm
-retained_context_delta_norm
-retained_context_reset_check
-context_gate_mean_by_role
-```
-
-Fail loudly if retained context does not reset on episode done.
-
-Question answered:
-
-```text
-Does Sable-style retained temporal team context beat static team-composition context?
-```
-
-Decision gate:
-
-- If retained context beats static context, keep it.
-- If retained context matches static context, use static context because it is simpler.
-- If retained context hurts or reset checks fail, remove it.
-
----
-
-## Stage 4C: Context And Residual Ablations
-
-Goal: prove the context and residual mechanisms are doing real work.
-
-Run:
-
-```text
-1. Stage 3 Role-LoRA
-2. Role-Residual
-3. Role-Context Residual
-4. shuffled-context residual
-5. global residual
-6. agent-ID residual
-7. role-balanced PPO without residual
-```
-
-Suggested commands:
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode shuffled_context_residual --total_timesteps 3000000 --run_name shuffled_context_residual_smacv2_10_seed42
-```
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode global_residual --total_timesteps 3000000 --run_name global_residual_smacv2_10_seed42
-```
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode agent_residual --total_timesteps 3000000 --run_name agent_residual_smacv2_10_seed42
-```
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_balanced --total_timesteps 3000000 --run_name role_balanced_smacv2_10_seed42
-```
-
-Question answered:
-
-```text
-Is the gain caused by role residual learning, meaningful context, semantic role conditioning, or just extra parameters?
-```
-
-Decision gate:
-
-- If Role-Residual beats Stage 3, the residual objective matters.
-- If Role-Context Residual beats Role-Residual, context matters.
-- If real context beats shuffled context, the context signal is meaningful.
-- If global residual matches Role-Context Residual, role conditioning is not the cause.
-- If agent-ID residual matches Role-Context Residual on randomized maps, semantic role identity is not proven.
-- If role-balanced PPO alone matches the residual methods, the core improvement may be role-balanced optimization rather than adapters.
-
----
-
-## Stage 5: Generalization Stress Tests
-
-Goal: make the project about robustness under heterogeneous or randomized team composition.
-
-Priority maps:
-
-```text
-smacv2_10_units
-2s3z
-3s5z
-6h_vs_8z
-```
-
-Most important:
-
-```text
-smacv2_10_units
-```
-
-This is the primary randomized-unit benchmark for the project. It is cheap enough to run, and existing baselines are already available, so do not spend the main ablation budget on `smacv2_5_units`.
-
-First multi-seed set:
-
-```text
-seeds: 0, 1, 2
-methods: Stage 3 Role-LoRA, Role-Residual, Role-Context Residual, global residual
-timesteps: 3e6
-```
-
-Suggested command pattern:
-
-```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 0 --adapter_mode role_context_residual --total_timesteps 3000000 --run_name role_context_residual_smacv2_10_seed0
-```
-
-Question answered:
-
-```text
-Does the method improve robustness on randomized heterogeneous teams, not just one fixed map?
-```
-
-Decision gate:
-
-- If gains appear on `smacv2_10_units` across multiple seeds, the randomized heterogeneous-team story is plausible.
-- If gains appear only on `3m`, do not claim heterogeneous generalization.
-- If gains are seed-fragile, reduce the claim to exploratory evidence.
-
----
-
-## Stage 6: Optional Composition-Shift Evaluation
-
-Goal: test whether role/context factorization survives distribution shift.
-
-Only do this after Stages 4A-5 show promise.
-
-Possible design:
-
-```text
-Train distribution:
-    unit types sampled from a restricted or balanced distribution
-
-Eval distribution:
-    held-out, skewed, or rare-role-heavy team compositions
-```
-
-Implementation warning:
-
-- Do not fake this by changing labels.
-- The actual environment unit-type sampling must change.
-- If clean sampling control cannot be implemented quickly, skip this stage and say so.
-
-Question answered:
-
-```text
-Does role-context residual learning help when team composition at evaluation differs from training?
-```
-
-Decision gate:
-
-- If Role-Context Residual beats Stage 3 and global residual under composition shift, this is the strongest result.
-- If all methods fail under shift, report the failure and keep the main claim narrower.
-
----
-
-## Minimum Meeting Package
-
-Aim to have:
-
-```text
-1. Clear statement of the failure of sequential ROSA:
-   HAPPO-style sequential correction did not improve over joint Role-LoRA.
-
-2. Clear statement of the new idea:
-   adapters are trained as role-specific residual advantage learners, not merely added as capacity.
-
-3. One architecture diagram:
-   shared GRU -> base logits
-   role LoRA -> residual logits
-   context gate -> residual strength
-   final logits = base + gate * residual
-
-4. One plot:
-   Stage 3 Role-LoRA vs Role-Residual vs Role-Context Residual.
-
-5. One ablation table:
-   Stage 3, global residual, agent residual, shuffled context, role-balanced PPO.
-
-6. One diagnostic table:
-   residual_adv_alignment_by_role
-   residual_kl_to_base_by_role
-   context_gate_mean_by_role
-```
-
-Minimum acceptable conclusion:
-
-```text
-Sequential role correction was not useful in our shared-backbone MAPPO setting.
-The next useful direction is to treat role adapters as controlled residual advantage learners.
-```
-
-Strong conclusion, if experiments support it:
-
-```text
-Role-Context Residual MAPPO improves shared recurrent MAPPO in randomized heterogeneous SMAX settings by separating shared cooperative behavior from context-conditioned role-specific residual behavior.
+Equal role weighting may overemphasize rare/noisy roles.
+The KL penalty may be too conservative.
+Role-normalized advantages may amplify noise when role counts are tiny.
+The current map may already be stable enough that Role-Trust only matches Role-LoRA.
 ```
 
 ---
 
-## Stop Conditions
+## Minimal Experiment Plan
 
-Stop pursuing the post-Stage-3 direction if:
+Do not run a large grid.
 
-```text
-Role-Residual does not beat or meaningfully diagnose Stage 3
-residual advantage alignment stays near zero
-residual KL to base explodes or collapses to zero with no performance gain
-context gates collapse to constant values
-shuffled context performs the same as real context
-global residual consistently matches Role-Context Residual
-agent-ID residual matches Role-Context Residual on randomized maps
-the gains appear on one seed only
+### Smoke
+
+```python
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_trust_lora --total_timesteps 300000 --run_name smoke_role_trust_lora_smacv2_10_seed42
 ```
 
-Proceed if:
+Smoke success criteria:
 
 ```text
-Role-Residual beats Stage 3 or gives clearly positive residual alignment
-Role-Context Residual beats Role-Residual
-real context beats shuffled context
-Role-Context Residual beats global residual
-gains appear on smacv2_10_units across multiple seeds
+no crash or NaN
+role ids pass validation
+role_actor_loss_weight prints and is sensible
+role_kl_penalty is finite
+lora_grad_norm_by_adapter is nonzero
+```
+
+### Full Runs
+
+Start with two seeds:
+
+```python
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_trust_lora --total_timesteps 3000000 --run_name role_trust_lora_smacv2_10_seed42
+```
+
+```python
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 1 --adapter_mode role_trust_lora --total_timesteps 3000000 --run_name role_trust_lora_smacv2_10_seed1
+```
+
+If either seed is unstable or worse than Role-LoRA by more than normal wobble, try exactly one softer KL setting:
+
+```python
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_trust_lora --role_kl_coef 0.1 --total_timesteps 3000000 --run_name role_trust_lora_kl010_smacv2_10_seed42
+```
+
+If seed 42 and seed 1 look promising, add:
+
+```python
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 0 --adapter_mode role_trust_lora --total_timesteps 3000000 --run_name role_trust_lora_smacv2_10_seed0
+```
+
+```python
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 2 --adapter_mode role_trust_lora --total_timesteps 3000000 --run_name role_trust_lora_smacv2_10_seed2
+```
+
+Success criteria:
+
+```text
+Minimum:
+    match Role-LoRA final WR while improving AUC or reducing variance
+
+Good:
+    beat Role-LoRA by >= 0.02 final WR or AUC on at least two checked seeds
+
+Strong:
+    beat sequential_polish mean without adding new architecture
+```
+
+Drop criteria:
+
+```text
+Drop if seed 42 and seed 1 both fail to beat Role-LoRA/sequential polish.
+Drop if role KL penalty stays zero and diagnostics look identical to plain Role-LoRA.
+Drop if role KL penalty dominates and clip fraction collapses.
+Drop if rare-role weighting causes noisy oscillation without AUC gain.
+```
+
+### MACA-Lite Gate
+
+Do not tune Role-Trust for many runs.
+
+```text
+If the 300k smoke passes, run at most two full Role-Trust seeds first: 42 and 1.
+```
+
+Then decide:
+
+```text
+If Role-Trust clearly improves:
+    finish the 4-seed check and report it as a lightweight actor-side credit/stability improvement.
+
+If Role-Trust only matches or underperforms:
+    stop tuning Role-Trust and implement Role-MACA-Lite.
+```
+
+Minimal Role-MACA-Lite implementation order:
+
+```text
+1. Add action-conditioned Q critic that can score:
+   Q(s, taken joint action, i)
+   Q(s, counterfactual joint-action distribution, i)
+
+2. Add fixed-weight baselines:
+   b_jnt
+   b_ind
+   b_role
+
+3. Construct:
+   A_i = stop_gradient(Q_taken - (b_jnt + b_ind + b_role) / 3)
+
+4. Use A_i in the existing PPO actor loss.
+
+5. Only after this works, consider learned weights or attention CorrSets.
+```
+
+First Role-MACA-Lite ablations:
+
+```text
+role_lora:
+    current validated baseline
+
+role_trust_lora:
+    actor-side balancing probe
+
+role_maca_lite_jnt:
+    joint baseline only, should behave closest to MAPPO-style credit
+
+role_maca_lite_ind:
+    individual baseline only, COMA-like credit
+
+role_maca_lite_role:
+    same-role subgroup baseline only
+
+role_maca_lite:
+    fixed average of joint + individual + same-role baselines
 ```
 
 ---
 
-## Current Best Framing
+## Candidate Directions After Role-Trust
 
-Working name:
+Ranked by implementation priority:
 
-```text
-Role-Context Residual MAPPO
-```
-
-Short pitch:
+### 1. Role-MACA-Lite
 
 ```text
-Role-Context Residual MAPPO improves shared recurrent MAPPO by learning controlled role-specific residual policies, trained with role-normalized adapter-only advantage signals and gated by team-composition context.
+Multi-level counterfactual advantage using:
+    joint/team baseline
+    individual-agent baseline
+    same-role subgroup baseline
+
+This is now the strongest paper-backed direction.
+It directly addresses the advantage credit-assignment bottleneck that Role-Residual and Role-Trust only touch indirectly.
 ```
 
-Avoid making plain Role-LoRA or sequential ROSA the headline. Plain Role-LoRA is the base component. Sequential ROSA is a negative ablation. The post-Stage-3 research bet is residual advantage learning plus context-dependent role specialization.
+Minimal implementation:
+
+```text
+Keep Role-LoRA actor.
+Add action-conditioned Q critic.
+Use fixed weights over joint / individual / same-role baselines.
+Use same-role agents as the first CorrSet approximation.
+```
+
+### 2. PRD-Lite Role Credit Critic
+
+Add a learned relevance or role-pair critic that estimates which roles or teammates matter for each agent's return.
+
+Sketch:
+
+```text
+w_i,j,t = softmax(attn(q_i,t, k_j,t))
+A_i,t^credit = GAE using relevance-filtered rewards/value signal
+```
+
+Why it is interesting:
+
+```text
+This is close to MACA's learned CorrSet idea, but less directly tied to multi-level counterfactual baselines.
+```
+
+Why it is not first:
+
+```text
+Role-MACA-Lite gives us a cleaner equation and clearer ablations.
+```
+
+### 3. Role-Diverse LoRA
+
+Add a light behavior-diversity term between role-conditioned policies.
+
+For the same hidden states, compute action distributions under each role adapter:
+
+```text
+pi_r(a | h) = softmax(z_base(h) + delta_r(h))
+```
+
+Add:
+
+```text
+L_div = - lambda_js * mean_{r < s} JS(pi_r || pi_s)
+```
+
+Use tiny coefficients only:
+
+```text
+lambda_js in {0.001, 0.003}
+```
+
+Risk:
+
+```text
+Forced diversity can hurt when roles should sometimes behave similarly.
+```
+
+### 4. Role-Seq-Trust LoRA
+
+Revisit sequential role updates only after Role-Trust.
+
+Mechanism:
+
+```text
+Update one role adapter at a time.
+Use role-normalized PPO objective.
+Use explicit per-role KL budgets.
+Do not use residual auxiliary loss.
+```
+
+Risk:
+
+```text
+Prior sequential polish gains were small, so this is not the first bet.
+```
+
+---
+
+## Presentation Framing
+
+Clean story:
+
+```text
+1. Recurrent MAPPO is a strong baseline, but it uses one shared actor update for randomized heterogeneous unit roles.
+
+2. Role-LoRA improves MAPPO by adding semantic role-conditioned low-rank policy adapters.
+
+3. We tested natural extensions: sequential role polishing, role residual training, and context-gated residuals.
+
+4. These extensions were mechanically valid but did not clearly beat Role-LoRA.
+
+5. This negative result is useful: the bottleneck is probably not more residual capacity.
+
+6. MACA sharpens the diagnosis: MAPPO's joint advantage is too blunt, and good cooperative MARL needs multi-level credit assignment.
+
+7. Role-Trust LoRA is a cheap already-implemented probe that makes PPO's actor update role-aware.
+
+8. The stronger next method is Role-MACA-Lite: keep the successful Role-LoRA actor, but replace the advantage with a multi-level counterfactual advantage over individual, team, and same-role subgroup credit.
+```
+
+Expected contribution:
+
+```text
+Role-LoRA shows that semantic unit roles are useful specialization keys in randomized SMAX.
+
+Role-Trust LoRA tests whether actor-side role-balanced PPO is enough.
+
+Role-MACA-Lite tests the stronger MACA-inspired hypothesis: the actor needs role-specific capacity and multi-level credit assignment.
+```
+
+Meeting-safe claim before Role-Trust results:
+
+```text
+Our immediate next step is tightly scoped: keep the successful Role-LoRA actor and test whether role-balanced PPO with per-role trust budgets improves stability. The stronger follow-up, motivated by MACA, is to replace the MAPPO advantage with a multi-level role-aware counterfactual advantage.
+```
+
+Meeting-safe claim if Role-Trust fails:
+
+```text
+Role-LoRA remains the robust contribution. Residual auxiliary losses, context gates, and role-balanced trust budgets did not consistently add signal on this benchmark, which supports the MACA diagnosis: actor-side loss shaping is not enough, and the next improvement should change the advantage credit-assignment signal itself.
+```
+
+---
+
+## Handoff Template
+
+After any implementation stage, hand off in this format:
+
+```text
+Files changed:
+- ...
+
+Local syntax check:
+python -m py_compile /Users/hassan/repos/new_marl_llm_implementation/smax_ctm/train_rosa_mappo.py
+
+Notebook command:
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py ...
+
+Please send back:
+- last 30-50 log lines
+- any role-wise diagnostic table printed
+- whether the run NaN'd or crashed
+```
+
+Every stage must answer a question. Do not build all stages first and only then learn that the hypothesis was wrong.

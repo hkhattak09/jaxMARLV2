@@ -39,6 +39,7 @@ SUPPORTED_ADAPTER_MODES = (
     "agent_lora",
     "sequential_polish",
     "role_balanced",
+    "role_trust_lora",
     "role_residual",
     "role_residual_clean",
     "role_context_residual",
@@ -62,6 +63,14 @@ def parse_args():
     parser.add_argument("--num_minibatches", type=int, default=None)
     parser.add_argument("--update_epochs", type=int, default=None)
     parser.add_argument("--run_name", type=str, default=None)
+    parser.add_argument("--role_kl_target", type=float, default=None)
+    parser.add_argument("--role_kl_coef", type=float, default=None)
+    parser.add_argument(
+        "--role_kl_penalty_mode",
+        type=str,
+        choices=("hinge_squared", "hinge", "always"),
+        default=None,
+    )
     parser.add_argument("--residual_loss_coef", type=float, default=None)
     parser.add_argument("--residual_kl_coef", type=float, default=None)
     parser.add_argument("--residual_kl_target", type=float, default=None)
@@ -96,6 +105,12 @@ def apply_cli_overrides(config: Dict, args):
         config["UPDATE_EPOCHS"] = args.update_epochs
     if args.run_name is not None:
         config["RUN_NAME"] = args.run_name
+    if args.role_kl_target is not None:
+        config["ROLE_KL_TARGET"] = args.role_kl_target
+    if args.role_kl_coef is not None:
+        config["ROLE_KL_COEF"] = args.role_kl_coef
+    if args.role_kl_penalty_mode is not None:
+        config["ROLE_KL_PENALTY_MODE"] = args.role_kl_penalty_mode
     if args.residual_loss_coef is not None:
         config["RESIDUAL_LOSS_COEF"] = args.residual_loss_coef
     if args.residual_kl_coef is not None:
@@ -121,6 +136,7 @@ def apply_cli_overrides(config: Dict, args):
         "agent_lora",
         "sequential_polish",
         "role_balanced",
+        "role_trust_lora",
         "role_residual",
         "role_residual_clean",
         "role_context_residual",
@@ -129,7 +145,9 @@ def apply_cli_overrides(config: Dict, args):
         "shuffled_context_residual",
     }
     config["USE_SEQUENTIAL_ROLE_UPDATES"] = adapter_mode == "sequential_polish"
-    config["ROLE_BALANCED_PPO"] = adapter_mode == "role_balanced"
+    config["ROLE_BALANCED_PPO"] = adapter_mode in ("role_balanced", "role_trust_lora")
+    config["ROLE_EQUALIZE_PPO_LOSS"] = adapter_mode == "role_trust_lora"
+    config["ROLE_KL_BUDGET"] = adapter_mode == "role_trust_lora"
     config["USE_ROLE_RESIDUAL_LOSS"] = adapter_mode in {
         "role_residual",
         "role_residual_clean",
@@ -150,6 +168,10 @@ def apply_cli_overrides(config: Dict, args):
         )
     if adapter_mode == "role_lora":
         config["FREEZE_LORA_IN_SHARED_UPDATE"] = False
+    if adapter_mode == "role_trust_lora":
+        config["FREEZE_LORA_IN_SHARED_UPDATE"] = False
+        config["USE_ROLE_RESIDUAL_LOSS"] = False
+        config["USE_CONTEXT_GATE"] = False
     if adapter_mode == "role_residual":
         config["FREEZE_LORA_IN_SHARED_UPDATE"] = False
         config["RESIDUAL_DETACH_IN_SHARED_UPDATE"] = False
@@ -165,6 +187,11 @@ def apply_cli_overrides(config: Dict, args):
             f"Unsupported RESIDUAL_KL_PENALTY_MODE={config['RESIDUAL_KL_PENALTY_MODE']!r}; "
             "use 'always' or 'hinge'."
         )
+    if config["ROLE_KL_PENALTY_MODE"] not in ("hinge_squared", "hinge", "always"):
+        raise ValueError(
+            f"Unsupported ROLE_KL_PENALTY_MODE={config['ROLE_KL_PENALTY_MODE']!r}; "
+            "use 'hinge_squared', 'hinge', or 'always'."
+        )
     return config
 
 
@@ -174,12 +201,25 @@ def print_resolved_config(config: Dict):
         for key, value in sorted(config.items())
         if "RESIDUAL" in key or "CONTEXT" in key
     }
+    role_trust = {
+        key: value
+        for key, value in sorted(config.items())
+        if key.startswith("ROLE_") and (
+            "KL" in key
+            or "EQUALIZE" in key
+            or "BALANCED" in key
+            or "ADAPTIVE" in key
+            or "MIN_COUNT" in key
+        )
+    }
     print("Resolved config:")
     print(json.dumps(config, indent=2, sort_keys=True))
     print(f"adapter_mode: {config['ADAPTER_MODE']}")
     print(f"map_name: {config['MAP_NAME']}")
     print(f"seed: {config['SEED']}")
     print(f"run_name: {config['RUN_NAME']}")
+    print("role trust config values:")
+    print(json.dumps(role_trust, indent=2, sort_keys=True))
     print("residual/context config values:")
     print(json.dumps(residual_context, indent=2, sort_keys=True))
 
@@ -482,6 +522,23 @@ def role_normalize_advantages(advantages: jnp.ndarray, role_id: jnp.ndarray, con
     gathered_mean = role_mean[role_id]
     gathered_std = role_std[role_id]
     return (advantages - gathered_mean) / (gathered_std + 1e-8)
+
+def present_role_mean(values_by_role: jnp.ndarray, role_id: jnp.ndarray, num_roles: int):
+    counts = jnp.bincount(role_id.reshape(-1), length=num_roles)
+    present = counts > 0
+    present_float = present.astype(jnp.float32)
+    present_count = jnp.maximum(jnp.sum(present_float), 1.0)
+    return jnp.sum(values_by_role * present_float) / present_count
+
+def role_loss_weights(role_id: jnp.ndarray, num_roles: int, equalize_roles: bool):
+    counts = jnp.bincount(role_id.reshape(-1), length=num_roles)
+    present = counts > 0
+    present_float = present.astype(jnp.float32)
+    if equalize_roles:
+        denom = jnp.maximum(jnp.sum(present_float), 1.0)
+        return present_float / denom
+    denom = jnp.maximum(jnp.sum(counts).astype(jnp.float32), 1.0)
+    return counts.astype(jnp.float32) / denom
 
 def role_lora_param_norms(actor_params, config: Dict):
     if not config["USE_ROLE_LORA"]:
@@ -844,7 +901,6 @@ def make_train(config):
                         loss_actor1 = ratio * gae
                         loss_actor2 = jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"]) * gae
                         ppo_loss_per_sample = -jnp.minimum(loss_actor1, loss_actor2)
-                        loss_actor = ppo_loss_per_sample.mean()
                         entropy_per_sample = pi.entropy()
                         entropy = entropy_per_sample.mean()
                         
@@ -882,14 +938,60 @@ def make_train(config):
                             traj_batch.role_id,
                             config["NUM_UNIT_TYPES"],
                         )
+                        role_actor_loss_weight = role_loss_weights(
+                            traj_batch.role_id,
+                            config["NUM_UNIT_TYPES"],
+                            config["ROLE_EQUALIZE_PPO_LOSS"],
+                        )
+                        if config["ROLE_EQUALIZE_PPO_LOSS"]:
+                            policy_loss = present_role_mean(
+                                role_ppo_loss,
+                                traj_batch.role_id,
+                                config["NUM_UNIT_TYPES"],
+                            )
+                        else:
+                            policy_loss = ppo_loss_per_sample.mean()
+                        if config["ROLE_KL_PENALTY_MODE"] == "hinge_squared":
+                            role_kl_penalty_by_role = jnp.square(
+                                jnp.maximum(
+                                    role_approx_kl - config["ROLE_KL_TARGET"],
+                                    0.0,
+                                )
+                            )
+                        elif config["ROLE_KL_PENALTY_MODE"] == "hinge":
+                            role_kl_penalty_by_role = jnp.maximum(
+                                role_approx_kl - config["ROLE_KL_TARGET"],
+                                0.0,
+                            )
+                        elif config["ROLE_KL_PENALTY_MODE"] == "always":
+                            role_kl_penalty_by_role = role_approx_kl
+                        else:
+                            raise ValueError(
+                                "Unsupported ROLE_KL_PENALTY_MODE="
+                                f"{config['ROLE_KL_PENALTY_MODE']!r}; use "
+                                "'hinge_squared', 'hinge', or 'always'."
+                            )
+                        role_kl_penalty = jnp.where(
+                            config["ROLE_KL_BUDGET"],
+                            present_role_mean(
+                                role_kl_penalty_by_role,
+                                traj_batch.role_id,
+                                config["NUM_UNIT_TYPES"],
+                            ),
+                            0.0,
+                        )
                         lora_delta_norm_by_role = role_mean_metric(
                             jnp.linalg.norm(actor_aux["lora_delta"], axis=-1),
                             traj_batch.role_id,
                             config["NUM_UNIT_TYPES"],
                         )
-                        actor_loss = loss_actor - config["ENT_COEF"] * entropy
-                        return actor_loss, (
-                            loss_actor,
+                        loss_actor = (
+                            policy_loss
+                            + config["ROLE_KL_COEF"] * role_kl_penalty
+                            - config["ENT_COEF"] * entropy
+                        )
+                        return loss_actor, (
+                            policy_loss,
                             entropy,
                             ratio,
                             approx_kl,
@@ -903,6 +1005,9 @@ def make_train(config):
                             role_mean_ratio,
                             role_max_ratio,
                             role_ppo_loss,
+                            role_actor_loss_weight,
+                            role_kl_penalty_by_role,
+                            role_kl_penalty,
                         )
                     
                     def _critic_loss_fn(critic_params, init_hstate, traj_batch, targets):
@@ -1108,6 +1213,9 @@ def make_train(config):
                         "role_mean_ratio": actor_loss[1][11],
                         "role_max_ratio": actor_loss[1][12],
                         "role_ppo_loss": actor_loss[1][13],
+                        "role_actor_loss_weight": actor_loss[1][14],
+                        "role_kl_penalty_by_role": actor_loss[1][15],
+                        "role_kl_penalty": actor_loss[1][16],
                         "lora_grad_norm_by_role": lora_grad_norm_by_role,
                         "lora_param_norm_by_role": lora_param_norm_by_role,
                         "residual_loss_by_role": residual_loss[1]["residual_loss_by_role"],
@@ -1431,6 +1539,9 @@ def make_train(config):
             role_mean_ratio = loss_info["role_mean_ratio"]
             role_max_ratio = loss_info["role_max_ratio"]
             role_ppo_loss = loss_info["role_ppo_loss"]
+            role_actor_loss_weight = loss_info["role_actor_loss_weight"]
+            role_kl_penalty_by_role = loss_info["role_kl_penalty_by_role"]
+            role_kl_penalty = loss_info["role_kl_penalty"]
             residual_total_loss = loss_info["residual_total_loss"]
             residual_loss_value = loss_info["residual_loss"]
             residual_kl_to_base = loss_info["residual_kl_to_base"]
@@ -1480,6 +1591,8 @@ def make_train(config):
             max_role_adv_std_over_global = max_role_adv_std / (global_adv_std + 1e-8)
             min_role_count_over_max = present_min_count.astype(jnp.float32) / jnp.maximum(present_max_count.astype(jnp.float32), 1.0)
             role_bits = traj_batch.obs[:, :, -config["NUM_UNIT_TYPES"]:]
+            role_id_min = traj_batch.role_id.min()
+            role_id_max = traj_batch.role_id.max()
             role_bit_sums = role_bits.sum(axis=-1)
             role_bit_sum_min = role_bit_sums.min()
             role_bit_sum_max = role_bit_sums.max()
@@ -1493,13 +1606,21 @@ def make_train(config):
             def log_callback(
                 r, w, s, tl, ent, agn, cgn, rc, rpm, rbmin, rbmax, mismatch,
                 zero_bits, max_diff, mean_diff, ldn, lgn, lpn, ram, ras, rent,
-                rkl, rcf, rmr, rxr, rpl, dkl, dcf, adv_ratio, count_ratio,
+                rkl, rcf, rmr, rxr, rpl, rlaw, rkp, role_kl_pen, role_min,
+                role_max, dkl, dcf, adv_ratio, count_ratio,
                 res_total, res_loss, res_kl, res_kl_pen, res_lbr, res_kbr,
                 res_align, res_margin, res_lgn, res_bgn, res_ggn, res_cfr,
                 res_rmr, res_rxr, gate_mean, gate_std, gate_min, gate_max, ctx_hist,
                 order, rsl, rskl, rscf, rsrm, rsrx, corr_mean, corr_std,
                 corr_min, corr_max, aun, skipped,
             ):
+                if role_min < 0 or role_max >= config["NUM_UNIT_TYPES"]:
+                    raise ValueError(
+                        "Role extraction failed: role ids are outside the configured range. "
+                        f"role_id_min={int(role_min)}, role_id_max={int(role_max)}, "
+                        f"NUM_UNIT_TYPES={config['NUM_UNIT_TYPES']}, "
+                        f"ROLE_ID_SOURCE={config['ROLE_ID_SOURCE']!r}"
+                    )
                 if rbmax > 1.0 or mismatch > 0:
                     raise ValueError(
                         "Role extraction failed: obs unit-type bits disagree with env-state roles. "
@@ -1549,6 +1670,9 @@ def make_train(config):
                         f" | role_mean_ratio: {fmt(rmr)}"
                         f" | role_max_ratio: {fmt(rxr)}"
                         f" | role_ppo_loss: {fmt(rpl)}"
+                        f" | role_actor_loss_weight: {fmt_all(rlaw)}"
+                        f" | role_kl_penalty_by_role: {fmt(rkp)}"
+                        f" | role_kl_penalty: {float(role_kl_pen):.4e}"
                         f" | max_role_kl_minus_global: {float(dkl):.4e}"
                         f" | max_role_clip_frac_minus_global: {float(dcf):.4e}"
                         f" | max_role_adv_std_over_global: {float(adv_ratio):.4e}"
@@ -1628,7 +1752,8 @@ def make_train(config):
                 lora_delta_norm_by_role, lora_grad_norm_by_role, lora_param_norm_by_role,
                 role_adv_mean, role_adv_std, role_entropy, role_approx_kl, role_clip_frac,
                 role_mean_ratio, role_max_ratio, role_ppo_loss,
-                max_role_kl_minus_global, max_role_clip_frac_minus_global,
+                role_actor_loss_weight, role_kl_penalty_by_role, role_kl_penalty,
+                role_id_min, role_id_max, max_role_kl_minus_global, max_role_clip_frac_minus_global,
                 max_role_adv_std_over_global, min_role_count_over_max,
                 residual_total_loss, residual_loss_value, residual_kl_to_base,
                 residual_kl_penalty, residual_loss_by_role, residual_kl_to_base_by_role,
@@ -1704,6 +1829,11 @@ if __name__ == "__main__":
         "USE_ROLE_RESIDUAL_LOSS": False,
         "USE_CONTEXT_GATE": False,
         "ROLE_BALANCED_PPO": False,
+        "ROLE_EQUALIZE_PPO_LOSS": False,
+        "ROLE_KL_BUDGET": False,
+        "ROLE_KL_TARGET": 0.02,
+        "ROLE_KL_COEF": 0.5,
+        "ROLE_KL_PENALTY_MODE": "hinge_squared",
         "ROLE_LORA_RANK": 4,
         "ROLE_LORA_SCALE": 1.0,
         "ROLE_LORA_A_INIT_STD": 0.01,
