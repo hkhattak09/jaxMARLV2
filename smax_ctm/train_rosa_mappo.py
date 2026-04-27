@@ -5,6 +5,8 @@ Colab-ready, dependency-light version (no Hydra/wandb).
 import os
 import sys
 import pickle
+import argparse
+import json
 # Inject repo root into sys.path so 'jaxmarl' is always found regardless of CWD
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 if _REPO_ROOT not in sys.path:
@@ -28,6 +30,100 @@ import time
 # You may need to adapt imports based on where this is running relative to JaxMARL
 from jaxmarl.wrappers.baselines import SMAXLogWrapper, JaxMARLWrapper
 from jaxmarl.environments.smax import map_name_to_scenario, HeuristicEnemySMAX
+
+SUPPORTED_ADAPTER_MODES = (
+    "none",
+    "role_lora",
+    "global_lora",
+    "agent_lora",
+    "sequential_polish",
+    "role_balanced",
+    "role_residual",
+    "role_context_residual",
+    "global_residual",
+    "agent_residual",
+    "shuffled_context_residual",
+)
+
+IMPLEMENTED_ADAPTER_MODES = {
+    "none",
+    "role_lora",
+    "global_lora",
+    "agent_lora",
+    "sequential_polish",
+}
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="ROSA/Role-LoRA MAPPO experiment runner for SMAX."
+    )
+    parser.add_argument("--map_name", type=str, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--total_timesteps", type=int, default=None)
+    parser.add_argument("--adapter_mode", type=str, choices=SUPPORTED_ADAPTER_MODES, default=None)
+    parser.add_argument("--role_lora_rank", type=int, default=None)
+    parser.add_argument("--role_lora_scale", type=float, default=None)
+    parser.add_argument("--run_name", type=str, default=None)
+    return parser.parse_args()
+
+
+def apply_cli_overrides(config: Dict, args):
+    if args.map_name is not None:
+        config["MAP_NAME"] = args.map_name
+    if args.seed is not None:
+        config["SEED"] = args.seed
+    if args.total_timesteps is not None:
+        config["TOTAL_TIMESTEPS"] = args.total_timesteps
+    if args.role_lora_rank is not None:
+        config["ROLE_LORA_RANK"] = args.role_lora_rank
+    if args.role_lora_scale is not None:
+        config["ROLE_LORA_SCALE"] = args.role_lora_scale
+    if args.run_name is not None:
+        config["RUN_NAME"] = args.run_name
+    if args.adapter_mode is not None:
+        config["ADAPTER_MODE"] = args.adapter_mode
+
+    adapter_mode = config["ADAPTER_MODE"]
+    if adapter_mode not in SUPPORTED_ADAPTER_MODES:
+        raise ValueError(
+            f"Unsupported adapter_mode={adapter_mode!r}. "
+            f"Supported modes: {', '.join(SUPPORTED_ADAPTER_MODES)}"
+        )
+    if adapter_mode not in IMPLEMENTED_ADAPTER_MODES:
+        raise NotImplementedError(
+            f"adapter_mode={adapter_mode!r} is declared for the experiment plan but is not implemented yet. "
+            "Implemented modes right now: none, role_lora, global_lora, agent_lora, sequential_polish."
+        )
+
+    config["USE_ROLE_LORA"] = adapter_mode in {
+        "role_lora",
+        "global_lora",
+        "agent_lora",
+        "sequential_polish",
+    }
+    config["USE_SEQUENTIAL_ROLE_UPDATES"] = adapter_mode == "sequential_polish"
+    if adapter_mode == "role_lora":
+        config["FREEZE_LORA_IN_SHARED_UPDATE"] = False
+    if adapter_mode == "sequential_polish":
+        config["FREEZE_LORA_IN_SHARED_UPDATE"] = False
+    return config
+
+
+def print_resolved_config(config: Dict):
+    residual_context = {
+        key: value
+        for key, value in sorted(config.items())
+        if "RESIDUAL" in key or "CONTEXT" in key
+    }
+    print("Resolved config:")
+    print(json.dumps(config, indent=2, sort_keys=True))
+    print(f"adapter_mode: {config['ADAPTER_MODE']}")
+    print(f"map_name: {config['MAP_NAME']}")
+    print(f"seed: {config['SEED']}")
+    print(f"run_name: {config['RUN_NAME']}")
+    print("residual/context config values:")
+    print(json.dumps(residual_context, indent=2, sort_keys=True))
 
 class SMAXWorldStateWrapper(JaxMARLWrapper):
     """Provides a 'world_state' observation for the centralised critic."""
@@ -102,11 +198,15 @@ class ActorRNN(nn.Module):
 
     @nn.compact
     def __call__(self, hidden, x):
-        if len(x) == 4:
+        if len(x) == 5:
+            obs, dones, avail_actions, role_id, adapter_id = x
+        elif len(x) == 4:
             obs, dones, avail_actions, role_id = x
+            adapter_id = role_id
         else:
             obs, dones, avail_actions = x
             role_id = jnp.zeros(obs.shape[:-1], dtype=jnp.int32)
+            adapter_id = role_id
         embedding = nn.Dense(
             self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(obs)
@@ -128,16 +228,21 @@ class ActorRNN(nn.Module):
             lora_a = self.param(
                 "role_lora_A",
                 nn.initializers.normal(self.config["ROLE_LORA_A_INIT_STD"]),
-                (self.config["NUM_UNIT_TYPES"], rank, self.config["GRU_HIDDEN_DIM"]),
+                (self.config["LORA_NUM_ADAPTERS"], rank, self.config["GRU_HIDDEN_DIM"]),
             )
             lora_b = self.param(
                 "role_lora_B",
                 nn.initializers.zeros,
-                (self.config["NUM_UNIT_TYPES"], self.action_dim, rank),
+                (self.config["LORA_NUM_ADAPTERS"], self.action_dim, rank),
             )
-            safe_role_id = jnp.clip(role_id.astype(jnp.int32), 0, self.config["NUM_UNIT_TYPES"] - 1)
-            role_a = lora_a[safe_role_id]
-            role_b = lora_b[safe_role_id]
+            del role_id
+            safe_adapter_id = jnp.clip(
+                adapter_id.astype(jnp.int32),
+                0,
+                self.config["LORA_NUM_ADAPTERS"] - 1,
+            )
+            role_a = lora_a[safe_adapter_id]
+            role_b = lora_b[safe_adapter_id]
             lora_hidden = jnp.einsum("...rh,...h->...r", role_a, actor_mean)
             lora_delta = jnp.einsum("...ar,...r->...a", role_b, lora_hidden)
         actor_mean = base_logits + self.config["ROLE_LORA_SCALE"] * lora_delta
@@ -191,6 +296,7 @@ class Transition(NamedTuple):
     info: jnp.ndarray
     avail_actions: jnp.ndarray
     role_id: jnp.ndarray
+    adapter_id: jnp.ndarray
 
 
 def batchify(x: dict, agent_list, num_actors):
@@ -213,6 +319,14 @@ def extract_role_id(obs_batch: jnp.ndarray, env_state, env, config: Dict):
             f"Unsupported ROLE_ID_SOURCE={config['ROLE_ID_SOURCE']!r}; "
             "Stage 1 supports 'env_state_unit_type' and 'own_obs_unit_type'."
         )
+
+def adapter_id_from_mode(role_id: jnp.ndarray, agent_id: jnp.ndarray, config: Dict):
+    adapter_mode = config["ADAPTER_MODE"]
+    if adapter_mode == "global_lora":
+        return jnp.zeros_like(role_id, dtype=jnp.int32)
+    if adapter_mode == "agent_lora":
+        return agent_id.astype(jnp.int32)
+    return role_id.astype(jnp.int32)
 
 def role_mean_metric(values: jnp.ndarray, role_id: jnp.ndarray, num_roles: int):
     flat_values = values.reshape(-1)
@@ -239,7 +353,7 @@ def role_max_metric(values: jnp.ndarray, role_id: jnp.ndarray, num_roles: int):
 
 def role_lora_param_norms(actor_params, config: Dict):
     if not config["USE_ROLE_LORA"]:
-        return jnp.zeros((config["NUM_UNIT_TYPES"],))
+        return jnp.zeros((config["LORA_NUM_ADAPTERS"],))
     params = actor_params["params"]
     lora_a = params["role_lora_A"]
     lora_b = params["role_lora_B"]
@@ -253,14 +367,14 @@ def init_role_lora_adam_state(actor_params, config: Dict, action_dim: int):
         a_shape = lora_a.shape
         b_shape = lora_b.shape
     else:
-        a_shape = (config["NUM_UNIT_TYPES"], rank, config["GRU_HIDDEN_DIM"])
-        b_shape = (config["NUM_UNIT_TYPES"], action_dim, rank)
+        a_shape = (config["LORA_NUM_ADAPTERS"], rank, config["GRU_HIDDEN_DIM"])
+        b_shape = (config["LORA_NUM_ADAPTERS"], action_dim, rank)
     return {
         "m_A": jnp.zeros(a_shape),
         "v_A": jnp.zeros(a_shape),
         "m_B": jnp.zeros(b_shape),
         "v_B": jnp.zeros(b_shape),
-        "count": jnp.zeros((config["NUM_UNIT_TYPES"],), dtype=jnp.float32),
+        "count": jnp.zeros((config["LORA_NUM_ADAPTERS"],), dtype=jnp.float32),
     }
 
 def zero_role_lora_grads(actor_grads, config: Dict):
@@ -316,7 +430,7 @@ def update_single_role_lora_params_adam(
 
 def role_lora_update_norm(old_params, new_params, config: Dict):
     if not config["USE_ROLE_LORA"]:
-        return jnp.zeros((config["NUM_UNIT_TYPES"],))
+        return jnp.zeros((config["LORA_NUM_ADAPTERS"],))
     old_lora_a = old_params["params"]["role_lora_A"]
     old_lora_b = old_params["params"]["role_lora_B"]
     new_lora_a = new_params["params"]["role_lora_A"]
@@ -337,6 +451,13 @@ def make_train(config):
             "at the end of the SMAX local observation."
         )
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
+    config["NUM_AGENTS"] = env.num_agents
+    if config["ADAPTER_MODE"] == "global_lora":
+        config["LORA_NUM_ADAPTERS"] = 1
+    elif config["ADAPTER_MODE"] == "agent_lora":
+        config["LORA_NUM_ADAPTERS"] = env.num_agents
+    else:
+        config["LORA_NUM_ADAPTERS"] = config["NUM_UNIT_TYPES"]
     config["NUM_UPDATES"] = config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
     config["MINIBATCH_SIZE"] = config["NUM_ACTORS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
     config["CLIP_EPS"] = config["CLIP_EPS"] / env.num_agents if config["SCALE_CLIP_EPS"] else config["CLIP_EPS"]
@@ -357,6 +478,7 @@ def make_train(config):
             jnp.zeros((1, config["NUM_ENVS"], env.observation_space(env.agents[0]).shape[0])),
             jnp.zeros((1, config["NUM_ENVS"])),
             jnp.zeros((1, config["NUM_ENVS"], env.action_space(env.agents[0]).n)),
+            jnp.zeros((1, config["NUM_ENVS"]), dtype=jnp.int32),
             jnp.zeros((1, config["NUM_ENVS"]), dtype=jnp.int32),
         )
         ac_init_hstate = ScannedRNN.initialize_carry(config["NUM_ENVS"], config["GRU_HIDDEN_DIM"])
@@ -404,7 +526,15 @@ def make_train(config):
                 avail_actions = jax.lax.stop_gradient(batchify(avail_actions, env.agents, config["NUM_ACTORS"]))
                 obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
                 role_id = extract_role_id(obs_batch, env_state, env, config)
-                ac_in = (obs_batch[np.newaxis, :], last_done[np.newaxis, :], avail_actions, role_id[np.newaxis, :])
+                agent_id = jnp.repeat(jnp.arange(env.num_agents, dtype=jnp.int32), config["NUM_ENVS"])
+                adapter_id = adapter_id_from_mode(role_id, agent_id, config)
+                ac_in = (
+                    obs_batch[np.newaxis, :],
+                    last_done[np.newaxis, :],
+                    avail_actions,
+                    role_id[np.newaxis, :],
+                    adapter_id[np.newaxis, :],
+                )
                 
                 ac_hstate, pi, _ = actor_network.apply(train_states[0].params, hstates[0], ac_in)
                 action = pi.sample(seed=_rng)
@@ -438,6 +568,7 @@ def make_train(config):
                     info,
                     avail_actions,
                     role_id,
+                    adapter_id,
                 )
                 runner_state = (train_states, role_lora_adam_state, env_state, obsv, done_batch, (ac_hstate, cr_hstate), rng)
                 return runner_state, transition
@@ -474,7 +605,13 @@ def make_train(config):
             _, _, pre_update_actor_aux = actor_network.apply(
                 train_states[0].params,
                 initial_hstates[0],
-                (traj_batch.obs, traj_batch.done, traj_batch.avail_actions, traj_batch.role_id),
+                (
+                    traj_batch.obs,
+                    traj_batch.done,
+                    traj_batch.avail_actions,
+                    traj_batch.role_id,
+                    traj_batch.adapter_id,
+                ),
             )
             pre_update_logit_delta = config["ROLE_LORA_SCALE"] * pre_update_actor_aux["lora_delta"]
             max_abs_logit_diff = jnp.max(jnp.abs(pre_update_logit_delta))
@@ -489,7 +626,13 @@ def make_train(config):
                         _, pi, actor_aux = actor_network.apply(
                             actor_params,
                             init_hstate.squeeze(),
-                            (traj_batch.obs, traj_batch.done, traj_batch.avail_actions, traj_batch.role_id),
+                            (
+                                traj_batch.obs,
+                                traj_batch.done,
+                                traj_batch.avail_actions,
+                                traj_batch.role_id,
+                                traj_batch.adapter_id,
+                            ),
                         )
                         log_prob = pi.log_prob(traj_batch.action)
                         logratio = log_prob - traj_batch.log_prob
@@ -703,7 +846,13 @@ def make_train(config):
                     _, pi, _ = actor_network.apply(
                         actor_params,
                         initial_hstates[0],
-                        (traj_batch.obs, traj_batch.done, traj_batch.avail_actions, traj_batch.role_id),
+                        (
+                            traj_batch.obs,
+                            traj_batch.done,
+                            traj_batch.avail_actions,
+                            traj_batch.role_id,
+                            traj_batch.adapter_id,
+                        ),
                     )
                     log_prob = pi.log_prob(traj_batch.action)
                     logratio = log_prob - traj_batch.log_prob
@@ -987,12 +1136,14 @@ def make_train(config):
                         f"{float(x):.4e}" if present else "NA"
                         for x, present in zip(np.asarray(xs), np.asarray(rpm))
                     ) + "]"
+                def fmt_all(xs):
+                    return "[" + " ".join(f"{float(x):.4e}" for x in np.asarray(xs)) + "]"
 
                 if config["USE_ROLE_LORA"]:
                     msg += (
                         f" | lora_delta_norm_by_role: {fmt(ldn)}"
-                        f" | lora_grad_norm_by_role: {fmt(lgn)}"
-                        f" | lora_param_norm_by_role: {fmt(lpn)}"
+                        f" | lora_grad_norm_by_adapter: {fmt_all(lgn)}"
+                        f" | lora_param_norm_by_adapter: {fmt_all(lpn)}"
                     )
                 if config["LOG_ROLE_DIAGNOSTICS"]:
                     msg += (
@@ -1028,10 +1179,12 @@ def make_train(config):
                 print(msg)
                 if config["LOG_ROLE_DIAGNOSTIC_TABLE"]:
                     print("role | count | adv_mean | adv_std | entropy | approx_kl | clip_frac | mean_ratio | max_ratio | ppo_loss | lora_grad_norm")
+                    lgn_arr = np.asarray(lgn)
                     for idx in range(len(np.asarray(rc))):
                         if not bool(np.asarray(rpm)[idx]):
                             print(f"{idx:4d} | {0:5d} | NA | NA | NA | NA | NA | NA | NA | NA | NA")
                             continue
+                        adapter_grad_norm = float(lgn_arr[idx]) if idx < len(lgn_arr) else float("nan")
                         print(
                             f"{idx:4d} | {int(np.asarray(rc)[idx]):5d} "
                             f"| {float(np.asarray(ram)[idx]): .4e} "
@@ -1042,7 +1195,7 @@ def make_train(config):
                             f"| {float(np.asarray(rmr)[idx]): .4e} "
                             f"| {float(np.asarray(rxr)[idx]): .4e} "
                             f"| {float(np.asarray(rpl)[idx]): .4e} "
-                            f"| {float(np.asarray(lgn)[idx]): .4e}"
+                            f"| {adapter_grad_norm: .4e}"
                         )
 
             step_count = update_steps * config["NUM_ENVS"] * config["NUM_STEPS"]
@@ -1114,6 +1267,8 @@ if __name__ == "__main__":
         "ENV_NAME": "HeuristicEnemySMAX",
         "MAP_NAME": "3m",    # We start with 3m
         "SEED": 42,
+        "RUN_NAME": "rosa_mappo",
+        "ADAPTER_MODE": "none",
         "NUM_UNIT_TYPES": 6,
         "ROLE_ID_SOURCE": "env_state_unit_type",
         "USE_ROLE_LORA": False,
@@ -1135,6 +1290,11 @@ if __name__ == "__main__":
         "ROLE_SEQ_ADAM_BETA2": 0.999,
         "ROLE_SEQ_ADAM_EPS": 1e-8,
         "LOG_ROSA_CORRECTIONS": True,
+        "RESIDUAL_LOSS_COEF": 0.0,
+        "RESIDUAL_KL_COEF": 0.0,
+        "RESIDUAL_ADV_NORM": "role",
+        "CONTEXT_SOURCE": "team_role_histogram",
+        "CONTEXT_GATE_INIT_BIAS": 0.0,
         "ENV_KWARGS": {
             "see_enemy_actions": True,
             "walls_cause_death": True,
@@ -1143,7 +1303,10 @@ if __name__ == "__main__":
         "ANNEAL_LR": True
     }
 
-    print(f"Starting {config['MAP_NAME']} ROSA-MAPPO experiment...")
+    args = parse_args()
+    config = apply_cli_overrides(config, args)
+    print_resolved_config(config)
+    print(f"Starting {config['MAP_NAME']} ROSA-MAPPO experiment ({config['RUN_NAME']})...")
     rng = jax.random.PRNGKey(config["SEED"])
     train_jit = jax.jit(make_train(config))
     
@@ -1155,7 +1318,8 @@ if __name__ == "__main__":
 
     model_dir = os.path.join(_REPO_ROOT, "model")
     os.makedirs(model_dir, exist_ok=True)
-    model_path = os.path.join(model_dir, "smax_rosa_mappo_actor.pkl")
+    safe_run_name = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in config["RUN_NAME"])
+    model_path = os.path.join(model_dir, f"{safe_run_name}_actor.pkl")
 
     final_runner_state = out["runner_state"][0]
     final_train_states = final_runner_state[0]
