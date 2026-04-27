@@ -639,9 +639,11 @@ Actor update:
 ```text
 Use a conservative blend in the PPO surrogate:
 
+norm(x) = (x - mean(x)) / (std(x) + 1e-8)
+
 A_i^actor =
-    (1 - alpha_maca) * A_i^GAE
-  + alpha_maca       * A_i^RoleMACA
+    (1 - alpha_maca) * norm(A_i^GAE)
+  + alpha_maca       * norm(A_i^RoleMACA)
 
 alpha_maca = 0.15
 
@@ -743,8 +745,9 @@ Role-MACA-Lite implementation status:
 Implemented first pass in smax_ctm/train_rosa_mappo.py.
 Uses a separate action-conditioned feed-forward Q critic.
 Precomputes counterfactual advantages on the full rollout before minibatching.
-Uses blended actor advantages, not pure MACA advantages:
-    A_actor = 0.85 * A_GAE + 0.15 * A_RoleMACA
+Uses separately normalized blended actor advantages, not pure MACA advantages:
+    A_actor = 0.85 * norm(A_GAE) + 0.15 * norm(A_RoleMACA)
+    ROLE_MACA_BLEND_NORMALIZE = True
 Uses fixed MACA weights:
     role_maca_lite_jnt  = joint only
     role_maca_lite_ind  = individual only
@@ -758,7 +761,8 @@ Important implementation choice:
 Counterfactual joint-action features are built before PPO minibatching because minibatches contain shuffled subsets of agents and cannot reconstruct full joint actions safely.
 The computed A_i^RoleMACA is stop-gradient before entering the PPO actor loss.
 Pure A_i^RoleMACA was too weak in the 300k smoke run: finite, but small/collapsing and it caused fast entropy collapse.
-The active implementation therefore blends it with normal GAE using ROLE_MACA_BLEND_ALPHA = 0.15.
+The raw 0.15 blend was much healthier than pure MACA, but the raw MACA tensor stayed much smaller than GAE.
+The active implementation therefore standardizes GAE and RoleMACA separately before blending, so ROLE_MACA_BLEND_ALPHA = 0.15 means a real 15% directional credit correction rather than 15% of a tiny raw tensor.
 The Q critic is trained toward the same return targets used by the existing value critic.
 ```
 
@@ -790,7 +794,7 @@ Implementation target:
 ```text
 Keep the Role-LoRA actor.
 Add an action-conditioned Q critic.
-Use Q counterfactual baselines to add a small multi-level credit correction to the normal MAPPO/GAE advantage.
+Use Q counterfactual baselines to add a separately normalized multi-level credit correction to the normal MAPPO/GAE advantage.
 Do not implement learned attention CorrSets or learned MACA weights in the first version.
 ```
 
@@ -824,7 +828,7 @@ Minimal Role-MACA-Lite implementation order:
    A_i = stop_gradient(Q_taken - (b_jnt + b_ind + b_role) / 3)
 
 8. Blend with normal GAE before the existing PPO actor loss:
-   A_actor = 0.85 * A_GAE + 0.15 * A_i
+   A_actor = 0.85 * norm(A_GAE) + 0.15 * norm(A_i)
    Start with the same advantage normalization style as the current Role-LoRA run.
 
 9. Only after this works, consider learned weights or attention CorrSets.

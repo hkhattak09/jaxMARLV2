@@ -51,6 +51,11 @@ def parse_args():
     parser.add_argument("--role_lora_rank", type=int, default=None)
     parser.add_argument("--role_lora_scale", type=float, default=None)
     parser.add_argument("--role_maca_blend_alpha", type=float, default=None)
+    parser.add_argument(
+        "--role_maca_raw_blend",
+        action="store_true",
+        help="Blend raw GAE and MACA advantages instead of standardizing each component first.",
+    )
     parser.add_argument("--num_envs", type=int, default=None)
     parser.add_argument("--num_steps", type=int, default=None)
     parser.add_argument("--num_minibatches", type=int, default=None)
@@ -72,6 +77,8 @@ def apply_cli_overrides(config: Dict, args):
         config["ROLE_LORA_SCALE"] = args.role_lora_scale
     if args.role_maca_blend_alpha is not None:
         config["ROLE_MACA_BLEND_ALPHA"] = args.role_maca_blend_alpha
+    if args.role_maca_raw_blend:
+        config["ROLE_MACA_BLEND_NORMALIZE"] = False
     if args.num_envs is not None:
         config["NUM_ENVS"] = args.num_envs
     if args.num_steps is not None:
@@ -793,7 +800,12 @@ def make_train(config):
             maca_info = _calculate_role_maca_info() if config["USE_ROLE_MACA"] else _empty_maca_info()
             if config["USE_ROLE_MACA"]:
                 maca_alpha = config["ROLE_MACA_BLEND_ALPHA"]
-                actor_advantages = (1.0 - maca_alpha) * advantages + maca_alpha * maca_info["advantages"]
+                gae_component = advantages
+                maca_component = maca_info["advantages"]
+                if config["ROLE_MACA_BLEND_NORMALIZE"]:
+                    gae_component = (gae_component - gae_component.mean()) / (gae_component.std() + 1e-8)
+                    maca_component = (maca_component - maca_component.mean()) / (maca_component.std() + 1e-8)
+                actor_advantages = (1.0 - maca_alpha) * gae_component + maca_alpha * maca_component
             else:
                 actor_advantages = advantages
 
@@ -1228,6 +1240,7 @@ if __name__ == "__main__":
         "ROLE_LORA_SCALE": 1.0,
         "ROLE_LORA_A_INIT_STD": 0.01,
         "ROLE_MACA_BLEND_ALPHA": 0.15,
+        "ROLE_MACA_BLEND_NORMALIZE": True,
         "LOG_ROLE_DIAGNOSTICS": True,
         "LOG_ROLE_DIAGNOSTIC_TABLE": False,
         "ENV_KWARGS": {
