@@ -225,6 +225,17 @@ def role_std_metric(values: jnp.ndarray, role_id: jnp.ndarray, num_roles: int):
     mean_sq = role_mean_metric(jnp.square(values), role_id, num_roles)
     return jnp.sqrt(jnp.maximum(mean_sq - jnp.square(mean), 0.0))
 
+def role_max_metric(values: jnp.ndarray, role_id: jnp.ndarray, num_roles: int):
+    flat_values = values.reshape(-1)
+    flat_roles = role_id.reshape(-1)
+
+    def max_for_role(role):
+        role_values = jnp.where(flat_roles == role, flat_values, -jnp.inf)
+        max_value = jnp.max(role_values)
+        return jnp.where(jnp.isfinite(max_value), max_value, 0.0)
+
+    return jax.vmap(max_for_role)(jnp.arange(num_roles))
+
 def role_lora_param_norms(actor_params, config: Dict):
     if not config["USE_ROLE_LORA"]:
         return jnp.zeros((config["NUM_UNIT_TYPES"],))
@@ -401,7 +412,8 @@ def make_train(config):
                         gae = (gae - gae.mean()) / (gae.std() + 1e-8)
                         loss_actor1 = ratio * gae
                         loss_actor2 = jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"]) * gae
-                        loss_actor = -jnp.minimum(loss_actor1, loss_actor2).mean()
+                        ppo_loss_per_sample = -jnp.minimum(loss_actor1, loss_actor2)
+                        loss_actor = ppo_loss_per_sample.mean()
                         entropy_per_sample = pi.entropy()
                         entropy = entropy_per_sample.mean()
                         
@@ -424,6 +436,21 @@ def make_train(config):
                             traj_batch.role_id,
                             config["NUM_UNIT_TYPES"],
                         )
+                        role_mean_ratio = role_mean_metric(
+                            ratio,
+                            traj_batch.role_id,
+                            config["NUM_UNIT_TYPES"],
+                        )
+                        role_max_ratio = role_max_metric(
+                            ratio,
+                            traj_batch.role_id,
+                            config["NUM_UNIT_TYPES"],
+                        )
+                        role_ppo_loss = role_mean_metric(
+                            ppo_loss_per_sample,
+                            traj_batch.role_id,
+                            config["NUM_UNIT_TYPES"],
+                        )
                         lora_delta_norm_by_role = role_mean_metric(
                             jnp.linalg.norm(actor_aux["lora_delta"], axis=-1),
                             traj_batch.role_id,
@@ -442,6 +469,9 @@ def make_train(config):
                             role_entropy,
                             role_approx_kl,
                             role_clip_frac,
+                            role_mean_ratio,
+                            role_max_ratio,
+                            role_ppo_loss,
                         )
                     
                     def _critic_loss_fn(critic_params, init_hstate, traj_batch, targets):
@@ -473,6 +503,7 @@ def make_train(config):
                         "value_loss": critic_loss[0],
                         "entropy": actor_loss[1][1],
                         "approx_kl": actor_loss[1][3],
+                        "clip_frac": actor_loss[1][4],
                         "actor_grad_norm": actor_grad_norm,
                         "critic_grad_norm": critic_grad_norm,
                         "lora_delta_norm_by_role": actor_loss[1][5],
@@ -481,6 +512,9 @@ def make_train(config):
                         "role_entropy": actor_loss[1][8],
                         "role_approx_kl": actor_loss[1][9],
                         "role_clip_frac": actor_loss[1][10],
+                        "role_mean_ratio": actor_loss[1][11],
+                        "role_max_ratio": actor_loss[1][12],
+                        "role_ppo_loss": actor_loss[1][13],
                         "lora_grad_norm_by_role": lora_grad_norm_by_role,
                         "lora_param_norm_by_role": lora_param_norm_by_role,
                     }
@@ -537,11 +571,26 @@ def make_train(config):
             role_entropy = loss_info["role_entropy"]
             role_approx_kl = loss_info["role_approx_kl"]
             role_clip_frac = loss_info["role_clip_frac"]
+            role_mean_ratio = loss_info["role_mean_ratio"]
+            role_max_ratio = loss_info["role_max_ratio"]
+            role_ppo_loss = loss_info["role_ppo_loss"]
             role_counts = jnp.bincount(
                 traj_batch.role_id.reshape(-1),
                 length=config["NUM_UNIT_TYPES"],
             )
             role_present_mask = role_counts > 0
+            present_float = role_present_mask.astype(jnp.float32)
+            present_count = jnp.maximum(present_float.sum(), 1.0)
+            present_min_count = jnp.min(jnp.where(role_present_mask, role_counts, jnp.iinfo(role_counts.dtype).max))
+            present_max_count = jnp.max(jnp.where(role_present_mask, role_counts, 0))
+            max_role_kl = jnp.max(jnp.where(role_present_mask, role_approx_kl, -jnp.inf))
+            max_role_clip_frac = jnp.max(jnp.where(role_present_mask, role_clip_frac, -jnp.inf))
+            max_role_adv_std = jnp.max(jnp.where(role_present_mask, role_adv_std, -jnp.inf))
+            global_adv_std = jnp.sqrt(jnp.maximum(jnp.sum(present_float * jnp.square(role_adv_std)) / present_count, 0.0))
+            max_role_kl_minus_global = max_role_kl - loss_info["approx_kl"]
+            max_role_clip_frac_minus_global = max_role_clip_frac - loss_info["clip_frac"]
+            max_role_adv_std_over_global = max_role_adv_std / (global_adv_std + 1e-8)
+            min_role_count_over_max = present_min_count.astype(jnp.float32) / jnp.maximum(present_max_count.astype(jnp.float32), 1.0)
             role_bits = traj_batch.obs[:, :, -config["NUM_UNIT_TYPES"]:]
             role_bit_sums = role_bits.sum(axis=-1)
             role_bit_sum_min = role_bit_sums.min()
@@ -556,7 +605,7 @@ def make_train(config):
             def log_callback(
                 r, w, s, tl, ent, agn, cgn, rc, rpm, rbmin, rbmax, mismatch,
                 zero_bits, max_diff, mean_diff, ldn, lgn, lpn, ram, ras, rent,
-                rkl, rcf,
+                rkl, rcf, rmr, rxr, rpl, dkl, dcf, adv_ratio, count_ratio,
             ):
                 if rbmax > 1.0 or mismatch > 0:
                     raise ValueError(
@@ -602,8 +651,33 @@ def make_train(config):
                         f" | role_entropy: {fmt(rent)}"
                         f" | role_approx_kl: {fmt(rkl)}"
                         f" | role_clip_frac: {fmt(rcf)}"
+                        f" | role_mean_ratio: {fmt(rmr)}"
+                        f" | role_max_ratio: {fmt(rxr)}"
+                        f" | role_ppo_loss: {fmt(rpl)}"
+                        f" | max_role_kl_minus_global: {float(dkl):.4e}"
+                        f" | max_role_clip_frac_minus_global: {float(dcf):.4e}"
+                        f" | max_role_adv_std_over_global: {float(adv_ratio):.4e}"
+                        f" | min_role_count_over_max: {float(count_ratio):.4e}"
                     )
                 print(msg)
+                if config["LOG_ROLE_DIAGNOSTIC_TABLE"]:
+                    print("role | count | adv_mean | adv_std | entropy | approx_kl | clip_frac | mean_ratio | max_ratio | ppo_loss | lora_grad_norm")
+                    for idx in range(len(np.asarray(rc))):
+                        if not bool(np.asarray(rpm)[idx]):
+                            print(f"{idx:4d} | {0:5d} | NA | NA | NA | NA | NA | NA | NA | NA | NA")
+                            continue
+                        print(
+                            f"{idx:4d} | {int(np.asarray(rc)[idx]):5d} "
+                            f"| {float(np.asarray(ram)[idx]): .4e} "
+                            f"| {float(np.asarray(ras)[idx]): .4e} "
+                            f"| {float(np.asarray(rent)[idx]): .4e} "
+                            f"| {float(np.asarray(rkl)[idx]): .4e} "
+                            f"| {float(np.asarray(rcf)[idx]): .4e} "
+                            f"| {float(np.asarray(rmr)[idx]): .4e} "
+                            f"| {float(np.asarray(rxr)[idx]): .4e} "
+                            f"| {float(np.asarray(rpl)[idx]): .4e} "
+                            f"| {float(np.asarray(lgn)[idx]): .4e}"
+                        )
 
             step_count = update_steps * config["NUM_ENVS"] * config["NUM_STEPS"]
             jax.experimental.io_callback(
@@ -615,6 +689,9 @@ def make_train(config):
                 max_abs_logit_diff, mean_abs_logit_diff,
                 lora_delta_norm_by_role, lora_grad_norm_by_role, lora_param_norm_by_role,
                 role_adv_mean, role_adv_std, role_entropy, role_approx_kl, role_clip_frac,
+                role_mean_ratio, role_max_ratio, role_ppo_loss,
+                max_role_kl_minus_global, max_role_clip_frac_minus_global,
+                max_role_adv_std_over_global, min_role_count_over_max,
             )
             
             update_steps = update_steps + 1
@@ -666,6 +743,7 @@ if __name__ == "__main__":
         "ROLE_LORA_A_INIT_STD": 0.01,
         "LOG_ZERO_LORA_EQUIV": False,
         "LOG_ROLE_DIAGNOSTICS": True,
+        "LOG_ROLE_DIAGNOSTIC_TABLE": False,
         "ENV_KWARGS": {
             "see_enemy_actions": True,
             "walls_cause_death": True,
