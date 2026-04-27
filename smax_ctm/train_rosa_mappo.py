@@ -40,6 +40,7 @@ SUPPORTED_ADAPTER_MODES = (
     "sequential_polish",
     "role_balanced",
     "role_residual",
+    "role_residual_clean",
     "role_context_residual",
     "global_residual",
     "agent_residual",
@@ -63,6 +64,13 @@ def parse_args():
     parser.add_argument("--run_name", type=str, default=None)
     parser.add_argument("--residual_loss_coef", type=float, default=None)
     parser.add_argument("--residual_kl_coef", type=float, default=None)
+    parser.add_argument("--residual_kl_target", type=float, default=None)
+    parser.add_argument(
+        "--residual_kl_penalty_mode",
+        type=str,
+        choices=("always", "hinge"),
+        default=None,
+    )
     parser.add_argument("--context_gate_hidden_dim", type=int, default=None)
     return parser.parse_args()
 
@@ -92,6 +100,10 @@ def apply_cli_overrides(config: Dict, args):
         config["RESIDUAL_LOSS_COEF"] = args.residual_loss_coef
     if args.residual_kl_coef is not None:
         config["RESIDUAL_KL_COEF"] = args.residual_kl_coef
+    if args.residual_kl_target is not None:
+        config["RESIDUAL_KL_TARGET"] = args.residual_kl_target
+    if args.residual_kl_penalty_mode is not None:
+        config["RESIDUAL_KL_PENALTY_MODE"] = args.residual_kl_penalty_mode
     if args.context_gate_hidden_dim is not None:
         config["CONTEXT_GATE_HIDDEN_DIM"] = args.context_gate_hidden_dim
     if args.adapter_mode is not None:
@@ -110,6 +122,7 @@ def apply_cli_overrides(config: Dict, args):
         "sequential_polish",
         "role_balanced",
         "role_residual",
+        "role_residual_clean",
         "role_context_residual",
         "global_residual",
         "agent_residual",
@@ -119,6 +132,7 @@ def apply_cli_overrides(config: Dict, args):
     config["ROLE_BALANCED_PPO"] = adapter_mode == "role_balanced"
     config["USE_ROLE_RESIDUAL_LOSS"] = adapter_mode in {
         "role_residual",
+        "role_residual_clean",
         "role_context_residual",
         "global_residual",
         "agent_residual",
@@ -136,8 +150,21 @@ def apply_cli_overrides(config: Dict, args):
         )
     if adapter_mode == "role_lora":
         config["FREEZE_LORA_IN_SHARED_UPDATE"] = False
+    if adapter_mode == "role_residual":
+        config["FREEZE_LORA_IN_SHARED_UPDATE"] = False
+        config["RESIDUAL_DETACH_IN_SHARED_UPDATE"] = False
+    if adapter_mode == "role_residual_clean":
+        config["FREEZE_LORA_IN_SHARED_UPDATE"] = True
+        config["RESIDUAL_DETACH_IN_SHARED_UPDATE"] = True
+        if args.residual_kl_penalty_mode is None:
+            config["RESIDUAL_KL_PENALTY_MODE"] = "hinge"
     if adapter_mode == "sequential_polish":
         config["FREEZE_LORA_IN_SHARED_UPDATE"] = False
+    if config["RESIDUAL_KL_PENALTY_MODE"] not in ("always", "hinge"):
+        raise ValueError(
+            f"Unsupported RESIDUAL_KL_PENALTY_MODE={config['RESIDUAL_KL_PENALTY_MODE']!r}; "
+            "use 'always' or 'hinge'."
+        )
     return config
 
 
@@ -787,6 +814,19 @@ def make_train(config):
                                 traj_batch.role_context,
                             ),
                         )
+                        if config["RESIDUAL_DETACH_IN_SHARED_UPDATE"]:
+                            residual_logits = (
+                                config["ROLE_LORA_SCALE"]
+                                * actor_aux["context_gate"][..., None]
+                                * actor_aux["lora_delta"]
+                            )
+                            shared_update_logits = (
+                                actor_aux["base_logits"] + jax.lax.stop_gradient(residual_logits)
+                            )
+                            shared_update_logits = (
+                                shared_update_logits - ((1 - traj_batch.avail_actions) * 1e10)
+                            )
+                            pi = distrax.Categorical(logits=shared_update_logits)
                         log_prob = pi.log_prob(traj_batch.action)
                         logratio = log_prob - traj_batch.log_prob
                         ratio = jnp.exp(logratio)
@@ -916,6 +956,18 @@ def make_train(config):
                             axis=-1,
                         )
                         kl_to_base = kl_to_base_per_sample.mean()
+                        if config["RESIDUAL_KL_PENALTY_MODE"] == "hinge":
+                            kl_penalty = jnp.maximum(
+                                kl_to_base - config["RESIDUAL_KL_TARGET"],
+                                0.0,
+                            )
+                        elif config["RESIDUAL_KL_PENALTY_MODE"] == "always":
+                            kl_penalty = kl_to_base
+                        else:
+                            raise ValueError(
+                                "Unsupported RESIDUAL_KL_PENALTY_MODE="
+                                f"{config['RESIDUAL_KL_PENALTY_MODE']!r}; use 'always' or 'hinge'."
+                            )
 
                         action_onehot = jax.nn.one_hot(traj_batch.action, full_logits.shape[-1])
                         action_base_log_prob = jnp.sum(base_log_probs * action_onehot, axis=-1)
@@ -925,11 +977,12 @@ def make_train(config):
                         context_gate = actor_aux["context_gate"]
                         total_residual_loss = (
                             config["RESIDUAL_LOSS_COEF"] * residual_loss
-                            + config["RESIDUAL_KL_COEF"] * kl_to_base
+                            + config["RESIDUAL_KL_COEF"] * kl_penalty
                         )
                         return total_residual_loss, {
                             "residual_loss": residual_loss,
                             "residual_kl_to_base": kl_to_base,
+                            "residual_kl_penalty": kl_penalty,
                             "residual_loss_by_role": role_mean_metric(
                                 residual_loss_per_sample,
                                 traj_batch.role_id,
@@ -1011,10 +1064,10 @@ def make_train(config):
 
                     actor_apply_grads = actor_grads
                     if (
-                        config["USE_SEQUENTIAL_ROLE_UPDATES"]
+                        config["USE_ROLE_LORA"]
                         and config["FREEZE_LORA_IN_SHARED_UPDATE"]
                     ):
-                        actor_apply_grads = zero_role_lora_grads(actor_grads, config)
+                        actor_apply_grads = zero_role_lora_grads(actor_apply_grads, config)
 
                     if config["USE_ROLE_RESIDUAL_LOSS"]:
                         # Apply actor and residual gradients in one optimizer step. Calling
@@ -1040,6 +1093,7 @@ def make_train(config):
                         "residual_total_loss": residual_applied_loss,
                         "residual_loss": residual_loss[1]["residual_loss"],
                         "residual_kl_to_base": residual_loss[1]["residual_kl_to_base"],
+                        "residual_kl_penalty": residual_loss[1]["residual_kl_penalty"],
                         "entropy": actor_loss[1][1],
                         "approx_kl": actor_loss[1][3],
                         "clip_frac": actor_loss[1][4],
@@ -1380,6 +1434,7 @@ def make_train(config):
             residual_total_loss = loss_info["residual_total_loss"]
             residual_loss_value = loss_info["residual_loss"]
             residual_kl_to_base = loss_info["residual_kl_to_base"]
+            residual_kl_penalty = loss_info["residual_kl_penalty"]
             residual_loss_by_role = loss_info["residual_loss_by_role"]
             residual_kl_to_base_by_role = loss_info["residual_kl_to_base_by_role"]
             residual_adv_alignment_by_role = loss_info["residual_adv_alignment_by_role"]
@@ -1439,9 +1494,9 @@ def make_train(config):
                 r, w, s, tl, ent, agn, cgn, rc, rpm, rbmin, rbmax, mismatch,
                 zero_bits, max_diff, mean_diff, ldn, lgn, lpn, ram, ras, rent,
                 rkl, rcf, rmr, rxr, rpl, dkl, dcf, adv_ratio, count_ratio,
-                res_total, res_loss, res_kl, res_lbr, res_kbr, res_align,
-                res_margin, res_lgn, res_bgn, res_ggn, res_cfr, res_rmr,
-                res_rxr, gate_mean, gate_std, gate_min, gate_max, ctx_hist,
+                res_total, res_loss, res_kl, res_kl_pen, res_lbr, res_kbr,
+                res_align, res_margin, res_lgn, res_bgn, res_ggn, res_cfr,
+                res_rmr, res_rxr, gate_mean, gate_std, gate_min, gate_max, ctx_hist,
                 order, rsl, rskl, rscf, rsrm, rsrx, corr_mean, corr_std,
                 corr_min, corr_max, aun, skipped,
             ):
@@ -1504,6 +1559,7 @@ def make_train(config):
                         f" | residual_total_loss: {float(res_total):.4e}"
                         f" | residual_loss: {float(res_loss):.4e}"
                         f" | residual_kl_to_base: {float(res_kl):.4e}"
+                        f" | residual_kl_penalty: {float(res_kl_pen):.4e}"
                         f" | residual_loss_by_role: {fmt(res_lbr)}"
                         f" | residual_kl_to_base_by_role: {fmt(res_kbr)}"
                         f" | residual_adv_alignment_by_role: {fmt(res_align)}"
@@ -1575,7 +1631,7 @@ def make_train(config):
                 max_role_kl_minus_global, max_role_clip_frac_minus_global,
                 max_role_adv_std_over_global, min_role_count_over_max,
                 residual_total_loss, residual_loss_value, residual_kl_to_base,
-                residual_loss_by_role, residual_kl_to_base_by_role,
+                residual_kl_penalty, residual_loss_by_role, residual_kl_to_base_by_role,
                 residual_adv_alignment_by_role, residual_logprob_margin_by_role,
                 residual_lora_grad_norm_by_role, residual_backbone_grad_norm,
                 residual_gate_grad_norm_value, residual_clip_frac_by_role,
@@ -1667,8 +1723,11 @@ if __name__ == "__main__":
         "LOG_ROSA_CORRECTIONS": True,
         "RESIDUAL_LOSS_COEF": 0.0,
         "RESIDUAL_KL_COEF": 0.0,
+        "RESIDUAL_KL_PENALTY_MODE": "always",
+        "RESIDUAL_KL_TARGET": 0.02,
         "RESIDUAL_ADV_NORM": "role",
         "RESIDUAL_STOP_BACKBONE": True,
+        "RESIDUAL_DETACH_IN_SHARED_UPDATE": False,
         "LOG_RESIDUAL_DIAGNOSTICS": True,
         "CONTEXT_SOURCE": "team_role_histogram",
         "CONTEXT_SHUFFLE": False,
