@@ -220,6 +220,11 @@ def role_mean_metric(values: jnp.ndarray, role_id: jnp.ndarray, num_roles: int):
     sums = jnp.bincount(flat_roles, weights=flat_values, length=num_roles)
     return sums / jnp.maximum(counts, 1)
 
+def role_std_metric(values: jnp.ndarray, role_id: jnp.ndarray, num_roles: int):
+    mean = role_mean_metric(values, role_id, num_roles)
+    mean_sq = role_mean_metric(jnp.square(values), role_id, num_roles)
+    return jnp.sqrt(jnp.maximum(mean_sq - jnp.square(mean), 0.0))
+
 def role_lora_param_norms(actor_params, config: Dict):
     if not config["USE_ROLE_LORA"]:
         return jnp.zeros((config["NUM_UNIT_TYPES"],))
@@ -391,14 +396,34 @@ def make_train(config):
                         log_prob = pi.log_prob(traj_batch.action)
                         logratio = log_prob - traj_batch.log_prob
                         ratio = jnp.exp(logratio)
+                        role_adv_mean = role_mean_metric(gae, traj_batch.role_id, config["NUM_UNIT_TYPES"])
+                        role_adv_std = role_std_metric(gae, traj_batch.role_id, config["NUM_UNIT_TYPES"])
                         gae = (gae - gae.mean()) / (gae.std() + 1e-8)
                         loss_actor1 = ratio * gae
                         loss_actor2 = jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"]) * gae
                         loss_actor = -jnp.minimum(loss_actor1, loss_actor2).mean()
-                        entropy = pi.entropy().mean()
+                        entropy_per_sample = pi.entropy()
+                        entropy = entropy_per_sample.mean()
                         
-                        approx_kl = ((ratio - 1) - logratio).mean()
-                        clip_frac = jnp.mean(jnp.abs(ratio - 1) > config["CLIP_EPS"])
+                        approx_kl_per_sample = (ratio - 1) - logratio
+                        clip_frac_per_sample = (jnp.abs(ratio - 1) > config["CLIP_EPS"]).astype(jnp.float32)
+                        approx_kl = approx_kl_per_sample.mean()
+                        clip_frac = clip_frac_per_sample.mean()
+                        role_entropy = role_mean_metric(
+                            entropy_per_sample,
+                            traj_batch.role_id,
+                            config["NUM_UNIT_TYPES"],
+                        )
+                        role_approx_kl = role_mean_metric(
+                            approx_kl_per_sample,
+                            traj_batch.role_id,
+                            config["NUM_UNIT_TYPES"],
+                        )
+                        role_clip_frac = role_mean_metric(
+                            clip_frac_per_sample,
+                            traj_batch.role_id,
+                            config["NUM_UNIT_TYPES"],
+                        )
                         lora_delta_norm_by_role = role_mean_metric(
                             jnp.linalg.norm(actor_aux["lora_delta"], axis=-1),
                             traj_batch.role_id,
@@ -412,6 +437,11 @@ def make_train(config):
                             approx_kl,
                             clip_frac,
                             lora_delta_norm_by_role,
+                            role_adv_mean,
+                            role_adv_std,
+                            role_entropy,
+                            role_approx_kl,
+                            role_clip_frac,
                         )
                     
                     def _critic_loss_fn(critic_params, init_hstate, traj_batch, targets):
@@ -446,6 +476,11 @@ def make_train(config):
                         "actor_grad_norm": actor_grad_norm,
                         "critic_grad_norm": critic_grad_norm,
                         "lora_delta_norm_by_role": actor_loss[1][5],
+                        "role_adv_mean": actor_loss[1][6],
+                        "role_adv_std": actor_loss[1][7],
+                        "role_entropy": actor_loss[1][8],
+                        "role_approx_kl": actor_loss[1][9],
+                        "role_clip_frac": actor_loss[1][10],
                         "lora_grad_norm_by_role": lora_grad_norm_by_role,
                         "lora_param_norm_by_role": lora_param_norm_by_role,
                     }
@@ -497,6 +532,11 @@ def make_train(config):
             lora_delta_norm_by_role = loss_info["lora_delta_norm_by_role"]
             lora_grad_norm_by_role = loss_info["lora_grad_norm_by_role"]
             lora_param_norm_by_role = loss_info["lora_param_norm_by_role"]
+            role_adv_mean = loss_info["role_adv_mean"]
+            role_adv_std = loss_info["role_adv_std"]
+            role_entropy = loss_info["role_entropy"]
+            role_approx_kl = loss_info["role_approx_kl"]
+            role_clip_frac = loss_info["role_clip_frac"]
             role_counts = jnp.bincount(
                 traj_batch.role_id.reshape(-1),
                 length=config["NUM_UNIT_TYPES"],
@@ -515,7 +555,8 @@ def make_train(config):
 
             def log_callback(
                 r, w, s, tl, ent, agn, cgn, rc, rpm, rbmin, rbmax, mismatch,
-                zero_bits, max_diff, mean_diff, ldn, lgn, lpn,
+                zero_bits, max_diff, mean_diff, ldn, lgn, lpn, ram, ras, rent,
+                rkl, rcf,
             ):
                 if rbmax > 1.0 or mismatch > 0:
                     raise ValueError(
@@ -542,12 +583,25 @@ def make_train(config):
                         f" | zero_lora_max_abs_logit_diff: {float(max_diff):.8e}"
                         f" | zero_lora_mean_abs_logit_diff: {float(mean_diff):.8e}"
                     )
+                def fmt(xs):
+                    return "[" + " ".join(
+                        f"{float(x):.4e}" if present else "NA"
+                        for x, present in zip(np.asarray(xs), np.asarray(rpm))
+                    ) + "]"
+
                 if config["USE_ROLE_LORA"]:
-                    fmt = lambda xs: "[" + " ".join(f"{float(x):.4e}" for x in np.asarray(xs)) + "]"
                     msg += (
                         f" | lora_delta_norm_by_role: {fmt(ldn)}"
                         f" | lora_grad_norm_by_role: {fmt(lgn)}"
                         f" | lora_param_norm_by_role: {fmt(lpn)}"
+                    )
+                if config["LOG_ROLE_DIAGNOSTICS"]:
+                    msg += (
+                        f" | role_adv_mean: {fmt(ram)}"
+                        f" | role_adv_std: {fmt(ras)}"
+                        f" | role_entropy: {fmt(rent)}"
+                        f" | role_approx_kl: {fmt(rkl)}"
+                        f" | role_clip_frac: {fmt(rcf)}"
                     )
                 print(msg)
 
@@ -560,6 +614,7 @@ def make_train(config):
                 obs_role_mismatch_count, zero_obs_role_bits,
                 max_abs_logit_diff, mean_abs_logit_diff,
                 lora_delta_norm_by_role, lora_grad_norm_by_role, lora_param_norm_by_role,
+                role_adv_mean, role_adv_std, role_entropy, role_approx_kl, role_clip_frac,
             )
             
             update_steps = update_steps + 1
