@@ -245,16 +245,74 @@ def role_lora_param_norms(actor_params, config: Dict):
     lora_b = params["role_lora_B"]
     return jnp.sqrt(jnp.sum(jnp.square(lora_a), axis=(1, 2)) + jnp.sum(jnp.square(lora_b), axis=(1, 2)))
 
-def update_single_role_lora_params(actor_params, actor_grads, role_id: jnp.ndarray, lr: jnp.ndarray):
+def init_role_lora_adam_state(actor_params, config: Dict, action_dim: int):
+    rank = config["ROLE_LORA_RANK"]
+    if config["USE_ROLE_LORA"]:
+        lora_a = actor_params["params"]["role_lora_A"]
+        lora_b = actor_params["params"]["role_lora_B"]
+        a_shape = lora_a.shape
+        b_shape = lora_b.shape
+    else:
+        a_shape = (config["NUM_UNIT_TYPES"], rank, config["GRU_HIDDEN_DIM"])
+        b_shape = (config["NUM_UNIT_TYPES"], action_dim, rank)
+    return {
+        "m_A": jnp.zeros(a_shape),
+        "v_A": jnp.zeros(a_shape),
+        "m_B": jnp.zeros(b_shape),
+        "v_B": jnp.zeros(b_shape),
+        "count": jnp.zeros((config["NUM_UNIT_TYPES"],), dtype=jnp.float32),
+    }
+
+def zero_role_lora_grads(actor_grads, config: Dict):
+    if not config["USE_ROLE_LORA"]:
+        return actor_grads
+    grads = unfreeze(actor_grads)
+    grads["params"]["role_lora_A"] = jnp.zeros_like(grads["params"]["role_lora_A"])
+    grads["params"]["role_lora_B"] = jnp.zeros_like(grads["params"]["role_lora_B"])
+    return grads
+
+def update_single_role_lora_params_adam(
+    actor_params,
+    actor_grads,
+    adam_state,
+    role_id: jnp.ndarray,
+    lr: jnp.ndarray,
+    config: Dict,
+):
     params = unfreeze(actor_params)
     grads = actor_grads["params"]
     old_lora_a = params["params"]["role_lora_A"]
     old_lora_b = params["params"]["role_lora_B"]
-    new_lora_a = old_lora_a.at[role_id].add(-lr * grads["role_lora_A"][role_id])
-    new_lora_b = old_lora_b.at[role_id].add(-lr * grads["role_lora_B"][role_id])
+
+    beta1 = config["ROLE_SEQ_ADAM_BETA1"]
+    beta2 = config["ROLE_SEQ_ADAM_BETA2"]
+    eps = config["ROLE_SEQ_ADAM_EPS"]
+    grad_a = grads["role_lora_A"][role_id]
+    grad_b = grads["role_lora_B"][role_id]
+    step = adam_state["count"][role_id] + 1.0
+
+    m_a = beta1 * adam_state["m_A"][role_id] + (1.0 - beta1) * grad_a
+    v_a = beta2 * adam_state["v_A"][role_id] + (1.0 - beta2) * jnp.square(grad_a)
+    m_b = beta1 * adam_state["m_B"][role_id] + (1.0 - beta1) * grad_b
+    v_b = beta2 * adam_state["v_B"][role_id] + (1.0 - beta2) * jnp.square(grad_b)
+
+    m_a_hat = m_a / (1.0 - jnp.power(beta1, step))
+    v_a_hat = v_a / (1.0 - jnp.power(beta2, step))
+    m_b_hat = m_b / (1.0 - jnp.power(beta1, step))
+    v_b_hat = v_b / (1.0 - jnp.power(beta2, step))
+
+    new_lora_a = old_lora_a.at[role_id].add(-lr * m_a_hat / (jnp.sqrt(v_a_hat) + eps))
+    new_lora_b = old_lora_b.at[role_id].add(-lr * m_b_hat / (jnp.sqrt(v_b_hat) + eps))
     params["params"]["role_lora_A"] = new_lora_a
     params["params"]["role_lora_B"] = new_lora_b
-    return params
+    new_adam_state = {
+        "m_A": adam_state["m_A"].at[role_id].set(m_a),
+        "v_A": adam_state["v_A"].at[role_id].set(v_a),
+        "m_B": adam_state["m_B"].at[role_id].set(m_b),
+        "v_B": adam_state["v_B"].at[role_id].set(v_b),
+        "count": adam_state["count"].at[role_id].set(step),
+    }
+    return params, new_adam_state
 
 def role_lora_update_norm(old_params, new_params, config: Dict):
     if not config["USE_ROLE_LORA"]:
@@ -320,6 +378,11 @@ def make_train(config):
             
         actor_train_state = TrainState.create(apply_fn=actor_network.apply, params=actor_network_params, tx=actor_tx)
         critic_train_state = TrainState.create(apply_fn=critic_network.apply, params=critic_network_params, tx=critic_tx)
+        role_lora_adam_state = init_role_lora_adam_state(
+            actor_network_params,
+            config,
+            env.action_space(env.agents[0]).n,
+        )
 
         # INIT ENV
         rng, _rng = jax.random.split(rng)
@@ -333,7 +396,7 @@ def make_train(config):
             runner_state, update_steps = update_runner_state
             
             def _env_step(runner_state, unused):
-                train_states, env_state, last_obs, last_done, hstates, rng = runner_state
+                train_states, role_lora_adam_state, env_state, last_obs, last_done, hstates, rng = runner_state
 
                 # SELECT ACTION
                 rng, _rng = jax.random.split(rng)
@@ -376,13 +439,13 @@ def make_train(config):
                     avail_actions,
                     role_id,
                 )
-                runner_state = (train_states, env_state, obsv, done_batch, (ac_hstate, cr_hstate), rng)
+                runner_state = (train_states, role_lora_adam_state, env_state, obsv, done_batch, (ac_hstate, cr_hstate), rng)
                 return runner_state, transition
 
             initial_hstates = runner_state[-2]
             runner_state, traj_batch = jax.lax.scan(_env_step, runner_state, None, config["NUM_STEPS"])
             
-            train_states, env_state, last_obs, last_done, hstates, rng = runner_state
+            train_states, role_lora_adam_state, env_state, last_obs, last_done, hstates, rng = runner_state
             
             last_world_state = last_obs["world_state"].swapaxes(0,1)
             last_world_state = last_world_state.reshape((config["NUM_ACTORS"],-1))
@@ -517,7 +580,14 @@ def make_train(config):
                     lora_grad_norm_by_role = role_lora_param_norms(actor_grads, config)
                     lora_param_norm_by_role = role_lora_param_norms(actor_train_state.params, config)
 
-                    actor_train_state = actor_train_state.apply_gradients(grads=actor_grads)
+                    actor_apply_grads = actor_grads
+                    if (
+                        config["USE_SEQUENTIAL_ROLE_UPDATES"]
+                        and config["FREEZE_LORA_IN_SHARED_UPDATE"]
+                    ):
+                        actor_apply_grads = zero_role_lora_grads(actor_grads, config)
+
+                    actor_train_state = actor_train_state.apply_gradients(grads=actor_apply_grads)
                     critic_train_state = critic_train_state.apply_gradients(grads=critic_grads)
 
                     total_loss = actor_loss[0] + critic_loss[0]
@@ -593,7 +663,7 @@ def make_train(config):
                     "role_seq_skipped_by_role": jnp.ones((config["NUM_UNIT_TYPES"],), dtype=jnp.bool_),
                 }
 
-            def _run_sequential_role_updates(actor_train_state, rng):
+            def _run_sequential_role_updates(actor_train_state, role_lora_adam_state, rng):
                 if config["ROLE_ORDERING"] == "random":
                     role_order = jax.random.permutation(rng, config["NUM_UNIT_TYPES"])
                 elif config["ROLE_ORDERING"] == "fixed":
@@ -622,23 +692,48 @@ def make_train(config):
                     "role_seq_skipped_by_role": jnp.ones((config["NUM_UNIT_TYPES"],), dtype=jnp.bool_),
                 }
 
+                def _correction_env_to_samples(correction_env):
+                    correction_by_agent = jnp.broadcast_to(
+                        correction_env[:, None, :],
+                        (config["NUM_STEPS"], env.num_agents, config["NUM_ENVS"]),
+                    )
+                    return correction_by_agent.reshape(config["NUM_STEPS"], config["NUM_ACTORS"])
+
+                def _policy_ratios(actor_params):
+                    _, pi, _ = actor_network.apply(
+                        actor_params,
+                        initial_hstates[0],
+                        (traj_batch.obs, traj_batch.done, traj_batch.avail_actions, traj_batch.role_id),
+                    )
+                    log_prob = pi.log_prob(traj_batch.action)
+                    logratio = log_prob - traj_batch.log_prob
+                    ratio = jnp.exp(logratio)
+                    return ratio, logratio, pi
+
                 def _one_role_update(carry, current_role):
-                    actor_train_state, correction, metrics = carry
+                    actor_train_state, role_lora_adam_state, correction_env, metrics = carry
                     role_mask = (traj_batch.role_id == current_role).astype(jnp.float32)
                     role_count = role_mask.sum()
                     role_present = role_count > 0
 
                     def _role_loss_fn(actor_params):
-                        _, pi, _ = actor_network.apply(
-                            actor_params,
-                            initial_hstates[0],
-                            (traj_batch.obs, traj_batch.done, traj_batch.avail_actions, traj_batch.role_id),
-                        )
-                        log_prob = pi.log_prob(traj_batch.action)
-                        logratio = log_prob - traj_batch.log_prob
-                        ratio = jnp.exp(logratio)
-                        gae = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
-                        corrected_gae = jax.lax.stop_gradient(correction) * gae
+                        ratio, logratio, pi = _policy_ratios(actor_params)
+                        if config["ROLE_SEQ_ADV_NORM"] == "role":
+                            role_adv_mean = jnp.sum(role_mask * advantages) / jnp.maximum(role_count, 1.0)
+                            role_adv_var = (
+                                jnp.sum(role_mask * jnp.square(advantages - role_adv_mean))
+                                / jnp.maximum(role_count, 1.0)
+                            )
+                            gae = (advantages - role_adv_mean) / (jnp.sqrt(role_adv_var) + 1e-8)
+                        elif config["ROLE_SEQ_ADV_NORM"] == "global":
+                            gae = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+                        else:
+                            raise ValueError(
+                                f"Unsupported ROLE_SEQ_ADV_NORM={config['ROLE_SEQ_ADV_NORM']!r}; "
+                                "use 'role' or 'global'."
+                            )
+                        correction_per_sample = _correction_env_to_samples(correction_env)
+                        corrected_gae = jax.lax.stop_gradient(correction_per_sample) * gae
                         loss_actor1 = ratio * corrected_gae
                         loss_actor2 = (
                             jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"])
@@ -662,29 +757,85 @@ def make_train(config):
                         actor_train_state.params
                     )
                     old_params = unfreeze(actor_train_state.params)
-                    new_params = update_single_role_lora_params(
+                    old_adam_state = role_lora_adam_state
+                    new_params, new_adam_state = update_single_role_lora_params_adam(
                         actor_train_state.params,
                         role_grads,
+                        role_lora_adam_state,
                         current_role,
                         seq_lr_base,
+                        config,
+                    )
+                    selected_params = jax.tree.map(
+                        lambda new, old: jnp.where(role_present, new, old),
+                        new_params,
+                        old_params,
+                    )
+                    selected_adam_state = jax.tree.map(
+                        lambda new, old: jnp.where(role_present, new, old),
+                        new_adam_state,
+                        old_adam_state,
                     )
                     actor_train_state = actor_train_state.replace(
-                        params=jax.lax.cond(role_present, lambda: new_params, lambda: old_params)
+                        params=selected_params
                     )
+                    role_lora_adam_state = selected_adam_state
                     update_norm = role_lora_update_norm(old_params, actor_train_state.params, config)
                     role_kl, role_clip_frac, role_ratio_mean, role_ratio_max = aux
-                    clipped_role_mean_ratio = jnp.clip(
-                        role_ratio_mean,
+
+                    post_ratio, post_logratio, _ = _policy_ratios(actor_train_state.params)
+
+                    if config["ROLE_SEQ_CORRECTION_MODE"] == "none":
+                        next_correction_env = correction_env
+                    elif config["ROLE_SEQ_CORRECTION_MODE"] == "role_mean":
+                        clipped_role_mean_ratio = jnp.clip(
+                            jnp.sum(role_mask * post_ratio) / jnp.maximum(role_count, 1.0),
+                            1.0 - config["CORRECTION_CLIP"],
+                            1.0 + config["CORRECTION_CLIP"],
+                        )
+                        next_correction_env = correction_env * clipped_role_mean_ratio
+                    elif config["ROLE_SEQ_CORRECTION_MODE"] == "env_mean":
+                        role_mask_ae = role_mask.reshape(
+                            config["NUM_STEPS"],
+                            env.num_agents,
+                            config["NUM_ENVS"],
+                        )
+                        clipped_logratio = jnp.clip(
+                            post_logratio,
+                            jnp.log(1.0 - config["CORRECTION_CLIP"]),
+                            jnp.log(1.0 + config["CORRECTION_CLIP"]),
+                        )
+                        clipped_logratio_ae = clipped_logratio.reshape(
+                            config["NUM_STEPS"],
+                            env.num_agents,
+                            config["NUM_ENVS"],
+                        )
+                        role_count_env = jnp.sum(role_mask_ae, axis=1)
+                        role_mean_logratio_env = (
+                            jnp.sum(role_mask_ae * clipped_logratio_ae, axis=1)
+                            / jnp.maximum(role_count_env, 1.0)
+                        )
+                        correction_multiplier_env = jnp.exp(role_mean_logratio_env)
+                        correction_multiplier_env = jnp.where(
+                            role_count_env > 0,
+                            correction_multiplier_env,
+                            1.0,
+                        )
+                        next_correction_env = correction_env * correction_multiplier_env
+                    else:
+                        raise ValueError(
+                            f"Unsupported ROLE_SEQ_CORRECTION_MODE={config['ROLE_SEQ_CORRECTION_MODE']!r}; "
+                            "use 'none', 'role_mean', or 'env_mean'."
+                        )
+                    next_correction_env = jnp.clip(
+                        next_correction_env,
                         1.0 - config["CORRECTION_CLIP"],
                         1.0 + config["CORRECTION_CLIP"],
                     )
-                    next_correction = jax.lax.stop_gradient(
-                        jax.lax.cond(
-                            role_present,
-                            lambda: correction * clipped_role_mean_ratio,
-                            lambda: correction,
-                        )
+                    next_correction_env = jax.lax.stop_gradient(
+                        jnp.where(role_present, next_correction_env, correction_env)
                     )
+                    correction_after = jnp.mean(next_correction_env)
                     metrics = {
                         "role_seq_loss_by_role": metrics["role_seq_loss_by_role"].at[current_role].set(role_loss),
                         "role_seq_kl_by_role": metrics["role_seq_kl_by_role"].at[current_role].set(role_kl),
@@ -692,36 +843,29 @@ def make_train(config):
                         "role_seq_ratio_mean_by_role": metrics["role_seq_ratio_mean_by_role"].at[current_role].set(role_ratio_mean),
                         "role_seq_ratio_max_by_role": metrics["role_seq_ratio_max_by_role"].at[current_role].set(role_ratio_max),
                         "adapter_update_norm_by_role": metrics["adapter_update_norm_by_role"].at[current_role].set(update_norm[current_role]),
-                        "correction_after_by_role": metrics["correction_after_by_role"].at[current_role].set(next_correction),
+                        "correction_after_by_role": metrics["correction_after_by_role"].at[current_role].set(correction_after),
                         "role_seq_skipped_by_role": metrics["role_seq_skipped_by_role"].at[current_role].set(~role_present),
                     }
-                    return (actor_train_state, next_correction, metrics), None
+                    return (actor_train_state, role_lora_adam_state, next_correction_env, metrics), None
 
-                (actor_train_state, correction, metrics), _ = jax.lax.scan(
+                correction_env = jnp.ones((config["NUM_STEPS"], config["NUM_ENVS"]))
+                (actor_train_state, role_lora_adam_state, correction_env, metrics), _ = jax.lax.scan(
                     _one_role_update,
-                    (actor_train_state, jnp.array(1.0), init_metrics),
+                    (actor_train_state, role_lora_adam_state, correction_env, init_metrics),
                     role_order,
                 )
-                correction_values = metrics["correction_after_by_role"]
-                correction_mask = (role_counts > 0).astype(jnp.float32)
-                correction_count = jnp.maximum(correction_mask.sum(), 1.0)
-                correction_mean = jnp.sum(correction_mask * correction_values) / correction_count
-                correction_std = jnp.sqrt(
-                    jnp.maximum(
-                        jnp.sum(correction_mask * jnp.square(correction_values - correction_mean))
-                        / correction_count,
-                        0.0,
-                    )
-                )
+                correction_values = correction_env.reshape(-1)
+                correction_mean = jnp.mean(correction_values)
+                correction_std = jnp.std(correction_values)
                 seq_info = {
                     "role_order": role_order,
                     **metrics,
                     "correction_mean": correction_mean,
                     "correction_std": correction_std,
-                    "correction_min": jnp.min(jnp.where(role_counts > 0, correction_values, jnp.inf)),
-                    "correction_max": jnp.max(jnp.where(role_counts > 0, correction_values, -jnp.inf)),
+                    "correction_min": jnp.min(correction_values),
+                    "correction_max": jnp.max(correction_values),
                 }
-                return actor_train_state, seq_info
+                return actor_train_state, role_lora_adam_state, seq_info
 
             actor_seq_state = train_states[0]
             role_seq_info = _empty_role_seq_info()
@@ -729,9 +873,13 @@ def make_train(config):
             if config["USE_SEQUENTIAL_ROLE_UPDATES"]:
                 if not config["USE_ROLE_LORA"]:
                     raise ValueError("USE_SEQUENTIAL_ROLE_UPDATES=True requires USE_ROLE_LORA=True.")
-                rng_after_update, role_order_rng = jax.random.split(rng_after_update)
                 for _ in range(config["ROLE_SEQ_UPDATE_EPOCHS"]):
-                    actor_seq_state, role_seq_info = _run_sequential_role_updates(actor_seq_state, role_order_rng)
+                    rng_after_update, role_order_rng = jax.random.split(rng_after_update)
+                    actor_seq_state, role_lora_adam_state, role_seq_info = _run_sequential_role_updates(
+                        actor_seq_state,
+                        role_lora_adam_state,
+                        role_order_rng,
+                    )
                 train_states = (actor_seq_state, train_states[1])
 
             metric = traj_batch.info
@@ -918,12 +1066,21 @@ def make_train(config):
             )
             
             update_steps = update_steps + 1
-            runner_state = (train_states, env_state, last_obs, last_done, hstates, rng_after_update)
+            runner_state = (
+                train_states,
+                role_lora_adam_state,
+                env_state,
+                last_obs,
+                last_done,
+                hstates,
+                rng_after_update,
+            )
             return (runner_state, update_steps), metric
 
         rng, _rng = jax.random.split(rng)
         runner_state = (
             (actor_train_state, critic_train_state),
+            role_lora_adam_state,
             env_state,
             obsv,
             jnp.zeros((config["NUM_ACTORS"]), dtype=bool),
@@ -969,8 +1126,14 @@ if __name__ == "__main__":
         "LOG_ROLE_DIAGNOSTIC_TABLE": False,
         "ROLE_ORDERING": "random",
         "CORRECTION_CLIP": 0.2,
+        "ROLE_SEQ_CORRECTION_MODE": "env_mean",
+        "ROLE_SEQ_ADV_NORM": "role",
+        "FREEZE_LORA_IN_SHARED_UPDATE": True,
         "ROLE_SEQ_UPDATE_EPOCHS": 1,
-        "ROLE_SEQ_LR_MULT": 0.5,
+        "ROLE_SEQ_LR_MULT": 0.25,
+        "ROLE_SEQ_ADAM_BETA1": 0.9,
+        "ROLE_SEQ_ADAM_BETA2": 0.999,
+        "ROLE_SEQ_ADAM_EPS": 1e-8,
         "LOG_ROSA_CORRECTIONS": True,
         "ENV_KWARGS": {
             "see_enemy_actions": True,
