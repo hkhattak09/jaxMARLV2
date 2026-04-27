@@ -1378,7 +1378,7 @@ def make_train(config):
             residual_logprob_margin_by_role = loss_info["residual_logprob_margin_by_role"]
             residual_lora_grad_norm_by_role = loss_info["residual_lora_grad_norm_by_role"]
             residual_backbone_grad_norm = loss_info["residual_backbone_grad_norm"]
-            residual_gate_grad_norm = loss_info["residual_gate_grad_norm"]
+            residual_gate_grad_norm_value = loss_info["residual_gate_grad_norm"]
             residual_clip_frac_by_role = loss_info["residual_clip_frac_by_role"]
             residual_ratio_mean_by_role = loss_info["residual_ratio_mean_by_role"]
             residual_ratio_max_by_role = loss_info["residual_ratio_max_by_role"]
@@ -1570,7 +1570,7 @@ def make_train(config):
                 residual_loss_by_role, residual_kl_to_base_by_role,
                 residual_adv_alignment_by_role, residual_logprob_margin_by_role,
                 residual_lora_grad_norm_by_role, residual_backbone_grad_norm,
-                residual_gate_grad_norm, residual_clip_frac_by_role,
+                residual_gate_grad_norm_value, residual_clip_frac_by_role,
                 residual_ratio_mean_by_role, residual_ratio_max_by_role,
                 context_gate_mean_by_role, context_gate_std_by_role,
                 context_gate_min_by_role, context_gate_max_by_role,
