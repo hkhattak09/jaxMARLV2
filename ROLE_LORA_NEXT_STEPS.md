@@ -292,9 +292,58 @@ Decision gate:
 
 ---
 
-## Stage 4A: Role-Residual MAPPO
+## Stage 4A.0: Residual Wiring Sanity Check
 
-Goal: test whether an adapter-only role-advantage objective improves over plain Stage 3.
+Goal: prove that adding residual-mode code does not change behavior when the new loss is disabled.
+
+This stage is mandatory before running a real Role-Residual experiment. It catches accidental behavior changes from refactoring.
+
+Implement `adapter_mode=role_residual`, but set:
+
+```python
+"USE_ROLE_LORA": True
+"USE_ROLE_RESIDUAL_LOSS": True
+"USE_CONTEXT_GATE": False
+"ROLE_BALANCED_PPO": False
+"RESIDUAL_LOSS_COEF": 0.0
+"RESIDUAL_KL_COEF": 0.0
+"RESIDUAL_ADV_NORM": "role"
+"RESIDUAL_STOP_BACKBONE": True
+"LOG_RESIDUAL_DIAGNOSTICS": True
+```
+
+Expected result:
+
+```text
+role_residual with zero residual coefficients should match Stage 3 role_lora within normal seed noise.
+```
+
+Suggested CLI:
+
+```python
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_residual --residual_loss_coef 0.0 --residual_kl_coef 0.0 --total_timesteps 3000000 --run_name role_residual_zero_coef_smacv2_10_seed42
+```
+
+Diagnostics to verify:
+
+```text
+residual_loss_by_role should be computed but multiplied by zero in total loss
+residual_kl_to_base_by_role should be computed but multiplied by zero in total loss
+residual_lora_grad_norm should be available
+residual_backbone_grad_norm should be zero or numerically near zero for the residual loss
+```
+
+Decision gate:
+
+- If zero-coefficient residual mode behaves very differently from Stage 3 Role-LoRA, stop and fix the wiring.
+- If residual gradients leak into the backbone, stop and fix gradient blocking before interpreting any Stage 4 result.
+- If diagnostics are unavailable, do not print fake zeros; fail loudly or print an explicit unavailable marker.
+
+---
+
+## Stage 4A.1: Role-Residual MAPPO
+
+Goal: test whether an adapter-only role-normalized PPO objective improves over plain Stage 3.
 
 This is the first real post-Stage-3 algorithmic change.
 
@@ -313,17 +362,28 @@ L_MAPPO:
     normal PPO on the final policy
 
 L_residual:
-    adapter-only role-normalized advantage loss
+    adapter-only clipped PPO loss using role-normalized advantage
 
 L_KL:
-    small KL from final policy to base policy
+    small KL keeping the residual policy near the base policy
 ```
 
-Residual loss:
+Do **not** implement the residual objective as plain `-A_role * log pi_full(a)` for the main experiment. Use a PPO-style clipped objective.
+
+Residual PPO loss:
 
 ```text
 A_role = normalize advantage within each role
-L_residual = - A_role * log pi_full(a)
+
+ratio_residual = pi_full(a) / pi_old(a)
+
+L_residual =
+    -mean(
+        min(
+            ratio_residual * A_role,
+            clip(ratio_residual, 1 - CLIP_EPS, 1 + CLIP_EPS) * A_role
+        )
+    )
 ```
 
 But for this loss:
@@ -333,6 +393,26 @@ shared hidden features are stop_gradient
 base logits are stop_gradient
 only role LoRA params receive residual gradients
 ```
+
+Implementation requirement:
+
+```text
+Compute residual gradients separately from the normal MAPPO actor gradients.
+Before applying residual gradients, zero every parameter gradient except:
+    role_lora_A
+    role_lora_B
+    context gate parameters, only when USE_CONTEXT_GATE=True
+```
+
+This explicit gradient filtering is preferred even if `stop_gradient` is used, because it gives a visible safety check that residual gradients cannot update the shared backbone.
+
+KL regularizer:
+
+```text
+L_KL = KL(stopgrad(pi_base) || pi_full)
+```
+
+Use the stopped base policy as the anchor. The residual should not be allowed to pull the shared policy through this auxiliary term.
 
 Suggested config:
 
@@ -351,7 +431,7 @@ Suggested config:
 Suggested CLI:
 
 ```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_residual --total_timesteps 3000000 --run_name role_residual_smacv2_10_seed42
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_residual --residual_loss_coef 0.1 --residual_kl_coef 0.01 --total_timesteps 3000000 --run_name role_residual_smacv2_10_seed42
 ```
 
 New diagnostics to log:
@@ -361,7 +441,12 @@ residual_loss_by_role
 residual_kl_to_base_by_role
 residual_adv_alignment_by_role
 residual_logprob_margin_by_role
-residual_grad_norm_by_role
+residual_lora_grad_norm_by_role
+residual_backbone_grad_norm
+residual_gate_grad_norm, if context gate is enabled
+residual_clip_frac_by_role
+residual_ratio_mean_by_role
+residual_ratio_max_by_role
 lora_delta_norm_by_role
 ```
 
@@ -372,10 +457,18 @@ residual_logprob_margin = log pi_full(a) - log pi_base(a)
 residual_adv_alignment = mean(A_role * residual_logprob_margin)
 ```
 
+Expected gradient behavior:
+
+```text
+residual_lora_grad_norm_by_role > 0 for roles present in the batch
+residual_backbone_grad_norm ~= 0
+residual_gate_grad_norm is unavailable or 0 when USE_CONTEXT_GATE=False
+```
+
 Question answered:
 
 ```text
-Does giving the adapter a role-specific advantage objective improve over simply attaching Role-LoRA?
+Does giving the adapter a role-specific clipped PPO objective improve over simply attaching Role-LoRA?
 ```
 
 Decision gate:
@@ -384,6 +477,49 @@ Decision gate:
 - If Role-Residual matches Stage 3 but diagnostics show positive residual alignment, it may still be useful but needs context to matter.
 - If Role-Residual hurts performance or residual KL explodes, reduce `RESIDUAL_LOSS_COEF` or increase `RESIDUAL_KL_COEF`.
 - If residual gradients leak into the backbone, stop and fix implementation before interpreting results.
+
+---
+
+## Stage 4A.2: Residual Coefficient Sweep
+
+Goal: avoid over-interpreting one arbitrary residual-loss weight.
+
+Only do this after Stage 4A.0 passes.
+
+Run at least:
+
+```text
+RESIDUAL_LOSS_COEF = 0.03, RESIDUAL_KL_COEF = 0.01
+RESIDUAL_LOSS_COEF = 0.10, RESIDUAL_KL_COEF = 0.01
+```
+
+Optional if residual KL is too large:
+
+```text
+RESIDUAL_LOSS_COEF = 0.10, RESIDUAL_KL_COEF = 0.03
+```
+
+Suggested commands:
+
+```python
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_residual --residual_loss_coef 0.03 --residual_kl_coef 0.01 --total_timesteps 3000000 --run_name role_residual_lam003_kl001_smacv2_10_seed42
+```
+
+```python
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_residual --residual_loss_coef 0.10 --residual_kl_coef 0.01 --total_timesteps 3000000 --run_name role_residual_lam010_kl001_smacv2_10_seed42
+```
+
+Question answered:
+
+```text
+Is Role-Residual sensitive to the auxiliary loss weight, and is there a safe useful range?
+```
+
+Decision gate:
+
+- If `0.03` is safer but weaker and `0.10` improves without KL explosion, use `0.10`.
+- If `0.10` hurts or residual KL grows too much, use `0.03` or increase `RESIDUAL_KL_COEF`.
+- If all weights match Stage 3 and residual alignment is near zero, the residual objective is not yet useful.
 
 ---
 
@@ -414,10 +550,9 @@ Recommended first context:
 ```text
 team role histogram
 own role count
-ally role counts if easy to extract cleanly
 ```
 
-Avoid using mean teammate hidden states in the first version unless it is explicitly framed as communication. Team-composition context is easier to defend under decentralized execution.
+Avoid using mean teammate hidden states, teammate actions, or privileged enemy state in the first context version. Those turn the method into a communication/centralized-information method. Team-composition context is easier to defend as a known roster signal.
 
 Suggested config:
 
@@ -428,6 +563,7 @@ Suggested config:
 "CONTEXT_SOURCE": "team_role_histogram"
 "CONTEXT_SHUFFLE": False
 "CONTEXT_GATE_HIDDEN_DIM": 32
+"RESIDUAL_GATE_INIT_BIAS": 0.0
 "RESIDUAL_LOSS_COEF": 0.1
 "RESIDUAL_KL_COEF": 0.01
 "RESIDUAL_ADV_NORM": "role"
@@ -465,6 +601,61 @@ Decision gate:
 - If gate values collapse to all zeros, residual is being ignored.
 - If gate values saturate to all ones, the context gate is not doing useful modulation.
 - If context improves random-team maps but not fixed maps, that supports the generalization story.
+
+---
+
+## Stage 4B.1: Retained Team-Context Gate
+
+Goal: test the small Sable-inspired idea after the static context gate is working.
+
+Do not implement this before Stage 4B unless Stage 4A is already promising. This is a second-order addition.
+
+Retained context:
+
+```text
+x_t = team role histogram and own-role count
+c_t = (1 - done_t) * (rho * c_{t-1} + phi(x_t))
+```
+
+Where:
+
+```text
+rho is a fixed decay such as 0.95 for the first version
+phi is a small linear layer or MLP
+done_t resets context at episode boundaries
+```
+
+Suggested config:
+
+```python
+"USE_CONTEXT_GATE": True
+"CONTEXT_SOURCE": "retained_team_role_histogram"
+"CONTEXT_DECAY": 0.95
+"CONTEXT_SHUFFLE": False
+```
+
+Diagnostics:
+
+```text
+retained_context_norm
+retained_context_delta_norm
+retained_context_reset_check
+context_gate_mean_by_role
+```
+
+Fail loudly if retained context does not reset on episode done.
+
+Question answered:
+
+```text
+Does Sable-style retained temporal team context beat static team-composition context?
+```
+
+Decision gate:
+
+- If retained context beats static context, keep it.
+- If retained context matches static context, use static context because it is simpler.
+- If retained context hurts or reset checks fail, remove it.
 
 ---
 

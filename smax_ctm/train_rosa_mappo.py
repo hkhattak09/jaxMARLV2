@@ -17,6 +17,7 @@ import jax.numpy as jnp
 import flax.linen as nn
 from flax import struct
 from flax.core import unfreeze
+from flax.traverse_util import flatten_dict, unflatten_dict
 import numpy as np
 import optax
 from flax.linen.initializers import constant, orthogonal
@@ -45,15 +46,6 @@ SUPPORTED_ADAPTER_MODES = (
     "shuffled_context_residual",
 )
 
-IMPLEMENTED_ADAPTER_MODES = {
-    "none",
-    "role_lora",
-    "global_lora",
-    "agent_lora",
-    "sequential_polish",
-}
-
-
 def parse_args():
     parser = argparse.ArgumentParser(
         description="ROSA/Role-LoRA MAPPO experiment runner for SMAX."
@@ -69,6 +61,9 @@ def parse_args():
     parser.add_argument("--num_minibatches", type=int, default=None)
     parser.add_argument("--update_epochs", type=int, default=None)
     parser.add_argument("--run_name", type=str, default=None)
+    parser.add_argument("--residual_loss_coef", type=float, default=None)
+    parser.add_argument("--residual_kl_coef", type=float, default=None)
+    parser.add_argument("--context_gate_hidden_dim", type=int, default=None)
     return parser.parse_args()
 
 
@@ -93,6 +88,12 @@ def apply_cli_overrides(config: Dict, args):
         config["UPDATE_EPOCHS"] = args.update_epochs
     if args.run_name is not None:
         config["RUN_NAME"] = args.run_name
+    if args.residual_loss_coef is not None:
+        config["RESIDUAL_LOSS_COEF"] = args.residual_loss_coef
+    if args.residual_kl_coef is not None:
+        config["RESIDUAL_KL_COEF"] = args.residual_kl_coef
+    if args.context_gate_hidden_dim is not None:
+        config["CONTEXT_GATE_HIDDEN_DIM"] = args.context_gate_hidden_dim
     if args.adapter_mode is not None:
         config["ADAPTER_MODE"] = args.adapter_mode
 
@@ -102,19 +103,37 @@ def apply_cli_overrides(config: Dict, args):
             f"Unsupported adapter_mode={adapter_mode!r}. "
             f"Supported modes: {', '.join(SUPPORTED_ADAPTER_MODES)}"
         )
-    if adapter_mode not in IMPLEMENTED_ADAPTER_MODES:
-        raise NotImplementedError(
-            f"adapter_mode={adapter_mode!r} is declared for the experiment plan but is not implemented yet. "
-            "Implemented modes right now: none, role_lora, global_lora, agent_lora, sequential_polish."
-        )
-
     config["USE_ROLE_LORA"] = adapter_mode in {
         "role_lora",
         "global_lora",
         "agent_lora",
         "sequential_polish",
+        "role_balanced",
+        "role_residual",
+        "role_context_residual",
+        "global_residual",
+        "agent_residual",
+        "shuffled_context_residual",
     }
     config["USE_SEQUENTIAL_ROLE_UPDATES"] = adapter_mode == "sequential_polish"
+    config["ROLE_BALANCED_PPO"] = adapter_mode == "role_balanced"
+    config["USE_ROLE_RESIDUAL_LOSS"] = adapter_mode in {
+        "role_residual",
+        "role_context_residual",
+        "global_residual",
+        "agent_residual",
+        "shuffled_context_residual",
+    }
+    config["USE_CONTEXT_GATE"] = adapter_mode in {
+        "role_context_residual",
+        "shuffled_context_residual",
+    }
+    config["CONTEXT_SHUFFLE"] = adapter_mode == "shuffled_context_residual"
+    if config["USE_ROLE_RESIDUAL_LOSS"] and not config["RESIDUAL_STOP_BACKBONE"]:
+        raise ValueError(
+            "Stage 4 residual modes require RESIDUAL_STOP_BACKBONE=True so the auxiliary "
+            "loss cannot push role-specific gradients into the shared backbone."
+        )
     if adapter_mode == "role_lora":
         config["FREEZE_LORA_IN_SHARED_UPDATE"] = False
     if adapter_mode == "sequential_polish":
@@ -212,13 +231,18 @@ class ActorRNN(nn.Module):
     def __call__(self, hidden, x):
         if len(x) == 5:
             obs, dones, avail_actions, role_id, adapter_id = x
+            role_context = None
+        elif len(x) == 6:
+            obs, dones, avail_actions, role_id, adapter_id, role_context = x
         elif len(x) == 4:
             obs, dones, avail_actions, role_id = x
             adapter_id = role_id
+            role_context = None
         else:
             obs, dones, avail_actions = x
             role_id = jnp.zeros(obs.shape[:-1], dtype=jnp.int32)
             adapter_id = role_id
+            role_context = None
         embedding = nn.Dense(
             self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(obs)
@@ -235,6 +259,7 @@ class ActorRNN(nn.Module):
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
         )(actor_mean)
         lora_delta = jnp.zeros_like(base_logits)
+        context_gate = jnp.ones(base_logits.shape[:-1], dtype=base_logits.dtype)
         if self.config["USE_ROLE_LORA"]:
             rank = self.config["ROLE_LORA_RANK"]
             lora_a = self.param(
@@ -247,7 +272,6 @@ class ActorRNN(nn.Module):
                 nn.initializers.zeros,
                 (self.config["LORA_NUM_ADAPTERS"], self.action_dim, rank),
             )
-            del role_id
             safe_adapter_id = jnp.clip(
                 adapter_id.astype(jnp.int32),
                 0,
@@ -257,7 +281,34 @@ class ActorRNN(nn.Module):
             role_b = lora_b[safe_adapter_id]
             lora_hidden = jnp.einsum("...rh,...h->...r", role_a, actor_mean)
             lora_delta = jnp.einsum("...ar,...r->...a", role_b, lora_hidden)
-        actor_mean = base_logits + self.config["ROLE_LORA_SCALE"] * lora_delta
+            if self.config["USE_CONTEXT_GATE"]:
+                if role_context is None:
+                    raise ValueError("USE_CONTEXT_GATE=True requires role_context in ActorRNN input.")
+                safe_role_id = jnp.clip(role_id.astype(jnp.int32), 0, self.config["NUM_UNIT_TYPES"] - 1)
+                role_onehot = jax.nn.one_hot(safe_role_id, self.config["NUM_UNIT_TYPES"])
+                gate_input = jnp.concatenate(
+                    (
+                        jax.lax.stop_gradient(actor_mean),
+                        role_onehot,
+                        role_context,
+                    ),
+                    axis=-1,
+                )
+                gate_hidden = nn.Dense(
+                    self.config["CONTEXT_GATE_HIDDEN_DIM"],
+                    kernel_init=orthogonal(np.sqrt(2)),
+                    bias_init=constant(0.0),
+                    name="context_gate_hidden",
+                )(gate_input)
+                gate_hidden = nn.relu(gate_hidden)
+                gate_logit = nn.Dense(
+                    1,
+                    kernel_init=orthogonal(0.01),
+                    bias_init=constant(self.config["RESIDUAL_GATE_INIT_BIAS"]),
+                    name="context_gate_out",
+                )(gate_hidden)
+                context_gate = jnp.squeeze(nn.sigmoid(gate_logit), axis=-1)
+        actor_mean = base_logits + self.config["ROLE_LORA_SCALE"] * context_gate[..., None] * lora_delta
         unavail_actions = 1 - avail_actions
         action_logits = actor_mean - (unavail_actions * 1e10)
 
@@ -266,6 +317,7 @@ class ActorRNN(nn.Module):
         aux = {
             "base_logits": base_logits,
             "lora_delta": lora_delta,
+            "context_gate": context_gate,
             "unmasked_logits": actor_mean,
         }
         return hidden, pi, aux
@@ -309,6 +361,7 @@ class Transition(NamedTuple):
     avail_actions: jnp.ndarray
     role_id: jnp.ndarray
     adapter_id: jnp.ndarray
+    role_context: jnp.ndarray
 
 
 def batchify(x: dict, agent_list, num_actors):
@@ -334,11 +387,40 @@ def extract_role_id(obs_batch: jnp.ndarray, env_state, env, config: Dict):
 
 def adapter_id_from_mode(role_id: jnp.ndarray, agent_id: jnp.ndarray, config: Dict):
     adapter_mode = config["ADAPTER_MODE"]
-    if adapter_mode == "global_lora":
+    if adapter_mode in ("global_lora", "global_residual"):
         return jnp.zeros_like(role_id, dtype=jnp.int32)
-    if adapter_mode == "agent_lora":
+    if adapter_mode in ("agent_lora", "agent_residual"):
         return agent_id.astype(jnp.int32)
     return role_id.astype(jnp.int32)
+
+def build_role_context(role_id: jnp.ndarray, env_num_agents: int, config: Dict):
+    if config["CONTEXT_SOURCE"] != "team_role_histogram":
+        raise ValueError(
+            f"Unsupported CONTEXT_SOURCE={config['CONTEXT_SOURCE']!r}; "
+            "Stage 4 supports 'team_role_histogram'."
+        )
+    role_by_agent_env = role_id.reshape(env_num_agents, config["NUM_ENVS"])
+    one_hot = jax.nn.one_hot(role_by_agent_env, config["NUM_UNIT_TYPES"])
+    team_counts_env_role = one_hot.sum(axis=0)
+    own_role_count = jnp.take_along_axis(
+        team_counts_env_role.T,
+        role_by_agent_env,
+        axis=0,
+    )
+    team_hist_by_agent_env = jnp.broadcast_to(
+        team_counts_env_role[None, :, :],
+        (env_num_agents, config["NUM_ENVS"], config["NUM_UNIT_TYPES"]),
+    )
+    context = jnp.concatenate(
+        (
+            team_hist_by_agent_env / jnp.maximum(float(env_num_agents), 1.0),
+            (own_role_count[..., None] / jnp.maximum(float(env_num_agents), 1.0)),
+        ),
+        axis=-1,
+    ).reshape(env_num_agents * config["NUM_ENVS"], config["NUM_UNIT_TYPES"] + 1)
+    if config["CONTEXT_SHUFFLE"]:
+        context = jnp.roll(context, shift=1, axis=0)
+    return context
 
 def role_mean_metric(values: jnp.ndarray, role_id: jnp.ndarray, num_roles: int):
     flat_values = values.reshape(-1)
@@ -362,6 +444,17 @@ def role_max_metric(values: jnp.ndarray, role_id: jnp.ndarray, num_roles: int):
         return jnp.where(jnp.isfinite(max_value), max_value, 0.0)
 
     return jax.vmap(max_for_role)(jnp.arange(num_roles))
+
+def role_normalize_advantages(advantages: jnp.ndarray, role_id: jnp.ndarray, config: Dict, norm_mode: str):
+    if norm_mode == "global":
+        return (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+    if norm_mode != "role":
+        raise ValueError(f"Unsupported residual advantage norm={norm_mode!r}; use 'role' or 'global'.")
+    role_mean = role_mean_metric(advantages, role_id, config["NUM_UNIT_TYPES"])
+    role_std = role_std_metric(advantages, role_id, config["NUM_UNIT_TYPES"])
+    gathered_mean = role_mean[role_id]
+    gathered_std = role_std[role_id]
+    return (advantages - gathered_mean) / (gathered_std + 1e-8)
 
 def role_lora_param_norms(actor_params, config: Dict):
     if not config["USE_ROLE_LORA"]:
@@ -396,6 +489,36 @@ def zero_role_lora_grads(actor_grads, config: Dict):
     grads["params"]["role_lora_A"] = jnp.zeros_like(grads["params"]["role_lora_A"])
     grads["params"]["role_lora_B"] = jnp.zeros_like(grads["params"]["role_lora_B"])
     return grads
+
+def filter_residual_grads(actor_grads, config: Dict):
+    flat = flatten_dict(unfreeze(actor_grads), sep="/")
+    kept = {}
+    rejected = {}
+    for path, value in flat.items():
+        is_lora = path.endswith("role_lora_A") or path.endswith("role_lora_B")
+        is_gate = config["USE_CONTEXT_GATE"] and "context_gate" in path
+        keep = is_lora or is_gate
+        kept[path] = value if keep else jnp.zeros_like(value)
+        rejected[path] = jnp.zeros_like(value) if keep else value
+    return unflatten_dict(kept, sep="/"), unflatten_dict(rejected, sep="/")
+
+def stop_non_residual_params(actor_params, config: Dict):
+    flat = flatten_dict(unfreeze(actor_params), sep="/")
+    stopped = {}
+    for path, value in flat.items():
+        is_lora = path.endswith("role_lora_A") or path.endswith("role_lora_B")
+        is_gate = config["USE_CONTEXT_GATE"] and "context_gate" in path
+        stopped[path] = value if (is_lora or is_gate) else jax.lax.stop_gradient(value)
+    return unflatten_dict(stopped, sep="/")
+
+def residual_gate_grad_norm(actor_grads, config: Dict):
+    if not config["USE_CONTEXT_GATE"]:
+        return jnp.array(0.0)
+    flat = flatten_dict(unfreeze(actor_grads), sep="/")
+    leaves = [value for path, value in flat.items() if "context_gate" in path]
+    if not leaves:
+        raise ValueError("USE_CONTEXT_GATE=True but no context_gate gradients were found.")
+    return optax.global_norm(leaves)
 
 def update_single_role_lora_params_adam(
     actor_params,
@@ -464,9 +587,9 @@ def make_train(config):
         )
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
     config["NUM_AGENTS"] = env.num_agents
-    if config["ADAPTER_MODE"] == "global_lora":
+    if config["ADAPTER_MODE"] in ("global_lora", "global_residual"):
         config["LORA_NUM_ADAPTERS"] = 1
-    elif config["ADAPTER_MODE"] == "agent_lora":
+    elif config["ADAPTER_MODE"] in ("agent_lora", "agent_residual"):
         config["LORA_NUM_ADAPTERS"] = env.num_agents
     else:
         config["LORA_NUM_ADAPTERS"] = config["NUM_UNIT_TYPES"]
@@ -504,6 +627,7 @@ def make_train(config):
             jnp.zeros((1, config["NUM_ENVS"], env.action_space(env.agents[0]).n)),
             jnp.zeros((1, config["NUM_ENVS"]), dtype=jnp.int32),
             jnp.zeros((1, config["NUM_ENVS"]), dtype=jnp.int32),
+            jnp.zeros((1, config["NUM_ENVS"], config["NUM_UNIT_TYPES"] + 1)),
         )
         ac_init_hstate = ScannedRNN.initialize_carry(config["NUM_ENVS"], config["GRU_HIDDEN_DIM"])
         actor_network_params = actor_network.init(_rng_actor, ac_init_hstate, ac_init_x)
@@ -552,12 +676,14 @@ def make_train(config):
                 role_id = extract_role_id(obs_batch, env_state, env, config)
                 agent_id = jnp.repeat(jnp.arange(env.num_agents, dtype=jnp.int32), config["NUM_ENVS"])
                 adapter_id = adapter_id_from_mode(role_id, agent_id, config)
+                role_context = build_role_context(role_id, env.num_agents, config)
                 ac_in = (
                     obs_batch[np.newaxis, :],
                     last_done[np.newaxis, :],
                     avail_actions,
                     role_id[np.newaxis, :],
                     adapter_id[np.newaxis, :],
+                    role_context[np.newaxis, :],
                 )
                 
                 ac_hstate, pi, _ = actor_network.apply(train_states[0].params, hstates[0], ac_in)
@@ -593,6 +719,7 @@ def make_train(config):
                     avail_actions,
                     role_id,
                     adapter_id,
+                    role_context,
                 )
                 runner_state = (train_states, role_lora_adam_state, env_state, obsv, done_batch, (ac_hstate, cr_hstate), rng)
                 return runner_state, transition
@@ -635,6 +762,7 @@ def make_train(config):
                     traj_batch.avail_actions,
                     traj_batch.role_id,
                     traj_batch.adapter_id,
+                    traj_batch.role_context,
                 ),
             )
             pre_update_logit_delta = config["ROLE_LORA_SCALE"] * pre_update_actor_aux["lora_delta"]
@@ -656,6 +784,7 @@ def make_train(config):
                                 traj_batch.avail_actions,
                                 traj_batch.role_id,
                                 traj_batch.adapter_id,
+                                traj_batch.role_context,
                             ),
                         )
                         log_prob = pi.log_prob(traj_batch.action)
@@ -663,7 +792,15 @@ def make_train(config):
                         ratio = jnp.exp(logratio)
                         role_adv_mean = role_mean_metric(gae, traj_batch.role_id, config["NUM_UNIT_TYPES"])
                         role_adv_std = role_std_metric(gae, traj_batch.role_id, config["NUM_UNIT_TYPES"])
-                        gae = (gae - gae.mean()) / (gae.std() + 1e-8)
+                        if config["ROLE_BALANCED_PPO"]:
+                            gae = role_normalize_advantages(
+                                gae,
+                                traj_batch.role_id,
+                                config,
+                                config["RESIDUAL_ADV_NORM"],
+                            )
+                        else:
+                            gae = (gae - gae.mean()) / (gae.std() + 1e-8)
                         loss_actor1 = ratio * gae
                         loss_actor2 = jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"]) * gae
                         ppo_loss_per_sample = -jnp.minimum(loss_actor1, loss_actor2)
@@ -737,15 +874,140 @@ def make_train(config):
                         critic_loss = config["VF_COEF"] * value_loss
                         return critic_loss, (value_loss)
 
+                    def _residual_loss_fn(actor_params, init_hstate, traj_batch, gae):
+                        residual_params = stop_non_residual_params(actor_params, config)
+                        _, pi, actor_aux = actor_network.apply(
+                            residual_params,
+                            init_hstate.squeeze(),
+                            (
+                                traj_batch.obs,
+                                traj_batch.done,
+                                traj_batch.avail_actions,
+                                traj_batch.role_id,
+                                traj_batch.adapter_id,
+                                traj_batch.role_context,
+                            ),
+                        )
+                        log_prob = pi.log_prob(traj_batch.action)
+                        logratio = log_prob - traj_batch.log_prob
+                        ratio = jnp.exp(logratio)
+                        residual_gae = role_normalize_advantages(
+                            gae,
+                            traj_batch.role_id,
+                            config,
+                            config["RESIDUAL_ADV_NORM"],
+                        )
+                        loss_actor1 = ratio * residual_gae
+                        loss_actor2 = (
+                            jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"])
+                            * residual_gae
+                        )
+                        residual_loss_per_sample = -jnp.minimum(loss_actor1, loss_actor2)
+                        residual_loss = residual_loss_per_sample.mean()
+
+                        unavail_actions = 1 - traj_batch.avail_actions
+                        full_logits = actor_aux["unmasked_logits"] - (unavail_actions * 1e10)
+                        base_logits = jax.lax.stop_gradient(actor_aux["base_logits"]) - (unavail_actions * 1e10)
+                        full_log_probs = jax.nn.log_softmax(full_logits, axis=-1)
+                        base_log_probs = jax.nn.log_softmax(base_logits, axis=-1)
+                        base_probs = jax.lax.stop_gradient(jnp.exp(base_log_probs))
+                        kl_to_base_per_sample = jnp.sum(
+                            base_probs * (base_log_probs - full_log_probs),
+                            axis=-1,
+                        )
+                        kl_to_base = kl_to_base_per_sample.mean()
+
+                        action_onehot = jax.nn.one_hot(traj_batch.action, full_logits.shape[-1])
+                        action_base_log_prob = jnp.sum(base_log_probs * action_onehot, axis=-1)
+                        logprob_margin = log_prob - action_base_log_prob
+                        adv_alignment_per_sample = residual_gae * logprob_margin
+                        clip_frac_per_sample = (jnp.abs(ratio - 1) > config["CLIP_EPS"]).astype(jnp.float32)
+                        context_gate = actor_aux["context_gate"]
+                        total_residual_loss = (
+                            config["RESIDUAL_LOSS_COEF"] * residual_loss
+                            + config["RESIDUAL_KL_COEF"] * kl_to_base
+                        )
+                        return total_residual_loss, {
+                            "residual_loss": residual_loss,
+                            "residual_kl_to_base": kl_to_base,
+                            "residual_loss_by_role": role_mean_metric(
+                                residual_loss_per_sample,
+                                traj_batch.role_id,
+                                config["NUM_UNIT_TYPES"],
+                            ),
+                            "residual_kl_to_base_by_role": role_mean_metric(
+                                kl_to_base_per_sample,
+                                traj_batch.role_id,
+                                config["NUM_UNIT_TYPES"],
+                            ),
+                            "residual_adv_alignment_by_role": role_mean_metric(
+                                adv_alignment_per_sample,
+                                traj_batch.role_id,
+                                config["NUM_UNIT_TYPES"],
+                            ),
+                            "residual_logprob_margin_by_role": role_mean_metric(
+                                logprob_margin,
+                                traj_batch.role_id,
+                                config["NUM_UNIT_TYPES"],
+                            ),
+                            "residual_clip_frac_by_role": role_mean_metric(
+                                clip_frac_per_sample,
+                                traj_batch.role_id,
+                                config["NUM_UNIT_TYPES"],
+                            ),
+                            "residual_ratio_mean_by_role": role_mean_metric(
+                                ratio,
+                                traj_batch.role_id,
+                                config["NUM_UNIT_TYPES"],
+                            ),
+                            "residual_ratio_max_by_role": role_max_metric(
+                                ratio,
+                                traj_batch.role_id,
+                                config["NUM_UNIT_TYPES"],
+                            ),
+                            "context_gate_mean_by_role": role_mean_metric(
+                                context_gate,
+                                traj_batch.role_id,
+                                config["NUM_UNIT_TYPES"],
+                            ),
+                            "context_gate_std_by_role": role_std_metric(
+                                context_gate,
+                                traj_batch.role_id,
+                                config["NUM_UNIT_TYPES"],
+                            ),
+                            "context_gate_min_by_role": -role_max_metric(
+                                -context_gate,
+                                traj_batch.role_id,
+                                config["NUM_UNIT_TYPES"],
+                            ),
+                            "context_gate_max_by_role": role_max_metric(
+                                context_gate,
+                                traj_batch.role_id,
+                                config["NUM_UNIT_TYPES"],
+                            ),
+                            "role_context_histogram_mean": traj_batch.role_context[..., :-1].mean(axis=(0, 1)),
+                        }
+
                     actor_grad_fn = jax.value_and_grad(_actor_loss_fn, has_aux=True)
                     actor_loss, actor_grads = actor_grad_fn(actor_train_state.params, ac_init_hstate, traj_batch, advantages)
                     critic_grad_fn = jax.value_and_grad(_critic_loss_fn, has_aux=True)
                     critic_loss, critic_grads = critic_grad_fn(critic_train_state.params, cr_init_hstate, traj_batch, targets)
+                    residual_grad_fn = jax.value_and_grad(_residual_loss_fn, has_aux=True)
+                    residual_loss, residual_grads = residual_grad_fn(
+                        actor_train_state.params,
+                        ac_init_hstate,
+                        traj_batch,
+                        advantages,
+                    )
+                    residual_apply_grads, residual_rejected_grads = filter_residual_grads(residual_grads, config)
                     
                     actor_grad_norm = optax.global_norm(actor_grads)
                     critic_grad_norm = optax.global_norm(critic_grads)
                     lora_grad_norm_by_role = role_lora_param_norms(actor_grads, config)
                     lora_param_norm_by_role = role_lora_param_norms(actor_train_state.params, config)
+                    residual_lora_grad_norm_by_role = role_lora_param_norms(residual_apply_grads, config)
+                    residual_backbone_grad_norm = optax.global_norm(residual_rejected_grads)
+                    residual_gate_norm = residual_gate_grad_norm(residual_apply_grads, config)
 
                     actor_apply_grads = actor_grads
                     if (
@@ -755,13 +1017,21 @@ def make_train(config):
                         actor_apply_grads = zero_role_lora_grads(actor_grads, config)
 
                     actor_train_state = actor_train_state.apply_gradients(grads=actor_apply_grads)
+                    if config["USE_ROLE_RESIDUAL_LOSS"]:
+                        actor_train_state = actor_train_state.apply_gradients(grads=residual_apply_grads)
                     critic_train_state = critic_train_state.apply_gradients(grads=critic_grads)
 
-                    total_loss = actor_loss[0] + critic_loss[0]
+                    residual_applied_loss = (
+                        residual_loss[0] if config["USE_ROLE_RESIDUAL_LOSS"] else jnp.array(0.0)
+                    )
+                    total_loss = actor_loss[0] + critic_loss[0] + residual_applied_loss
                     loss_info = {
                         "total_loss": total_loss,
                         "actor_loss": actor_loss[0],
                         "value_loss": critic_loss[0],
+                        "residual_total_loss": residual_applied_loss,
+                        "residual_loss": residual_loss[1]["residual_loss"],
+                        "residual_kl_to_base": residual_loss[1]["residual_kl_to_base"],
                         "entropy": actor_loss[1][1],
                         "approx_kl": actor_loss[1][3],
                         "clip_frac": actor_loss[1][4],
@@ -778,6 +1048,21 @@ def make_train(config):
                         "role_ppo_loss": actor_loss[1][13],
                         "lora_grad_norm_by_role": lora_grad_norm_by_role,
                         "lora_param_norm_by_role": lora_param_norm_by_role,
+                        "residual_loss_by_role": residual_loss[1]["residual_loss_by_role"],
+                        "residual_kl_to_base_by_role": residual_loss[1]["residual_kl_to_base_by_role"],
+                        "residual_adv_alignment_by_role": residual_loss[1]["residual_adv_alignment_by_role"],
+                        "residual_logprob_margin_by_role": residual_loss[1]["residual_logprob_margin_by_role"],
+                        "residual_lora_grad_norm_by_role": residual_lora_grad_norm_by_role,
+                        "residual_backbone_grad_norm": residual_backbone_grad_norm,
+                        "residual_gate_grad_norm": residual_gate_norm,
+                        "residual_clip_frac_by_role": residual_loss[1]["residual_clip_frac_by_role"],
+                        "residual_ratio_mean_by_role": residual_loss[1]["residual_ratio_mean_by_role"],
+                        "residual_ratio_max_by_role": residual_loss[1]["residual_ratio_max_by_role"],
+                        "context_gate_mean_by_role": residual_loss[1]["context_gate_mean_by_role"],
+                        "context_gate_std_by_role": residual_loss[1]["context_gate_std_by_role"],
+                        "context_gate_min_by_role": residual_loss[1]["context_gate_min_by_role"],
+                        "context_gate_max_by_role": residual_loss[1]["context_gate_max_by_role"],
+                        "role_context_histogram_mean": residual_loss[1]["role_context_histogram_mean"],
                     }
                     return (actor_train_state, critic_train_state), loss_info
 
@@ -876,6 +1161,7 @@ def make_train(config):
                             traj_batch.avail_actions,
                             traj_batch.role_id,
                             traj_batch.adapter_id,
+                            traj_batch.role_context,
                         ),
                     )
                     log_prob = pi.log_prob(traj_batch.action)
@@ -1083,6 +1369,24 @@ def make_train(config):
             role_mean_ratio = loss_info["role_mean_ratio"]
             role_max_ratio = loss_info["role_max_ratio"]
             role_ppo_loss = loss_info["role_ppo_loss"]
+            residual_total_loss = loss_info["residual_total_loss"]
+            residual_loss_value = loss_info["residual_loss"]
+            residual_kl_to_base = loss_info["residual_kl_to_base"]
+            residual_loss_by_role = loss_info["residual_loss_by_role"]
+            residual_kl_to_base_by_role = loss_info["residual_kl_to_base_by_role"]
+            residual_adv_alignment_by_role = loss_info["residual_adv_alignment_by_role"]
+            residual_logprob_margin_by_role = loss_info["residual_logprob_margin_by_role"]
+            residual_lora_grad_norm_by_role = loss_info["residual_lora_grad_norm_by_role"]
+            residual_backbone_grad_norm = loss_info["residual_backbone_grad_norm"]
+            residual_gate_grad_norm = loss_info["residual_gate_grad_norm"]
+            residual_clip_frac_by_role = loss_info["residual_clip_frac_by_role"]
+            residual_ratio_mean_by_role = loss_info["residual_ratio_mean_by_role"]
+            residual_ratio_max_by_role = loss_info["residual_ratio_max_by_role"]
+            context_gate_mean_by_role = loss_info["context_gate_mean_by_role"]
+            context_gate_std_by_role = loss_info["context_gate_std_by_role"]
+            context_gate_min_by_role = loss_info["context_gate_min_by_role"]
+            context_gate_max_by_role = loss_info["context_gate_max_by_role"]
+            role_context_histogram_mean = loss_info["role_context_histogram_mean"]
             role_order = role_seq_info["role_order"]
             role_seq_loss_by_role = role_seq_info["role_seq_loss_by_role"]
             role_seq_kl_by_role = role_seq_info["role_seq_kl_by_role"]
@@ -1127,6 +1431,9 @@ def make_train(config):
                 r, w, s, tl, ent, agn, cgn, rc, rpm, rbmin, rbmax, mismatch,
                 zero_bits, max_diff, mean_diff, ldn, lgn, lpn, ram, ras, rent,
                 rkl, rcf, rmr, rxr, rpl, dkl, dcf, adv_ratio, count_ratio,
+                res_total, res_loss, res_kl, res_lbr, res_kbr, res_align,
+                res_margin, res_lgn, res_bgn, res_ggn, res_cfr, res_rmr,
+                res_rxr, gate_mean, gate_std, gate_min, gate_max, ctx_hist,
                 order, rsl, rskl, rscf, rsrm, rsrx, corr_mean, corr_std,
                 corr_min, corr_max, aun, skipped,
             ):
@@ -1184,6 +1491,30 @@ def make_train(config):
                         f" | max_role_adv_std_over_global: {float(adv_ratio):.4e}"
                         f" | min_role_count_over_max: {float(count_ratio):.4e}"
                     )
+                if config["LOG_RESIDUAL_DIAGNOSTICS"]:
+                    msg += (
+                        f" | residual_total_loss: {float(res_total):.4e}"
+                        f" | residual_loss: {float(res_loss):.4e}"
+                        f" | residual_kl_to_base: {float(res_kl):.4e}"
+                        f" | residual_loss_by_role: {fmt(res_lbr)}"
+                        f" | residual_kl_to_base_by_role: {fmt(res_kbr)}"
+                        f" | residual_adv_alignment_by_role: {fmt(res_align)}"
+                        f" | residual_logprob_margin_by_role: {fmt(res_margin)}"
+                        f" | residual_lora_grad_norm_by_role: {fmt_all(res_lgn)}"
+                        f" | residual_backbone_grad_norm: {float(res_bgn):.4e}"
+                        f" | residual_gate_grad_norm: {float(res_ggn):.4e}"
+                        f" | residual_clip_frac_by_role: {fmt(res_cfr)}"
+                        f" | residual_ratio_mean_by_role: {fmt(res_rmr)}"
+                        f" | residual_ratio_max_by_role: {fmt(res_rxr)}"
+                    )
+                    if config["USE_CONTEXT_GATE"]:
+                        msg += (
+                            f" | context_gate_mean_by_role: {fmt(gate_mean)}"
+                            f" | context_gate_std_by_role: {fmt(gate_std)}"
+                            f" | context_gate_min_by_role: {fmt(gate_min)}"
+                            f" | context_gate_max_by_role: {fmt(gate_max)}"
+                            f" | role_context_histogram_mean: {fmt_all(ctx_hist)}"
+                        )
                 if config["USE_SEQUENTIAL_ROLE_UPDATES"]:
                     order_str = "[" + " ".join(str(int(x)) for x in np.asarray(order)) + "]"
                     skipped_str = "[" + " ".join(str(int(x)) for x in np.asarray(skipped)) + "]"
@@ -1235,6 +1566,15 @@ def make_train(config):
                 role_mean_ratio, role_max_ratio, role_ppo_loss,
                 max_role_kl_minus_global, max_role_clip_frac_minus_global,
                 max_role_adv_std_over_global, min_role_count_over_max,
+                residual_total_loss, residual_loss_value, residual_kl_to_base,
+                residual_loss_by_role, residual_kl_to_base_by_role,
+                residual_adv_alignment_by_role, residual_logprob_margin_by_role,
+                residual_lora_grad_norm_by_role, residual_backbone_grad_norm,
+                residual_gate_grad_norm, residual_clip_frac_by_role,
+                residual_ratio_mean_by_role, residual_ratio_max_by_role,
+                context_gate_mean_by_role, context_gate_std_by_role,
+                context_gate_min_by_role, context_gate_max_by_role,
+                role_context_histogram_mean,
                 role_order, role_seq_loss_by_role, role_seq_kl_by_role,
                 role_seq_clip_frac_by_role, role_seq_ratio_mean_by_role,
                 role_seq_ratio_max_by_role, correction_mean, correction_std,
@@ -1297,6 +1637,9 @@ if __name__ == "__main__":
         "ROLE_ID_SOURCE": "env_state_unit_type",
         "USE_ROLE_LORA": False,
         "USE_SEQUENTIAL_ROLE_UPDATES": False,
+        "USE_ROLE_RESIDUAL_LOSS": False,
+        "USE_CONTEXT_GATE": False,
+        "ROLE_BALANCED_PPO": False,
         "ROLE_LORA_RANK": 4,
         "ROLE_LORA_SCALE": 1.0,
         "ROLE_LORA_A_INIT_STD": 0.01,
@@ -1317,8 +1660,12 @@ if __name__ == "__main__":
         "RESIDUAL_LOSS_COEF": 0.0,
         "RESIDUAL_KL_COEF": 0.0,
         "RESIDUAL_ADV_NORM": "role",
+        "RESIDUAL_STOP_BACKBONE": True,
+        "LOG_RESIDUAL_DIAGNOSTICS": True,
         "CONTEXT_SOURCE": "team_role_histogram",
-        "CONTEXT_GATE_INIT_BIAS": 0.0,
+        "CONTEXT_SHUFFLE": False,
+        "CONTEXT_GATE_HIDDEN_DIM": 32,
+        "RESIDUAL_GATE_INIT_BIAS": 0.0,
         "ENV_KWARGS": {
             "see_enemy_actions": True,
             "walls_cause_death": True,
