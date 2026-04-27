@@ -52,6 +52,14 @@ def parse_args():
     parser.add_argument("--role_lora_scale", type=float, default=None)
     parser.add_argument("--role_maca_blend_alpha", type=float, default=None)
     parser.add_argument(
+        "--role_maca_blend_schedule",
+        type=str,
+        choices=("constant", "linear_warmup"),
+        default=None,
+    )
+    parser.add_argument("--role_maca_blend_warmup_steps", type=int, default=None)
+    parser.add_argument("--role_maca_blend_ramp_steps", type=int, default=None)
+    parser.add_argument(
         "--role_maca_raw_blend",
         action="store_true",
         help="Blend raw GAE and MACA advantages instead of standardizing each component first.",
@@ -77,6 +85,12 @@ def apply_cli_overrides(config: Dict, args):
         config["ROLE_LORA_SCALE"] = args.role_lora_scale
     if args.role_maca_blend_alpha is not None:
         config["ROLE_MACA_BLEND_ALPHA"] = args.role_maca_blend_alpha
+    if args.role_maca_blend_schedule is not None:
+        config["ROLE_MACA_BLEND_SCHEDULE"] = args.role_maca_blend_schedule
+    if args.role_maca_blend_warmup_steps is not None:
+        config["ROLE_MACA_BLEND_WARMUP_STEPS"] = args.role_maca_blend_warmup_steps
+    if args.role_maca_blend_ramp_steps is not None:
+        config["ROLE_MACA_BLEND_RAMP_STEPS"] = args.role_maca_blend_ramp_steps
     if args.role_maca_raw_blend:
         config["ROLE_MACA_BLEND_NORMALIZE"] = False
     if args.num_envs is not None:
@@ -98,6 +112,15 @@ def apply_cli_overrides(config: Dict, args):
             f"Unsupported adapter_mode={adapter_mode!r}. "
             f"Supported modes: {', '.join(SUPPORTED_ADAPTER_MODES)}"
         )
+    if config["ROLE_MACA_BLEND_SCHEDULE"] not in {"constant", "linear_warmup"}:
+        raise ValueError(
+            f"Unsupported ROLE_MACA_BLEND_SCHEDULE={config['ROLE_MACA_BLEND_SCHEDULE']!r}. "
+            "Supported schedules: constant, linear_warmup"
+        )
+    if config["ROLE_MACA_BLEND_WARMUP_STEPS"] < 0:
+        raise ValueError("ROLE_MACA_BLEND_WARMUP_STEPS must be non-negative.")
+    if config["ROLE_MACA_BLEND_RAMP_STEPS"] <= 0:
+        raise ValueError("ROLE_MACA_BLEND_RAMP_STEPS must be positive.")
     config["USE_ROLE_LORA"] = adapter_mode in {
         "role_lora",
         "global_lora",
@@ -647,6 +670,7 @@ def make_train(config):
                 return advantages, advantages + traj_batch.value
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
+            global_step = update_steps * config["NUM_ENVS"] * config["NUM_STEPS"]
 
             def _empty_maca_info():
                 zeros_by_role = jnp.zeros((config["NUM_UNIT_TYPES"],))
@@ -799,7 +823,22 @@ def make_train(config):
 
             maca_info = _calculate_role_maca_info() if config["USE_ROLE_MACA"] else _empty_maca_info()
             if config["USE_ROLE_MACA"]:
-                maca_alpha = config["ROLE_MACA_BLEND_ALPHA"]
+                if config["ROLE_MACA_BLEND_SCHEDULE"] == "constant":
+                    maca_alpha = jnp.asarray(config["ROLE_MACA_BLEND_ALPHA"], dtype=advantages.dtype)
+                elif config["ROLE_MACA_BLEND_SCHEDULE"] == "linear_warmup":
+                    progress = jnp.clip(
+                        (
+                            global_step - config["ROLE_MACA_BLEND_WARMUP_STEPS"]
+                        )
+                        / config["ROLE_MACA_BLEND_RAMP_STEPS"],
+                        0.0,
+                        1.0,
+                    )
+                    maca_alpha = config["ROLE_MACA_BLEND_ALPHA"] * progress
+                else:
+                    raise ValueError(
+                        f"Unsupported ROLE_MACA_BLEND_SCHEDULE={config['ROLE_MACA_BLEND_SCHEDULE']!r}"
+                    )
                 gae_component = advantages
                 maca_component = maca_info["advantages"]
                 if config["ROLE_MACA_BLEND_NORMALIZE"]:
@@ -1032,6 +1071,7 @@ def make_train(config):
                 lambda x: x.reshape((config["NUM_STEPS"], config["NUM_ENVS"], env.num_agents)), traj_batch.info
             )
             metric["loss"] = loss_info
+            metric["role_maca_alpha"] = maca_alpha if config["USE_ROLE_MACA"] else jnp.array(0.0)
             
             # JAX 0.7.x compatible logging: boolean masked indexing not allowed
             # inside jit/scan. Use weighted sum instead.
@@ -1077,6 +1117,7 @@ def make_train(config):
                 r, w, s, tl, ent, agn, cgn, ql, qgn, rc, rpm, rbmin, rbmax, mismatch,
                 zero_bits, ldn, lgn, lpn, ram, ras, rent, rkl, rcf, rpl,
                 qtm, bjm, bim, brm, mam, mas, cgj, cgi, cgr, role_min, role_max,
+                role_maca_alpha,
             ):
                 if role_min < 0 or role_max >= config["NUM_UNIT_TYPES"]:
                     raise ValueError(
@@ -1130,6 +1171,8 @@ def make_train(config):
                     )
                 if config["USE_ROLE_MACA"]:
                     msg += (
+                        f" | role_maca_alpha: {float(role_maca_alpha):.4f}"
+                        f" | role_maca_blend_schedule: {config['ROLE_MACA_BLEND_SCHEDULE']}"
                         f" | q_loss: {float(ql):.4e}"
                         f" | q_grad_norm: {float(qgn):.4e}"
                         f" | q_taken_mean_by_role: {fmt(qtm)}"
@@ -1182,6 +1225,7 @@ def make_train(config):
                 maca_info["component_gap_individual_by_role"],
                 maca_info["component_gap_role_by_role"],
                 role_id_min, role_id_max,
+                metric["role_maca_alpha"],
             )
             
             update_steps = update_steps + 1
@@ -1240,6 +1284,9 @@ if __name__ == "__main__":
         "ROLE_LORA_SCALE": 1.0,
         "ROLE_LORA_A_INIT_STD": 0.01,
         "ROLE_MACA_BLEND_ALPHA": 0.15,
+        "ROLE_MACA_BLEND_SCHEDULE": "constant",
+        "ROLE_MACA_BLEND_WARMUP_STEPS": 300000,
+        "ROLE_MACA_BLEND_RAMP_STEPS": 700000,
         "ROLE_MACA_BLEND_NORMALIZE": True,
         "LOG_ROLE_DIAGNOSTICS": True,
         "LOG_ROLE_DIAGNOSTIC_TABLE": False,
