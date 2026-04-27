@@ -5,8 +5,6 @@ Colab-ready, dependency-light version (no Hydra/wandb).
 import os
 import sys
 import pickle
-import argparse
-import json
 # Inject repo root into sys.path so 'jaxmarl' is always found regardless of CWD
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 if _REPO_ROOT not in sys.path:
@@ -14,333 +12,40 @@ if _REPO_ROOT not in sys.path:
 
 import jax
 import jax.numpy as jnp
-import flax.linen as nn
 import numpy as np
 import optax
-from flax.linen.initializers import constant, orthogonal
-from typing import Sequence, NamedTuple, Dict
-import functools
+from typing import NamedTuple
 from flax.training.train_state import TrainState
-import distrax
-from functools import partial
 import time
 
 # You may need to adapt imports based on where this is running relative to JaxMARL
-from jaxmarl.wrappers.baselines import SMAXLogWrapper, JaxMARLWrapper
+from jaxmarl.wrappers.baselines import SMAXLogWrapper
 from jaxmarl.environments.smax import map_name_to_scenario, HeuristicEnemySMAX
-
-SUPPORTED_ADAPTER_MODES = (
-    "none",
-    "role_lora",
-    "global_lora",
-    "agent_lora",
-    "role_maca_lite_jnt",
-    "role_maca_lite_ind",
-    "role_maca_lite_role",
-    "role_maca_lite",
+from smax_ctm.rosa_config import (
+    apply_cli_overrides,
+    default_config,
+    parse_args,
+    print_resolved_config,
 )
-
-def parse_args():
-    parser = argparse.ArgumentParser(
-        description="ROSA/Role-LoRA MAPPO experiment runner for SMAX."
-    )
-    parser.add_argument("--map_name", type=str, default=None)
-    parser.add_argument("--seed", type=int, default=None)
-    parser.add_argument("--total_timesteps", type=int, default=None)
-    parser.add_argument("--adapter_mode", type=str, choices=SUPPORTED_ADAPTER_MODES, default=None)
-    parser.add_argument("--role_lora_rank", type=int, default=None)
-    parser.add_argument("--role_lora_scale", type=float, default=None)
-    parser.add_argument("--role_maca_blend_alpha", type=float, default=None)
-    parser.add_argument(
-        "--role_maca_blend_schedule",
-        type=str,
-        choices=("constant", "linear_warmup"),
-        default=None,
-    )
-    parser.add_argument("--role_maca_blend_warmup_steps", type=int, default=None)
-    parser.add_argument("--role_maca_blend_ramp_steps", type=int, default=None)
-    parser.add_argument(
-        "--role_maca_raw_blend",
-        action="store_true",
-        help="Blend raw GAE and MACA advantages instead of standardizing each component first.",
-    )
-    parser.add_argument("--num_envs", type=int, default=None)
-    parser.add_argument("--num_steps", type=int, default=None)
-    parser.add_argument("--num_minibatches", type=int, default=None)
-    parser.add_argument("--update_epochs", type=int, default=None)
-    parser.add_argument("--run_name", type=str, default=None)
-    return parser.parse_args()
-
-
-def apply_cli_overrides(config: Dict, args):
-    if args.map_name is not None:
-        config["MAP_NAME"] = args.map_name
-    if args.seed is not None:
-        config["SEED"] = args.seed
-    if args.total_timesteps is not None:
-        config["TOTAL_TIMESTEPS"] = args.total_timesteps
-    if args.role_lora_rank is not None:
-        config["ROLE_LORA_RANK"] = args.role_lora_rank
-    if args.role_lora_scale is not None:
-        config["ROLE_LORA_SCALE"] = args.role_lora_scale
-    if args.role_maca_blend_alpha is not None:
-        config["ROLE_MACA_BLEND_ALPHA"] = args.role_maca_blend_alpha
-    if args.role_maca_blend_schedule is not None:
-        config["ROLE_MACA_BLEND_SCHEDULE"] = args.role_maca_blend_schedule
-    if args.role_maca_blend_warmup_steps is not None:
-        config["ROLE_MACA_BLEND_WARMUP_STEPS"] = args.role_maca_blend_warmup_steps
-    if args.role_maca_blend_ramp_steps is not None:
-        config["ROLE_MACA_BLEND_RAMP_STEPS"] = args.role_maca_blend_ramp_steps
-    if args.role_maca_raw_blend:
-        config["ROLE_MACA_BLEND_NORMALIZE"] = False
-    if args.num_envs is not None:
-        config["NUM_ENVS"] = args.num_envs
-    if args.num_steps is not None:
-        config["NUM_STEPS"] = args.num_steps
-    if args.num_minibatches is not None:
-        config["NUM_MINIBATCHES"] = args.num_minibatches
-    if args.update_epochs is not None:
-        config["UPDATE_EPOCHS"] = args.update_epochs
-    if args.run_name is not None:
-        config["RUN_NAME"] = args.run_name
-    if args.adapter_mode is not None:
-        config["ADAPTER_MODE"] = args.adapter_mode
-
-    adapter_mode = config["ADAPTER_MODE"]
-    if adapter_mode not in SUPPORTED_ADAPTER_MODES:
-        raise ValueError(
-            f"Unsupported adapter_mode={adapter_mode!r}. "
-            f"Supported modes: {', '.join(SUPPORTED_ADAPTER_MODES)}"
-        )
-    if config["ROLE_MACA_BLEND_SCHEDULE"] not in {"constant", "linear_warmup"}:
-        raise ValueError(
-            f"Unsupported ROLE_MACA_BLEND_SCHEDULE={config['ROLE_MACA_BLEND_SCHEDULE']!r}. "
-            "Supported schedules: constant, linear_warmup"
-        )
-    if config["ROLE_MACA_BLEND_WARMUP_STEPS"] < 0:
-        raise ValueError("ROLE_MACA_BLEND_WARMUP_STEPS must be non-negative.")
-    if config["ROLE_MACA_BLEND_RAMP_STEPS"] <= 0:
-        raise ValueError("ROLE_MACA_BLEND_RAMP_STEPS must be positive.")
-    config["USE_ROLE_LORA"] = adapter_mode in {
-        "role_lora",
-        "global_lora",
-        "agent_lora",
-        "role_maca_lite_jnt",
-        "role_maca_lite_ind",
-        "role_maca_lite_role",
-        "role_maca_lite",
-    }
-    config["USE_ROLE_MACA"] = adapter_mode in {
-        "role_maca_lite_jnt",
-        "role_maca_lite_ind",
-        "role_maca_lite_role",
-        "role_maca_lite",
-    }
-    config["ROLE_MACA_WEIGHT_JNT"] = 0.0
-    config["ROLE_MACA_WEIGHT_IND"] = 0.0
-    config["ROLE_MACA_WEIGHT_ROLE"] = 0.0
-    if adapter_mode == "role_maca_lite_jnt":
-        config["ROLE_MACA_WEIGHT_JNT"] = 1.0
-    elif adapter_mode == "role_maca_lite_ind":
-        config["ROLE_MACA_WEIGHT_IND"] = 1.0
-    elif adapter_mode == "role_maca_lite_role":
-        config["ROLE_MACA_WEIGHT_ROLE"] = 1.0
-    elif adapter_mode == "role_maca_lite":
-        config["ROLE_MACA_WEIGHT_JNT"] = 1.0 / 3.0
-        config["ROLE_MACA_WEIGHT_IND"] = 1.0 / 3.0
-        config["ROLE_MACA_WEIGHT_ROLE"] = 1.0 / 3.0
-    return config
-
-
-def print_resolved_config(config: Dict):
-    role_lora = {
-        key: value
-        for key, value in sorted(config.items())
-        if key.startswith("ROLE_") or key in ("ADAPTER_MODE", "USE_ROLE_LORA", "USE_ROLE_MACA")
-    }
-    print("Resolved config:")
-    print(json.dumps(config, indent=2, sort_keys=True))
-    print(f"adapter_mode: {config['ADAPTER_MODE']}")
-    print(f"map_name: {config['MAP_NAME']}")
-    print(f"seed: {config['SEED']}")
-    print(f"run_name: {config['RUN_NAME']}")
-    print("role/adapters config values:")
-    print(json.dumps(role_lora, indent=2, sort_keys=True))
-
-class SMAXWorldStateWrapper(JaxMARLWrapper):
-    """Provides a 'world_state' observation for the centralised critic."""
-    def __init__(self, env: HeuristicEnemySMAX, obs_with_agent_id=True):
-        super().__init__(env)
-        self.obs_with_agent_id = obs_with_agent_id
-        if not self.obs_with_agent_id:
-            self._world_state_size = self._env.state_size
-            self.world_state_fn = self.ws_just_env_state
-        else:
-            self._world_state_size = self._env.state_size + self._env.num_allies
-            self.world_state_fn = self.ws_with_agent_id
-
-    @partial(jax.jit, static_argnums=0)
-    def reset(self, key):
-        obs, env_state = self._env.reset(key)
-        obs["world_state"] = self.world_state_fn(obs, env_state)
-        return obs, env_state
-
-    @partial(jax.jit, static_argnums=0)
-    def step(self, key, state, action):
-        obs, env_state, reward, done, info = self._env.step(key, state, action)
-        obs["world_state"] = self.world_state_fn(obs, state)
-        return obs, env_state, reward, done, info
-
-    @partial(jax.jit, static_argnums=0)
-    def ws_just_env_state(self, obs, state):
-        world_state = obs["world_state"]
-        world_state = world_state[None].repeat(self._env.num_allies, axis=0)
-        return world_state
-
-    @partial(jax.jit, static_argnums=0)
-    def ws_with_agent_id(self, obs, state):
-        world_state = obs["world_state"]
-        world_state = world_state[None].repeat(self._env.num_allies, axis=0)
-        one_hot = jnp.eye(self._env.num_allies)
-        return jnp.concatenate((world_state, one_hot), axis=1)
-
-    def world_state_size(self):
-        return self._world_state_size 
-
-
-class ScannedRNN(nn.Module):
-    @functools.partial(
-        nn.scan,
-        variable_broadcast="params",
-        in_axes=0,
-        out_axes=0,
-        split_rngs={"params": False},
-    )
-    @nn.compact
-    def __call__(self, carry, x):
-        rnn_state = carry
-        ins, resets = x
-        rnn_state = jnp.where(
-            resets[:, np.newaxis],
-            self.initialize_carry(ins.shape[0], ins.shape[1]),
-            rnn_state,
-        )
-        new_rnn_state, y = nn.GRUCell(features=ins.shape[1])(rnn_state, ins)
-        return new_rnn_state, y
-
-    @staticmethod
-    def initialize_carry(batch_size, hidden_size):
-        cell = nn.GRUCell(features=hidden_size)
-        return cell.initialize_carry(jax.random.PRNGKey(0), (batch_size, hidden_size))
-
-
-class ActorRNN(nn.Module):
-    action_dim: Sequence[int]
-    config: Dict
-
-    @nn.compact
-    def __call__(self, hidden, x):
-        if len(x) == 5:
-            obs, dones, avail_actions, role_id, adapter_id = x
-        elif len(x) == 4:
-            obs, dones, avail_actions, role_id = x
-            adapter_id = role_id
-        else:
-            obs, dones, avail_actions = x
-            role_id = jnp.zeros(obs.shape[:-1], dtype=jnp.int32)
-            adapter_id = role_id
-        embedding = nn.Dense(
-            self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(obs)
-        embedding = nn.relu(embedding)
-
-        rnn_in = (embedding, dones)
-        hidden, embedding = ScannedRNN()(hidden, rnn_in)
-
-        actor_mean = nn.Dense(self.config["GRU_HIDDEN_DIM"], kernel_init=orthogonal(2), bias_init=constant(0.0))(
-            embedding
-        )
-        actor_mean = nn.relu(actor_mean)
-        base_logits = nn.Dense(
-            self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
-        )(actor_mean)
-        lora_delta = jnp.zeros_like(base_logits)
-        if self.config["USE_ROLE_LORA"]:
-            rank = self.config["ROLE_LORA_RANK"]
-            lora_a = self.param(
-                "role_lora_A",
-                nn.initializers.normal(self.config["ROLE_LORA_A_INIT_STD"]),
-                (self.config["LORA_NUM_ADAPTERS"], rank, self.config["GRU_HIDDEN_DIM"]),
-            )
-            lora_b = self.param(
-                "role_lora_B",
-                nn.initializers.zeros,
-                (self.config["LORA_NUM_ADAPTERS"], self.action_dim, rank),
-            )
-            safe_adapter_id = jnp.clip(
-                adapter_id.astype(jnp.int32),
-                0,
-                self.config["LORA_NUM_ADAPTERS"] - 1,
-            )
-            role_a = lora_a[safe_adapter_id]
-            role_b = lora_b[safe_adapter_id]
-            lora_hidden = jnp.einsum("...rh,...h->...r", role_a, actor_mean)
-            lora_delta = jnp.einsum("...ar,...r->...a", role_b, lora_hidden)
-        actor_mean = base_logits + self.config["ROLE_LORA_SCALE"] * lora_delta
-        unavail_actions = 1 - avail_actions
-        action_logits = actor_mean - (unavail_actions * 1e10)
-
-        pi = distrax.Categorical(logits=action_logits)
-
-        aux = {
-            "base_logits": base_logits,
-            "lora_delta": lora_delta,
-            "action_logits": action_logits,
-            "unmasked_logits": actor_mean,
-        }
-        return hidden, pi, aux
-
-
-class CriticRNN(nn.Module):
-    config: Dict
-
-    @nn.compact
-    def __call__(self, hidden, x):
-        world_state, dones = x
-        embedding = nn.Dense(
-            self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(world_state)
-        embedding = nn.relu(embedding)
-
-        rnn_in = (embedding, dones)
-        hidden, embedding = ScannedRNN()(hidden, rnn_in)
-
-        critic = nn.Dense(self.config["GRU_HIDDEN_DIM"], kernel_init=orthogonal(2), bias_init=constant(0.0))(
-            embedding
-        )
-        critic = nn.relu(critic)
-        critic = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(
-            critic
-        )
-
-        return hidden, jnp.squeeze(critic, axis=-1)
-
-
-class QCritic(nn.Module):
-    config: Dict
-
-    @nn.compact
-    def __call__(self, q_input):
-        embedding = nn.Dense(
-            self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
-        )(q_input)
-        embedding = nn.relu(embedding)
-        hidden = nn.Dense(
-            self.config["GRU_HIDDEN_DIM"], kernel_init=orthogonal(2), bias_init=constant(0.0)
-        )(embedding)
-        hidden = nn.relu(hidden)
-        q_value = nn.Dense(1, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(hidden)
-        return jnp.squeeze(q_value, axis=-1)
+from smax_ctm.rosa_networks import ActorRNN, CriticRNN, ScannedRNN
+from smax_ctm.rosa_utils import (
+    adapter_id_from_mode,
+    batchify,
+    extract_role_id,
+    role_lora_param_norms,
+    role_mean_metric,
+    role_std_metric,
+    unbatchify,
+)
+from smax_ctm.smax_wrappers import SMAXWorldStateWrapper
+from smax_ctm.role_maca_critic import (
+    RoleMACATransformerCritic,
+    actor_major_to_env_major,
+    done_from_actor_major,
+    env_major_to_actor_major,
+    td_lambda_returns,
+    team_reward_from_actor_major,
+)
 
 
 class Transition(NamedTuple):
@@ -357,126 +62,6 @@ class Transition(NamedTuple):
     role_id: jnp.ndarray
     adapter_id: jnp.ndarray
 
-
-def batchify(x: dict, agent_list, num_actors):
-    x = jnp.stack([x[a] for a in agent_list])
-    return x.reshape((num_actors, -1))
-
-def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
-    x = x.reshape((num_actors, num_envs, -1))
-    return {a: x[i] for i, a in enumerate(agent_list)}
-
-def extract_role_id(obs_batch: jnp.ndarray, env_state, env, config: Dict):
-    if config["ROLE_ID_SOURCE"] == "own_obs_unit_type":
-        own_type_bits = obs_batch[:, -config["NUM_UNIT_TYPES"]:]
-        return jnp.argmax(own_type_bits, axis=-1).astype(jnp.int32)
-    if config["ROLE_ID_SOURCE"] == "env_state_unit_type":
-        unit_types = env_state.env_state.state.unit_types[:, : env.num_agents]
-        return unit_types.T.reshape(-1).astype(jnp.int32)
-    else:
-        raise ValueError(
-            f"Unsupported ROLE_ID_SOURCE={config['ROLE_ID_SOURCE']!r}; "
-            "Stage 1 supports 'env_state_unit_type' and 'own_obs_unit_type'."
-        )
-
-def adapter_id_from_mode(role_id: jnp.ndarray, agent_id: jnp.ndarray, config: Dict):
-    adapter_mode = config["ADAPTER_MODE"]
-    if adapter_mode == "global_lora":
-        return jnp.zeros_like(role_id, dtype=jnp.int32)
-    if adapter_mode == "agent_lora":
-        return agent_id.astype(jnp.int32)
-    return role_id.astype(jnp.int32)
-
-def role_mean_metric(values: jnp.ndarray, role_id: jnp.ndarray, num_roles: int):
-    flat_values = values.reshape(-1)
-    flat_roles = role_id.reshape(-1)
-    counts = jnp.bincount(flat_roles, length=num_roles)
-    sums = jnp.bincount(flat_roles, weights=flat_values, length=num_roles)
-    return sums / jnp.maximum(counts, 1)
-
-def role_std_metric(values: jnp.ndarray, role_id: jnp.ndarray, num_roles: int):
-    mean = role_mean_metric(values, role_id, num_roles)
-    mean_sq = role_mean_metric(jnp.square(values), role_id, num_roles)
-    return jnp.sqrt(jnp.maximum(mean_sq - jnp.square(mean), 0.0))
-
-def role_lora_param_norms(actor_params, config: Dict):
-    if not config["USE_ROLE_LORA"]:
-        return jnp.zeros((config["LORA_NUM_ADAPTERS"],))
-    params = actor_params["params"]
-    lora_a = params["role_lora_A"]
-    lora_b = params["role_lora_B"]
-    return jnp.sqrt(jnp.sum(jnp.square(lora_a), axis=(1, 2)) + jnp.sum(jnp.square(lora_b), axis=(1, 2)))
-
-def joint_action_features(action_probs: jnp.ndarray, num_agents: int, num_envs: int):
-    num_steps = action_probs.shape[0]
-    action_dim = action_probs.shape[-1]
-    by_agent_env = action_probs.reshape(num_steps, num_agents, num_envs, action_dim)
-    by_env = by_agent_env.transpose(0, 2, 1, 3).reshape(
-        num_steps,
-        num_envs,
-        num_agents * action_dim,
-    )
-    broadcast = jnp.broadcast_to(
-        by_env[:, None, :, :],
-        (num_steps, num_agents, num_envs, num_agents * action_dim),
-    )
-    return broadcast.reshape(num_steps, num_agents * num_envs, num_agents * action_dim)
-
-def individual_counterfactual_features(
-    taken_probs: jnp.ndarray,
-    policy_probs: jnp.ndarray,
-    num_agents: int,
-    num_envs: int,
-):
-    taken_joint = joint_action_features(taken_probs, num_agents, num_envs)
-    num_steps = taken_probs.shape[0]
-    action_dim = taken_probs.shape[-1]
-    agent_id = jnp.repeat(jnp.arange(num_agents, dtype=jnp.int32), num_envs)
-    agent_mask = jax.nn.one_hot(agent_id, num_agents)
-    segment_mask = jnp.repeat(agent_mask, action_dim, axis=-1)
-    replacement = (agent_mask[None, :, :, None] * policy_probs[:, :, None, :]).reshape(
-        num_steps,
-        num_agents * num_envs,
-        num_agents * action_dim,
-    )
-    return taken_joint * (1.0 - segment_mask[None, :, :]) + replacement
-
-def same_role_counterfactual_features(
-    taken_probs: jnp.ndarray,
-    policy_probs: jnp.ndarray,
-    role_id: jnp.ndarray,
-    num_agents: int,
-    num_envs: int,
-):
-    num_steps = taken_probs.shape[0]
-    action_dim = taken_probs.shape[-1]
-    taken_by_agent_env = taken_probs.reshape(num_steps, num_agents, num_envs, action_dim)
-    policy_by_agent_env = policy_probs.reshape(num_steps, num_agents, num_envs, action_dim)
-    role_by_agent_env = role_id.reshape(num_steps, num_agents, num_envs)
-
-    query_role = role_by_agent_env[:, :, :, None]
-    member_role = role_by_agent_env.transpose(0, 2, 1)[:, None, :, :]
-    same_role = query_role == member_role
-
-    taken_member = taken_by_agent_env.transpose(0, 2, 1, 3)[:, None, :, :, :]
-    policy_member = policy_by_agent_env.transpose(0, 2, 1, 3)[:, None, :, :, :]
-    counterfactual = jnp.where(same_role[..., None], policy_member, taken_member)
-    counterfactual = counterfactual.reshape(
-        num_steps,
-        num_agents,
-        num_envs,
-        num_agents * action_dim,
-    )
-    return counterfactual.reshape(num_steps, num_agents * num_envs, num_agents * action_dim)
-
-def build_q_inputs(
-    world_state: jnp.ndarray,
-    joint_features: jnp.ndarray,
-    role_id: jnp.ndarray,
-    num_roles: int,
-):
-    role_onehot = jax.nn.one_hot(role_id.astype(jnp.int32), num_roles)
-    return jnp.concatenate((world_state, joint_features, role_onehot), axis=-1)
 
 def make_train(config):
     scenario = map_name_to_scenario(config["MAP_NAME"])
@@ -515,12 +100,6 @@ def make_train(config):
 
     env = SMAXWorldStateWrapper(env, config["OBS_WITH_AGENT_ID"])
     env = SMAXLogWrapper(env)
-    config["Q_INPUT_DIM"] = (
-        env.world_state_size()
-        + config["NUM_AGENTS"] * config["ACTION_DIM"]
-        + config["NUM_UNIT_TYPES"]
-    )
-
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_UPDATES"]
         return config["LR"] * frac
@@ -530,8 +109,8 @@ def make_train(config):
         actor_network = ActorRNN(env.action_space(env.agents[0]).n, config=config)
         critic_network = CriticRNN(config=config)
         if config["USE_ROLE_MACA"]:
-            q_network = QCritic(config=config)
-            rng, _rng_actor, _rng_critic, _rng_q = jax.random.split(rng, 4)
+            maca_critic_network = RoleMACATransformerCritic(config=config)
+            rng, _rng_actor, _rng_critic, _rng_maca = jax.random.split(rng, 4)
         else:
             rng, _rng_actor, _rng_critic = jax.random.split(rng, 3)
         ac_init_x = (
@@ -561,16 +140,23 @@ def make_train(config):
         actor_train_state = TrainState.create(apply_fn=actor_network.apply, params=actor_network_params, tx=actor_tx)
         critic_train_state = TrainState.create(apply_fn=critic_network.apply, params=critic_network_params, tx=critic_tx)
         if config["USE_ROLE_MACA"]:
-            q_network_params = q_network.init(
-                _rng_q,
-                jnp.zeros((1, config["NUM_ENVS"], config["Q_INPUT_DIM"])),
+            maca_critic_params = maca_critic_network.init(
+                _rng_maca,
+                jnp.zeros((1, config["NUM_ENVS"], config["NUM_AGENTS"], obs_dim)),
+                jnp.zeros((1, config["NUM_ENVS"], config["NUM_AGENTS"]), dtype=jnp.int32),
+                jnp.zeros((1, config["NUM_ENVS"], config["NUM_AGENTS"], config["ACTION_DIM"])),
+                jnp.zeros((1, config["NUM_ENVS"], config["NUM_AGENTS"], config["ACTION_DIM"])),
             )
             if config["ANNEAL_LR"]:
-                q_tx = optax.chain(optax.clip_by_global_norm(config["MAX_GRAD_NORM"]), optax.adam(learning_rate=linear_schedule, eps=1e-5))
+                maca_critic_tx = optax.chain(optax.clip_by_global_norm(config["MAX_GRAD_NORM"]), optax.adam(learning_rate=linear_schedule, eps=1e-5))
             else:
-                q_tx = optax.chain(optax.clip_by_global_norm(config["MAX_GRAD_NORM"]), optax.adam(config["LR"], eps=1e-5))
-            q_train_state = TrainState.create(apply_fn=q_network.apply, params=q_network_params, tx=q_tx)
-            train_states = (actor_train_state, critic_train_state, q_train_state)
+                maca_critic_tx = optax.chain(optax.clip_by_global_norm(config["MAX_GRAD_NORM"]), optax.adam(config["LR"], eps=1e-5))
+            maca_critic_train_state = TrainState.create(
+                apply_fn=maca_critic_network.apply,
+                params=maca_critic_params,
+                tx=maca_critic_tx,
+            )
+            train_states = (actor_train_state, critic_train_state, maca_critic_train_state)
         else:
             train_states = (actor_train_state, critic_train_state)
 
@@ -674,24 +260,30 @@ def make_train(config):
 
             def _empty_maca_info():
                 zeros_by_role = jnp.zeros((config["NUM_UNIT_TYPES"],))
+                zeros_env = jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"]))
                 return {
                     "advantages": advantages,
-                    "q_taken_inputs": jnp.zeros(
-                        (
-                            config["NUM_STEPS"],
-                            config["NUM_ACTORS"],
-                            config["Q_INPUT_DIM"],
-                        )
-                    ),
+                    "obs_all": jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"], config["NUM_AGENTS"], obs_dim)),
+                    "role_all": jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"], config["NUM_AGENTS"]), dtype=jnp.int32),
+                    "taken_all": jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"], config["NUM_AGENTS"], config["ACTION_DIM"])),
+                    "policy_all": jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"], config["NUM_AGENTS"], config["ACTION_DIM"])),
+                    "return_v": zeros_env,
+                    "return_q": zeros_env,
+                    "return_eq": zeros_env,
                     "q_taken_mean_by_role": zeros_by_role,
-                    "baseline_joint_by_role": zeros_by_role,
-                    "baseline_individual_by_role": zeros_by_role,
-                    "baseline_role_by_role": zeros_by_role,
+                    "eq_mean_by_role": zeros_by_role,
+                    "v_mean_by_role": zeros_by_role,
+                    "return_eq_mean_by_role": zeros_by_role,
+                    "return_eq_std_by_role": zeros_by_role,
+                    "baseline_mean_by_role": zeros_by_role,
+                    "baseline_std_by_role": zeros_by_role,
+                    "baseline_self_w_by_role": zeros_by_role,
+                    "baseline_group_w_by_role": zeros_by_role,
+                    "baseline_joint_w_by_role": zeros_by_role,
                     "adv_maca_mean_by_role": zeros_by_role,
                     "adv_maca_std_by_role": zeros_by_role,
-                    "component_gap_joint_by_role": zeros_by_role,
-                    "component_gap_individual_by_role": zeros_by_role,
-                    "component_gap_role_by_role": zeros_by_role,
+                    "attention_entropy": jnp.array(0.0),
+                    "corrset_size": jnp.array(0.0),
                 }
 
             def _calculate_role_maca_info():
@@ -711,86 +303,153 @@ def make_train(config):
                 )
                 taken_probs = jax.nn.one_hot(traj_batch.action, config["ACTION_DIM"])
 
-                taken_joint = joint_action_features(
-                    taken_probs,
-                    config["NUM_AGENTS"],
-                    config["NUM_ENVS"],
-                )
-                joint_cf = joint_action_features(
-                    policy_probs,
-                    config["NUM_AGENTS"],
-                    config["NUM_ENVS"],
-                )
-                individual_cf = individual_counterfactual_features(
-                    taken_probs,
-                    policy_probs,
-                    config["NUM_AGENTS"],
-                    config["NUM_ENVS"],
-                )
-                role_cf = same_role_counterfactual_features(
-                    taken_probs,
-                    policy_probs,
-                    traj_batch.role_id,
-                    config["NUM_AGENTS"],
-                    config["NUM_ENVS"],
-                )
+                obs_all = actor_major_to_env_major(traj_batch.obs, config["NUM_AGENTS"], config["NUM_ENVS"])
+                role_all = actor_major_to_env_major(traj_batch.role_id, config["NUM_AGENTS"], config["NUM_ENVS"])
+                taken_all = actor_major_to_env_major(taken_probs, config["NUM_AGENTS"], config["NUM_ENVS"])
+                policy_all = actor_major_to_env_major(policy_probs, config["NUM_AGENTS"], config["NUM_ENVS"])
 
-                q_taken_inputs = build_q_inputs(
-                    traj_batch.world_state,
-                    taken_joint,
-                    traj_batch.role_id,
-                    config["NUM_UNIT_TYPES"],
-                )
-                q_joint_inputs = build_q_inputs(
-                    traj_batch.world_state,
-                    joint_cf,
-                    traj_batch.role_id,
-                    config["NUM_UNIT_TYPES"],
-                )
-                q_individual_inputs = build_q_inputs(
-                    traj_batch.world_state,
-                    individual_cf,
-                    traj_batch.role_id,
-                    config["NUM_UNIT_TYPES"],
-                )
-                q_role_inputs = build_q_inputs(
-                    traj_batch.world_state,
-                    role_cf,
-                    traj_batch.role_id,
-                    config["NUM_UNIT_TYPES"],
-                )
+                maca_params = train_states[2].params
+                maca_out = maca_critic_network.apply(maca_params, obs_all, role_all, taken_all, policy_all)
 
-                q_params = train_states[2].params
-                q_taken = q_network.apply(q_params, q_taken_inputs)
-                b_joint = q_network.apply(q_params, q_joint_inputs)
-                b_individual = q_network.apply(q_params, q_individual_inputs)
-                b_role = q_network.apply(q_params, q_role_inputs)
-                baseline = (
-                    config["ROLE_MACA_WEIGHT_JNT"] * b_joint
-                    + config["ROLE_MACA_WEIGHT_IND"] * b_individual
-                    + config["ROLE_MACA_WEIGHT_ROLE"] * b_role
+                last_obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
+                last_role_id = extract_role_id(last_obs_batch, env_state, env, config)
+                agent_id = jnp.repeat(jnp.arange(env.num_agents, dtype=jnp.int32), config["NUM_ENVS"])
+                last_adapter_id = adapter_id_from_mode(last_role_id, agent_id, config)
+                last_avail_actions = jax.vmap(env.get_avail_actions)(env_state.env_state)
+                last_avail_actions = jax.lax.stop_gradient(batchify(last_avail_actions, env.agents, config["NUM_ACTORS"]))
+                _, last_pi, last_actor_aux = actor_network.apply(
+                    train_states[0].params,
+                    hstates[0],
+                    (
+                        last_obs_batch[np.newaxis, :],
+                        last_done[np.newaxis, :],
+                        last_avail_actions,
+                        last_role_id[np.newaxis, :],
+                        last_adapter_id[np.newaxis, :],
+                    ),
                 )
-                maca_advantages = jax.lax.stop_gradient(q_taken - baseline)
+                del last_pi
+                last_policy_probs = jax.lax.stop_gradient(
+                    jax.nn.softmax(last_actor_aux["action_logits"], axis=-1)
+                )
+                last_obs_all = actor_major_to_env_major(last_obs_batch[np.newaxis, :], config["NUM_AGENTS"], config["NUM_ENVS"])
+                last_role_all = actor_major_to_env_major(last_role_id[np.newaxis, :], config["NUM_AGENTS"], config["NUM_ENVS"])
+                last_policy_all = actor_major_to_env_major(last_policy_probs, config["NUM_AGENTS"], config["NUM_ENVS"])
+                last_maca_out = maca_critic_network.apply(
+                    maca_params,
+                    last_obs_all,
+                    last_role_all,
+                    last_policy_all,
+                    last_policy_all,
+                )
+                team_reward = team_reward_from_actor_major(
+                    traj_batch.reward,
+                    config["NUM_AGENTS"],
+                    config["NUM_ENVS"],
+                )
+                env_done = done_from_actor_major(
+                    traj_batch.global_done,
+                    config["NUM_AGENTS"],
+                    config["NUM_ENVS"],
+                )
+                return_v = td_lambda_returns(
+                    maca_out["v"],
+                    last_maca_out["v"].squeeze(axis=0),
+                    team_reward,
+                    env_done,
+                    config["GAMMA"],
+                    config["GAE_LAMBDA"],
+                )
+                return_q = td_lambda_returns(
+                    maca_out["q_taken"],
+                    last_maca_out["q_policy"].squeeze(axis=0),
+                    team_reward,
+                    env_done,
+                    config["GAMMA"],
+                    config["GAE_LAMBDA"],
+                )
+                return_eq = td_lambda_returns(
+                    maca_out["eq"],
+                    last_maca_out["eq"].squeeze(axis=0),
+                    team_reward,
+                    env_done,
+                    config["GAMMA"],
+                    config["GAE_LAMBDA"],
+                )
+                baseline = env_major_to_actor_major(maca_out["mixed_baseline_i"])
+                return_eq_by_actor = env_major_to_actor_major(
+                    jnp.broadcast_to(return_eq[..., None], role_all.shape)
+                )
+                maca_advantages = jax.lax.stop_gradient(return_eq_by_actor - baseline)
+                q_taken_by_actor = env_major_to_actor_major(
+                    jnp.broadcast_to(maca_out["q_taken"][..., None], role_all.shape)
+                )
+                eq_by_actor = env_major_to_actor_major(
+                    jnp.broadcast_to(maca_out["eq"][..., None], role_all.shape)
+                )
+                v_by_actor = env_major_to_actor_major(
+                    jnp.broadcast_to(maca_out["v"][..., None], role_all.shape)
+                )
+                weights_by_actor = env_major_to_actor_major(maca_out["baseline_weights"])
+                att = maca_out["attention"]
+                attention_entropy = -(att * jnp.log(att + 1e-8)).sum(axis=-1).mean()
+                corrset_size = maca_out["corr_mask"].sum(axis=-1).mean()
                 return {
                     "advantages": maca_advantages,
-                    "q_taken_inputs": q_taken_inputs,
+                    "obs_all": obs_all,
+                    "role_all": role_all,
+                    "taken_all": taken_all,
+                    "policy_all": policy_all,
+                    "return_v": return_v,
+                    "return_q": return_q,
+                    "return_eq": return_eq,
                     "q_taken_mean_by_role": role_mean_metric(
-                        q_taken,
+                        q_taken_by_actor,
                         traj_batch.role_id,
                         config["NUM_UNIT_TYPES"],
                     ),
-                    "baseline_joint_by_role": role_mean_metric(
-                        b_joint,
+                    "eq_mean_by_role": role_mean_metric(
+                        eq_by_actor,
                         traj_batch.role_id,
                         config["NUM_UNIT_TYPES"],
                     ),
-                    "baseline_individual_by_role": role_mean_metric(
-                        b_individual,
+                    "v_mean_by_role": role_mean_metric(
+                        v_by_actor,
                         traj_batch.role_id,
                         config["NUM_UNIT_TYPES"],
                     ),
-                    "baseline_role_by_role": role_mean_metric(
-                        b_role,
+                    "return_eq_mean_by_role": role_mean_metric(
+                        return_eq_by_actor,
+                        traj_batch.role_id,
+                        config["NUM_UNIT_TYPES"],
+                    ),
+                    "return_eq_std_by_role": role_std_metric(
+                        return_eq_by_actor,
+                        traj_batch.role_id,
+                        config["NUM_UNIT_TYPES"],
+                    ),
+                    "baseline_mean_by_role": role_mean_metric(
+                        baseline,
+                        traj_batch.role_id,
+                        config["NUM_UNIT_TYPES"],
+                    ),
+                    "baseline_std_by_role": role_std_metric(
+                        baseline,
+                        traj_batch.role_id,
+                        config["NUM_UNIT_TYPES"],
+                    ),
+                    "baseline_self_w_by_role": role_mean_metric(
+                        weights_by_actor[..., 0],
+                        traj_batch.role_id,
+                        config["NUM_UNIT_TYPES"],
+                    ),
+                    "baseline_group_w_by_role": role_mean_metric(
+                        weights_by_actor[..., 1],
+                        traj_batch.role_id,
+                        config["NUM_UNIT_TYPES"],
+                    ),
+                    "baseline_joint_w_by_role": role_mean_metric(
+                        weights_by_actor[..., 2],
                         traj_batch.role_id,
                         config["NUM_UNIT_TYPES"],
                     ),
@@ -804,21 +463,8 @@ def make_train(config):
                         traj_batch.role_id,
                         config["NUM_UNIT_TYPES"],
                     ),
-                    "component_gap_joint_by_role": role_mean_metric(
-                        q_taken - b_joint,
-                        traj_batch.role_id,
-                        config["NUM_UNIT_TYPES"],
-                    ),
-                    "component_gap_individual_by_role": role_mean_metric(
-                        q_taken - b_individual,
-                        traj_batch.role_id,
-                        config["NUM_UNIT_TYPES"],
-                    ),
-                    "component_gap_role_by_role": role_mean_metric(
-                        q_taken - b_role,
-                        traj_batch.role_id,
-                        config["NUM_UNIT_TYPES"],
-                    ),
+                    "attention_entropy": attention_entropy,
+                    "corrset_size": corrset_size,
                 }
 
             maca_info = _calculate_role_maca_info() if config["USE_ROLE_MACA"] else _empty_maca_info()
@@ -851,15 +497,8 @@ def make_train(config):
             def _update_epoch(update_state, unused):
                 def _update_minbatch(train_states, batch_info):
                     if config["USE_ROLE_MACA"]:
-                        actor_train_state, critic_train_state, q_train_state = train_states
-                        (
-                            ac_init_hstate,
-                            cr_init_hstate,
-                            traj_batch,
-                            advantages,
-                            targets,
-                            q_taken_inputs,
-                        ) = batch_info
+                        actor_train_state, critic_train_state, maca_critic_train_state = train_states
+                        ac_init_hstate, cr_init_hstate, traj_batch, advantages, targets = batch_info
                     else:
                         actor_train_state, critic_train_state = train_states
                         ac_init_hstate, cr_init_hstate, traj_batch, advantages, targets = batch_info
@@ -942,49 +581,38 @@ def make_train(config):
                         critic_loss = config["VF_COEF"] * value_loss
                         return critic_loss, (value_loss)
 
-                    def _q_loss_fn(q_params, q_taken_inputs, targets):
-                        q_taken = q_network.apply(q_params, q_taken_inputs)
-                        q_loss = 0.5 * jnp.square(q_taken - targets).mean()
-                        return q_loss, {
-                            "q_loss": q_loss,
-                        }
-
                     actor_grad_fn = jax.value_and_grad(_actor_loss_fn, has_aux=True)
                     actor_loss, actor_grads = actor_grad_fn(actor_train_state.params, ac_init_hstate, traj_batch, advantages)
                     critic_grad_fn = jax.value_and_grad(_critic_loss_fn, has_aux=True)
                     critic_loss, critic_grads = critic_grad_fn(critic_train_state.params, cr_init_hstate, traj_batch, targets)
-                    if config["USE_ROLE_MACA"]:
-                        q_grad_fn = jax.value_and_grad(_q_loss_fn, has_aux=True)
-                        q_loss, q_grads = q_grad_fn(q_train_state.params, q_taken_inputs, targets)
-                    else:
-                        q_loss = (jnp.array(0.0), {"q_loss": jnp.array(0.0)})
                     
                     actor_grad_norm = optax.global_norm(actor_grads)
                     critic_grad_norm = optax.global_norm(critic_grads)
-                    q_grad_norm = optax.global_norm(q_grads) if config["USE_ROLE_MACA"] else jnp.array(0.0)
                     lora_grad_norm_by_role = role_lora_param_norms(actor_grads, config)
                     lora_param_norm_by_role = role_lora_param_norms(actor_train_state.params, config)
 
                     actor_train_state = actor_train_state.apply_gradients(grads=actor_grads)
                     critic_train_state = critic_train_state.apply_gradients(grads=critic_grads)
                     if config["USE_ROLE_MACA"]:
-                        q_train_state = q_train_state.apply_gradients(grads=q_grads)
-                        next_train_states = (actor_train_state, critic_train_state, q_train_state)
+                        next_train_states = (actor_train_state, critic_train_state, maca_critic_train_state)
                     else:
                         next_train_states = (actor_train_state, critic_train_state)
 
-                    total_loss = actor_loss[0] + critic_loss[0] + q_loss[0]
+                    total_loss = actor_loss[0] + critic_loss[0]
                     loss_info = {
                         "total_loss": total_loss,
                         "actor_loss": actor_loss[0],
                         "value_loss": critic_loss[0],
-                        "q_loss": q_loss[1]["q_loss"],
+                        "mappo_value_loss": critic_loss[1],
+                        "v_loss": jnp.array(0.0),
+                        "q_loss": jnp.array(0.0),
+                        "eq_loss": jnp.array(0.0),
                         "entropy": actor_loss[1]["entropy"],
                         "approx_kl": actor_loss[1]["approx_kl"],
                         "clip_frac": actor_loss[1]["clip_frac"],
                         "actor_grad_norm": actor_grad_norm,
                         "critic_grad_norm": critic_grad_norm,
-                        "q_grad_norm": q_grad_norm,
+                        "maca_critic_grad_norm": jnp.array(0.0),
                         "lora_delta_norm_by_role": actor_loss[1]["lora_delta_norm_by_role"],
                         "role_adv_mean": actor_loss[1]["role_adv_mean"],
                         "role_adv_std": actor_loss[1]["role_adv_std"],
@@ -998,11 +626,45 @@ def make_train(config):
                     return next_train_states, loss_info
 
                 if config["USE_ROLE_MACA"]:
-                    train_states, init_hstates, traj_batch, advantages, targets, rng, q_taken_inputs = update_state
+                    train_states, init_hstates, traj_batch, advantages, targets, rng, maca_info = update_state
                 else:
                     train_states, init_hstates, traj_batch, advantages, targets, rng = update_state
                 rng, _rng = jax.random.split(rng)
                 init_hstates = jax.tree.map(lambda x: jnp.reshape(x, (1, config["NUM_ACTORS"], -1)), init_hstates)
+
+                if config["USE_ROLE_MACA"]:
+                    actor_train_state, critic_train_state, maca_critic_train_state = train_states
+
+                    def _maca_critic_loss_fn(maca_params, maca_info):
+                        maca_out = maca_critic_network.apply(
+                            maca_params,
+                            maca_info["obs_all"],
+                            maca_info["role_all"],
+                            maca_info["taken_all"],
+                            maca_info["policy_all"],
+                        )
+                        v_loss = 0.5 * jnp.square(maca_out["v"] - maca_info["return_v"]).mean()
+                        q_loss = 0.5 * jnp.square(maca_out["q_taken"] - maca_info["return_q"]).mean()
+                        eq_loss = 0.5 * jnp.square(maca_out["eq"] - maca_info["return_eq"]).mean()
+                        maca_critic_loss = (
+                            config["ROLE_MACA_VALUE_LOSS_COEF"] * v_loss
+                            + config["ROLE_MACA_Q_LOSS_COEF"] * q_loss
+                            + config["ROLE_MACA_EQ_LOSS_COEF"] * eq_loss
+                        )
+                        return maca_critic_loss, {
+                            "v_loss": v_loss,
+                            "q_loss": q_loss,
+                            "eq_loss": eq_loss,
+                        }
+
+                    maca_grad_fn = jax.value_and_grad(_maca_critic_loss_fn, has_aux=True)
+                    maca_loss, maca_grads = maca_grad_fn(maca_critic_train_state.params, maca_info)
+                    maca_critic_grad_norm = optax.global_norm(maca_grads)
+                    maca_critic_train_state = maca_critic_train_state.apply_gradients(grads=maca_grads)
+                    train_states = (actor_train_state, critic_train_state, maca_critic_train_state)
+                else:
+                    maca_loss = (jnp.array(0.0), {"v_loss": jnp.array(0.0), "q_loss": jnp.array(0.0), "eq_loss": jnp.array(0.0)})
+                    maca_critic_grad_norm = jnp.array(0.0)
                 
                 if config["USE_ROLE_MACA"]:
                     batch = (
@@ -1011,7 +673,6 @@ def make_train(config):
                         traj_batch,
                         advantages.squeeze(),
                         targets.squeeze(),
-                        q_taken_inputs,
                     )
                 else:
                     batch = (init_hstates[0], init_hstates[1], traj_batch, advantages.squeeze(), targets.squeeze())
@@ -1025,6 +686,16 @@ def make_train(config):
 
                 train_states, loss_info = jax.lax.scan(_update_minbatch, train_states, minibatches)
                 if config["USE_ROLE_MACA"]:
+                    loss_info["total_loss"] = loss_info["total_loss"] + maca_loss[0]
+                    loss_info["value_loss"] = loss_info["value_loss"] + maca_loss[0]
+                    loss_info["v_loss"] = jnp.broadcast_to(maca_loss[1]["v_loss"], loss_info["v_loss"].shape)
+                    loss_info["q_loss"] = jnp.broadcast_to(maca_loss[1]["q_loss"], loss_info["q_loss"].shape)
+                    loss_info["eq_loss"] = jnp.broadcast_to(maca_loss[1]["eq_loss"], loss_info["eq_loss"].shape)
+                    loss_info["maca_critic_grad_norm"] = jnp.broadcast_to(
+                        maca_critic_grad_norm,
+                        loss_info["maca_critic_grad_norm"].shape,
+                    )
+                if config["USE_ROLE_MACA"]:
                     update_state = (
                         train_states,
                         jax.tree.map(lambda x: x.squeeze(), init_hstates),
@@ -1032,7 +703,7 @@ def make_train(config):
                         advantages,
                         targets,
                         rng,
-                        q_taken_inputs,
+                        maca_info,
                     )
                 else:
                     update_state = (
@@ -1053,7 +724,7 @@ def make_train(config):
                     actor_advantages,
                     targets,
                     rng,
-                    maca_info["q_taken_inputs"],
+                    maca_info,
                 )
             else:
                 update_state = (train_states, initial_hstates, traj_batch, advantages, targets, rng)
@@ -1085,7 +756,9 @@ def make_train(config):
             actor_grad_norm = loss_info["actor_grad_norm"]
             critic_grad_norm = loss_info["critic_grad_norm"]
             q_loss_value = loss_info["q_loss"]
-            q_grad_norm = loss_info["q_grad_norm"]
+            eq_loss_value = loss_info["eq_loss"]
+            v_loss_value = loss_info["v_loss"]
+            maca_critic_grad_norm = loss_info["maca_critic_grad_norm"]
             lora_delta_norm_by_role = loss_info["lora_delta_norm_by_role"]
             lora_grad_norm_by_role = loss_info["lora_grad_norm_by_role"]
             lora_param_norm_by_role = loss_info["lora_param_norm_by_role"]
@@ -1116,7 +789,8 @@ def make_train(config):
             def log_callback(
                 r, w, s, tl, ent, agn, cgn, ql, qgn, rc, rpm, rbmin, rbmax, mismatch,
                 zero_bits, ldn, lgn, lpn, ram, ras, rent, rkl, rcf, rpl,
-                qtm, bjm, bim, brm, mam, mas, cgj, cgi, cgr, role_min, role_max,
+                eq_loss, v_loss, qtm, eqm, vm, rem, res, bm, bs, bsw, bgw, bjw,
+                mam, mas, att_entropy, corrset_size, role_min, role_max,
                 role_maca_alpha,
             ):
                 if role_min < 0 or role_max >= config["NUM_UNIT_TYPES"]:
@@ -1173,17 +847,24 @@ def make_train(config):
                     msg += (
                         f" | role_maca_alpha: {float(role_maca_alpha):.4f}"
                         f" | role_maca_blend_schedule: {config['ROLE_MACA_BLEND_SCHEDULE']}"
+                        f" | v_loss: {float(v_loss):.4e}"
                         f" | q_loss: {float(ql):.4e}"
-                        f" | q_grad_norm: {float(qgn):.4e}"
+                        f" | eq_loss: {float(eq_loss):.4e}"
+                        f" | maca_critic_grad_norm: {float(qgn):.4e}"
                         f" | q_taken_mean_by_role: {fmt(qtm)}"
-                        f" | baseline_joint_by_role: {fmt(bjm)}"
-                        f" | baseline_individual_by_role: {fmt(bim)}"
-                        f" | baseline_role_by_role: {fmt(brm)}"
+                        f" | eq_mean_by_role: {fmt(eqm)}"
+                        f" | v_mean_by_role: {fmt(vm)}"
+                        f" | return_eq_mean_by_role: {fmt(rem)}"
+                        f" | return_eq_std_by_role: {fmt(res)}"
+                        f" | baseline_mean_by_role: {fmt(bm)}"
+                        f" | baseline_std_by_role: {fmt(bs)}"
+                        f" | baseline_self_w_by_role: {fmt(bsw)}"
+                        f" | baseline_group_w_by_role: {fmt(bgw)}"
+                        f" | baseline_joint_w_by_role: {fmt(bjw)}"
                         f" | adv_maca_mean_by_role: {fmt(mam)}"
                         f" | adv_maca_std_by_role: {fmt(mas)}"
-                        f" | component_gap_joint_by_role: {fmt(cgj)}"
-                        f" | component_gap_individual_by_role: {fmt(cgi)}"
-                        f" | component_gap_role_by_role: {fmt(cgr)}"
+                        f" | attention_entropy: {float(att_entropy):.4e}"
+                        f" | mean_corrset_size: {float(corrset_size):.4e}"
                     )
                 print(msg)
                 if config["LOG_ROLE_DIAGNOSTIC_TABLE"]:
@@ -1209,21 +890,28 @@ def make_train(config):
             jax.experimental.io_callback(
                 log_callback, None,
                 returns, win_rate, step_count,
-                total_loss, entropy, actor_grad_norm, critic_grad_norm, q_loss_value, q_grad_norm,
+                total_loss, entropy, actor_grad_norm, critic_grad_norm, q_loss_value, maca_critic_grad_norm,
                 role_counts, role_present_mask, role_bit_sum_min, role_bit_sum_max,
                 obs_role_mismatch_count, zero_obs_role_bits,
                 lora_delta_norm_by_role, lora_grad_norm_by_role, lora_param_norm_by_role,
                 role_adv_mean, role_adv_std, role_entropy, role_approx_kl, role_clip_frac,
                 role_ppo_loss,
+                eq_loss_value,
+                v_loss_value,
                 maca_info["q_taken_mean_by_role"],
-                maca_info["baseline_joint_by_role"],
-                maca_info["baseline_individual_by_role"],
-                maca_info["baseline_role_by_role"],
+                maca_info["eq_mean_by_role"],
+                maca_info["v_mean_by_role"],
+                maca_info["return_eq_mean_by_role"],
+                maca_info["return_eq_std_by_role"],
+                maca_info["baseline_mean_by_role"],
+                maca_info["baseline_std_by_role"],
+                maca_info["baseline_self_w_by_role"],
+                maca_info["baseline_group_w_by_role"],
+                maca_info["baseline_joint_w_by_role"],
                 maca_info["adv_maca_mean_by_role"],
                 maca_info["adv_maca_std_by_role"],
-                maca_info["component_gap_joint_by_role"],
-                maca_info["component_gap_individual_by_role"],
-                maca_info["component_gap_role_by_role"],
+                maca_info["attention_entropy"],
+                maca_info["corrset_size"],
                 role_id_min, role_id_max,
                 metric["role_maca_alpha"],
             )
@@ -1254,50 +942,7 @@ def make_train(config):
     return train
 
 if __name__ == "__main__":
-    config = {
-        "LR": 0.002,
-        "NUM_ENVS": 128,
-        "NUM_STEPS": 128, 
-        "TOTAL_TIMESTEPS": int(3e6),  # Train for 3M steps to see convergence
-        "FC_DIM_SIZE": 128,
-        "GRU_HIDDEN_DIM": 128,
-        "UPDATE_EPOCHS": 4,
-        "NUM_MINIBATCHES": 4,
-        "GAMMA": 0.99,
-        "GAE_LAMBDA": 0.95,
-        "CLIP_EPS": 0.2,
-        "SCALE_CLIP_EPS": False,
-        "ENT_COEF": 0.0,
-        "VF_COEF": 0.5,
-        "MAX_GRAD_NORM": 0.25,
-        "ACTIVATION": "relu",
-        "OBS_WITH_AGENT_ID": True,
-        "ENV_NAME": "HeuristicEnemySMAX",
-        "MAP_NAME": "3m",    # We start with 3m
-        "SEED": 42,
-        "RUN_NAME": "rosa_mappo",
-        "ADAPTER_MODE": "none",
-        "NUM_UNIT_TYPES": 6,
-        "ROLE_ID_SOURCE": "env_state_unit_type",
-        "USE_ROLE_LORA": False,
-        "ROLE_LORA_RANK": 4,
-        "ROLE_LORA_SCALE": 1.0,
-        "ROLE_LORA_A_INIT_STD": 0.01,
-        "ROLE_MACA_BLEND_ALPHA": 0.15,
-        "ROLE_MACA_BLEND_SCHEDULE": "constant",
-        "ROLE_MACA_BLEND_WARMUP_STEPS": 300000,
-        "ROLE_MACA_BLEND_RAMP_STEPS": 700000,
-        "ROLE_MACA_BLEND_NORMALIZE": True,
-        "LOG_ROLE_DIAGNOSTICS": True,
-        "LOG_ROLE_DIAGNOSTIC_TABLE": False,
-        "ENV_KWARGS": {
-            "see_enemy_actions": True,
-            "walls_cause_death": True,
-            "attack_mode": "closest"
-        },
-        "ANNEAL_LR": True
-    }
-
+    config = default_config()
     args = parse_args()
     config = apply_cli_overrides(config, args)
     print_resolved_config(config)
@@ -1326,8 +971,8 @@ if __name__ == "__main__":
         "actor_params": actor_params,
     }
     if config["USE_ROLE_MACA"]:
-        final_q_state = final_train_states[2]
-        checkpoint["q_critic_params"] = jax.device_get(final_q_state.params)
+        final_maca_critic_state = final_train_states[2]
+        checkpoint["role_maca_critic_params"] = jax.device_get(final_maca_critic_state.params)
     with open(model_path, "wb") as f:
         pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
     print(f"Saved ROSA-MAPPO actor checkpoint to {model_path}")
