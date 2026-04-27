@@ -397,7 +397,7 @@ Role-Trust LoRA MAPPO keeps the validated Role-LoRA actor, but replaces the glob
 Role-MACA-Lite short pitch:
 
 ```text
-Role-MACA-Lite keeps the Role-LoRA actor, but replaces the blunt MAPPO advantage with a multi-level counterfactual advantage that credits individual agents, the full team, and same-role subgroups separately.
+Role-MACA-Lite keeps the Role-LoRA actor, but blends MAPPO's GAE advantage with a multi-level counterfactual advantage that credits individual agents, the full team, and same-role subgroups separately.
 ```
 
 Decision:
@@ -637,7 +637,14 @@ b^Jnt:
 Actor update:
 
 ```text
-Use A_i^RoleMACA in the PPO surrogate.
+Use a conservative blend in the PPO surrogate:
+
+A_i^actor =
+    (1 - alpha_maca) * A_i^GAE
+  + alpha_maca       * A_i^RoleMACA
+
+alpha_maca = 0.15
+
 Keep Role-LoRA actor unchanged.
 ```
 
@@ -736,6 +743,8 @@ Role-MACA-Lite implementation status:
 Implemented first pass in smax_ctm/train_rosa_mappo.py.
 Uses a separate action-conditioned feed-forward Q critic.
 Precomputes counterfactual advantages on the full rollout before minibatching.
+Uses blended actor advantages, not pure MACA advantages:
+    A_actor = 0.85 * A_GAE + 0.15 * A_RoleMACA
 Uses fixed MACA weights:
     role_maca_lite_jnt  = joint only
     role_maca_lite_ind  = individual only
@@ -748,6 +757,8 @@ Important implementation choice:
 ```text
 Counterfactual joint-action features are built before PPO minibatching because minibatches contain shuffled subsets of agents and cannot reconstruct full joint actions safely.
 The computed A_i^RoleMACA is stop-gradient before entering the PPO actor loss.
+Pure A_i^RoleMACA was too weak in the 300k smoke run: finite, but small/collapsing and it caused fast entropy collapse.
+The active implementation therefore blends it with normal GAE using ROLE_MACA_BLEND_ALPHA = 0.15.
 The Q critic is trained toward the same return targets used by the existing value critic.
 ```
 
@@ -772,14 +783,14 @@ Decision:
     implement Role-MACA-Lite next
 ```
 
-### Next Implementation: Role-MACA-Lite
+### Current Implementation: Blended Role-MACA-Lite
 
 Implementation target:
 
 ```text
 Keep the Role-LoRA actor.
 Add an action-conditioned Q critic.
-Use Q counterfactual baselines to replace the blunt MAPPO advantage.
+Use Q counterfactual baselines to add a small multi-level credit correction to the normal MAPPO/GAE advantage.
 Do not implement learned attention CorrSets or learned MACA weights in the first version.
 ```
 
@@ -812,7 +823,8 @@ Minimal Role-MACA-Lite implementation order:
 7. Construct:
    A_i = stop_gradient(Q_taken - (b_jnt + b_ind + b_role) / 3)
 
-8. Use A_i in the existing PPO actor loss.
+8. Blend with normal GAE before the existing PPO actor loss:
+   A_actor = 0.85 * A_GAE + 0.15 * A_i
    Start with the same advantage normalization style as the current Role-LoRA run.
 
 9. Only after this works, consider learned weights or attention CorrSets.
@@ -1007,7 +1019,7 @@ Clean story:
 
 6. MACA sharpens the diagnosis: MAPPO's joint advantage is too blunt, and good cooperative MARL needs multi-level credit assignment.
 
-7. The next method is Role-MACA-Lite: keep the successful Role-LoRA actor, but replace the advantage with a multi-level counterfactual advantage over individual, team, and same-role subgroup credit.
+7. The next method is Role-MACA-Lite: keep the successful Role-LoRA actor, but blend the normal GAE advantage with a multi-level counterfactual advantage over individual, team, and same-role subgroup credit.
 
 8. This gives a clean literature-backed progression from role-specific capacity to role-specific credit assignment.
 ```
@@ -1025,7 +1037,7 @@ Role-MACA-Lite tests the stronger MACA-inspired hypothesis: the actor needs role
 Current meeting-safe claim:
 
 ```text
-Role-LoRA remains the robust contribution. Residual auxiliary losses, context gates, and role-balanced trust budgets did not consistently add signal on this benchmark, which supports the MACA diagnosis: actor-side loss shaping is not enough. The next implementation keeps the successful Role-LoRA actor but replaces MAPPO's blunt team advantage with Role-MACA-Lite multi-level credit assignment.
+Role-LoRA remains the robust contribution. Residual auxiliary losses, context gates, and role-balanced trust budgets did not consistently add signal on this benchmark, which supports the MACA diagnosis: actor-side loss shaping is not enough. The next implementation keeps the successful Role-LoRA actor and blends MAPPO's GAE advantage with Role-MACA-Lite multi-level credit assignment.
 ```
 
 ---

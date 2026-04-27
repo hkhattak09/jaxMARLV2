@@ -50,6 +50,7 @@ def parse_args():
     parser.add_argument("--adapter_mode", type=str, choices=SUPPORTED_ADAPTER_MODES, default=None)
     parser.add_argument("--role_lora_rank", type=int, default=None)
     parser.add_argument("--role_lora_scale", type=float, default=None)
+    parser.add_argument("--role_maca_blend_alpha", type=float, default=None)
     parser.add_argument("--num_envs", type=int, default=None)
     parser.add_argument("--num_steps", type=int, default=None)
     parser.add_argument("--num_minibatches", type=int, default=None)
@@ -69,6 +70,8 @@ def apply_cli_overrides(config: Dict, args):
         config["ROLE_LORA_RANK"] = args.role_lora_rank
     if args.role_lora_scale is not None:
         config["ROLE_LORA_SCALE"] = args.role_lora_scale
+    if args.role_maca_blend_alpha is not None:
+        config["ROLE_MACA_BLEND_ALPHA"] = args.role_maca_blend_alpha
     if args.num_envs is not None:
         config["NUM_ENVS"] = args.num_envs
     if args.num_steps is not None:
@@ -788,7 +791,11 @@ def make_train(config):
                 }
 
             maca_info = _calculate_role_maca_info() if config["USE_ROLE_MACA"] else _empty_maca_info()
-            actor_advantages = maca_info["advantages"] if config["USE_ROLE_MACA"] else advantages
+            if config["USE_ROLE_MACA"]:
+                maca_alpha = config["ROLE_MACA_BLEND_ALPHA"]
+                actor_advantages = (1.0 - maca_alpha) * advantages + maca_alpha * maca_info["advantages"]
+            else:
+                actor_advantages = advantages
 
             def _update_epoch(update_state, unused):
                 def _update_minbatch(train_states, batch_info):
@@ -1220,6 +1227,7 @@ if __name__ == "__main__":
         "ROLE_LORA_RANK": 4,
         "ROLE_LORA_SCALE": 1.0,
         "ROLE_LORA_A_INIT_STD": 0.01,
+        "ROLE_MACA_BLEND_ALPHA": 0.15,
         "LOG_ROLE_DIAGNOSTICS": True,
         "LOG_ROLE_DIAGNOSTIC_TABLE": False,
         "ENV_KWARGS": {
