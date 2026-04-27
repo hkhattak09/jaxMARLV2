@@ -14,7 +14,7 @@ import jax
 import jax.numpy as jnp
 import flax.linen as nn
 from flax import struct
-from flax.core import freeze, unfreeze
+from flax.core import unfreeze
 import numpy as np
 import optax
 from flax.linen.initializers import constant, orthogonal
@@ -254,7 +254,7 @@ def update_single_role_lora_params(actor_params, actor_grads, role_id: jnp.ndarr
     new_lora_b = old_lora_b.at[role_id].add(-lr * grads["role_lora_B"][role_id])
     params["params"]["role_lora_A"] = new_lora_a
     params["params"]["role_lora_B"] = new_lora_b
-    return freeze(params)
+    return params
 
 def role_lora_update_norm(old_params, new_params, config: Dict):
     if not config["USE_ROLE_LORA"]:
@@ -661,7 +661,7 @@ def make_train(config):
                     (role_loss, aux), role_grads = jax.value_and_grad(_role_loss_fn, has_aux=True)(
                         actor_train_state.params
                     )
-                    old_params = actor_train_state.params
+                    old_params = unfreeze(actor_train_state.params)
                     new_params = update_single_role_lora_params(
                         actor_train_state.params,
                         role_grads,
