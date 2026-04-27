@@ -4,7 +4,7 @@ rmaddpg/
 old_implementation/
 MACA/
 other_dirs/
-.claude/worktrees/
+.claude/
 
 *.swp
 *.pyc
