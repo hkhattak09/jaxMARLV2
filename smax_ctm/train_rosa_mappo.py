@@ -101,7 +101,11 @@ class ActorRNN(nn.Module):
 
     @nn.compact
     def __call__(self, hidden, x):
-        obs, dones, avail_actions = x
+        if len(x) == 4:
+            obs, dones, avail_actions, role_id = x
+        else:
+            obs, dones, avail_actions = x
+            role_id = jnp.zeros(obs.shape[:-1], dtype=jnp.int32)
         embedding = nn.Dense(
             self.config["FC_DIM_SIZE"], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0)
         )(obs)
@@ -114,15 +118,39 @@ class ActorRNN(nn.Module):
             embedding
         )
         actor_mean = nn.relu(actor_mean)
-        actor_mean = nn.Dense(
+        base_logits = nn.Dense(
             self.action_dim, kernel_init=orthogonal(0.01), bias_init=constant(0.0)
         )(actor_mean)
+        lora_delta = jnp.zeros_like(base_logits)
+        if self.config["USE_ROLE_LORA"]:
+            rank = self.config["ROLE_LORA_RANK"]
+            lora_a = self.param(
+                "role_lora_A",
+                nn.initializers.normal(self.config["ROLE_LORA_A_INIT_STD"]),
+                (self.config["NUM_UNIT_TYPES"], rank, self.config["GRU_HIDDEN_DIM"]),
+            )
+            lora_b = self.param(
+                "role_lora_B",
+                nn.initializers.zeros,
+                (self.config["NUM_UNIT_TYPES"], self.action_dim, rank),
+            )
+            safe_role_id = jnp.clip(role_id.astype(jnp.int32), 0, self.config["NUM_UNIT_TYPES"] - 1)
+            role_a = lora_a[safe_role_id]
+            role_b = lora_b[safe_role_id]
+            lora_hidden = jnp.einsum("...rh,...h->...r", role_a, actor_mean)
+            lora_delta = jnp.einsum("...ar,...r->...a", role_b, lora_hidden)
+        actor_mean = base_logits + self.config["ROLE_LORA_SCALE"] * lora_delta
         unavail_actions = 1 - avail_actions
         action_logits = actor_mean - (unavail_actions * 1e10)
 
         pi = distrax.Categorical(logits=action_logits)
 
-        return hidden, pi
+        aux = {
+            "base_logits": base_logits,
+            "lora_delta": lora_delta,
+            "unmasked_logits": actor_mean,
+        }
+        return hidden, pi, aux
 
 
 class CriticRNN(nn.Module):
@@ -185,6 +213,21 @@ def extract_role_id(obs_batch: jnp.ndarray, env_state, env, config: Dict):
             "Stage 1 supports 'env_state_unit_type' and 'own_obs_unit_type'."
         )
 
+def role_mean_metric(values: jnp.ndarray, role_id: jnp.ndarray, num_roles: int):
+    flat_values = values.reshape(-1)
+    flat_roles = role_id.reshape(-1)
+    counts = jnp.bincount(flat_roles, length=num_roles)
+    sums = jnp.bincount(flat_roles, weights=flat_values, length=num_roles)
+    return sums / jnp.maximum(counts, 1)
+
+def role_lora_param_norms(actor_params, config: Dict):
+    if not config["USE_ROLE_LORA"]:
+        return jnp.zeros((config["NUM_UNIT_TYPES"],))
+    params = actor_params["params"]
+    lora_a = params["role_lora_A"]
+    lora_b = params["role_lora_B"]
+    return jnp.sqrt(jnp.sum(jnp.square(lora_a), axis=(1, 2)) + jnp.sum(jnp.square(lora_b), axis=(1, 2)))
+
 def make_train(config):
     scenario = map_name_to_scenario(config["MAP_NAME"])
     env = HeuristicEnemySMAX(scenario=scenario, **config["ENV_KWARGS"])
@@ -216,6 +259,7 @@ def make_train(config):
             jnp.zeros((1, config["NUM_ENVS"], env.observation_space(env.agents[0]).shape[0])),
             jnp.zeros((1, config["NUM_ENVS"])),
             jnp.zeros((1, config["NUM_ENVS"], env.action_space(env.agents[0]).n)),
+            jnp.zeros((1, config["NUM_ENVS"]), dtype=jnp.int32),
         )
         ac_init_hstate = ScannedRNN.initialize_carry(config["NUM_ENVS"], config["GRU_HIDDEN_DIM"])
         actor_network_params = actor_network.init(_rng_actor, ac_init_hstate, ac_init_x)
@@ -257,9 +301,9 @@ def make_train(config):
                 avail_actions = jax.lax.stop_gradient(batchify(avail_actions, env.agents, config["NUM_ACTORS"]))
                 obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
                 role_id = extract_role_id(obs_batch, env_state, env, config)
-                ac_in = (obs_batch[np.newaxis, :], last_done[np.newaxis, :], avail_actions)
+                ac_in = (obs_batch[np.newaxis, :], last_done[np.newaxis, :], avail_actions, role_id[np.newaxis, :])
                 
-                ac_hstate, pi = actor_network.apply(train_states[0].params, hstates[0], ac_in)
+                ac_hstate, pi, _ = actor_network.apply(train_states[0].params, hstates[0], ac_in)
                 action = pi.sample(seed=_rng)
                 log_prob = pi.log_prob(action)
                 
@@ -324,6 +368,14 @@ def make_train(config):
                 return advantages, advantages + traj_batch.value
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
+            _, _, pre_update_actor_aux = actor_network.apply(
+                train_states[0].params,
+                initial_hstates[0],
+                (traj_batch.obs, traj_batch.done, traj_batch.avail_actions, traj_batch.role_id),
+            )
+            pre_update_logit_delta = config["ROLE_LORA_SCALE"] * pre_update_actor_aux["lora_delta"]
+            max_abs_logit_diff = jnp.max(jnp.abs(pre_update_logit_delta))
+            mean_abs_logit_diff = jnp.mean(jnp.abs(pre_update_logit_delta))
 
             def _update_epoch(update_state, unused):
                 def _update_minbatch(train_states, batch_info):
@@ -331,8 +383,10 @@ def make_train(config):
                     ac_init_hstate, cr_init_hstate, traj_batch, advantages, targets = batch_info
 
                     def _actor_loss_fn(actor_params, init_hstate, traj_batch, gae):
-                        _, pi = actor_network.apply(
-                            actor_params, init_hstate.squeeze(), (traj_batch.obs, traj_batch.done, traj_batch.avail_actions)
+                        _, pi, actor_aux = actor_network.apply(
+                            actor_params,
+                            init_hstate.squeeze(),
+                            (traj_batch.obs, traj_batch.done, traj_batch.avail_actions, traj_batch.role_id),
                         )
                         log_prob = pi.log_prob(traj_batch.action)
                         logratio = log_prob - traj_batch.log_prob
@@ -345,8 +399,20 @@ def make_train(config):
                         
                         approx_kl = ((ratio - 1) - logratio).mean()
                         clip_frac = jnp.mean(jnp.abs(ratio - 1) > config["CLIP_EPS"])
+                        lora_delta_norm_by_role = role_mean_metric(
+                            jnp.linalg.norm(actor_aux["lora_delta"], axis=-1),
+                            traj_batch.role_id,
+                            config["NUM_UNIT_TYPES"],
+                        )
                         actor_loss = loss_actor - config["ENT_COEF"] * entropy
-                        return actor_loss, (loss_actor, entropy, ratio, approx_kl, clip_frac)
+                        return actor_loss, (
+                            loss_actor,
+                            entropy,
+                            ratio,
+                            approx_kl,
+                            clip_frac,
+                            lora_delta_norm_by_role,
+                        )
                     
                     def _critic_loss_fn(critic_params, init_hstate, traj_batch, targets):
                         _, value = critic_network.apply(critic_params, init_hstate.squeeze(), (traj_batch.world_state,  traj_batch.done)) 
@@ -364,6 +430,8 @@ def make_train(config):
                     
                     actor_grad_norm = optax.global_norm(actor_grads)
                     critic_grad_norm = optax.global_norm(critic_grads)
+                    lora_grad_norm_by_role = role_lora_param_norms(actor_grads, config)
+                    lora_param_norm_by_role = role_lora_param_norms(actor_train_state.params, config)
 
                     actor_train_state = actor_train_state.apply_gradients(grads=actor_grads)
                     critic_train_state = critic_train_state.apply_gradients(grads=critic_grads)
@@ -377,6 +445,9 @@ def make_train(config):
                         "approx_kl": actor_loss[1][3],
                         "actor_grad_norm": actor_grad_norm,
                         "critic_grad_norm": critic_grad_norm,
+                        "lora_delta_norm_by_role": actor_loss[1][5],
+                        "lora_grad_norm_by_role": lora_grad_norm_by_role,
+                        "lora_param_norm_by_role": lora_param_norm_by_role,
                     }
                     return (actor_train_state, critic_train_state), loss_info
 
@@ -399,7 +470,11 @@ def make_train(config):
 
             update_state = (train_states, initial_hstates, traj_batch, advantages, targets, rng)
             update_state, loss_info = jax.lax.scan(_update_epoch, update_state, None, config["UPDATE_EPOCHS"])
-            loss_info = jax.tree.map(lambda x: x.mean(), loss_info)
+            def reduce_loss_metric(x):
+                if x.ndim <= 2:
+                    return x.mean()
+                return x.mean(axis=tuple(range(x.ndim - 1)))
+            loss_info = jax.tree.map(reduce_loss_metric, loss_info)
             
             train_states = update_state[0]
             metric = traj_batch.info
@@ -419,6 +494,9 @@ def make_train(config):
             entropy = loss_info["entropy"]
             actor_grad_norm = loss_info["actor_grad_norm"]
             critic_grad_norm = loss_info["critic_grad_norm"]
+            lora_delta_norm_by_role = loss_info["lora_delta_norm_by_role"]
+            lora_grad_norm_by_role = loss_info["lora_grad_norm_by_role"]
+            lora_param_norm_by_role = loss_info["lora_param_norm_by_role"]
             role_counts = jnp.bincount(
                 traj_batch.role_id.reshape(-1),
                 length=config["NUM_UNIT_TYPES"],
@@ -435,7 +513,10 @@ def make_train(config):
             )
             zero_obs_role_bits = jnp.sum(role_bit_sums == 0)
 
-            def log_callback(r, w, s, tl, ent, agn, cgn, rc, rpm, rbmin, rbmax, mismatch, zero_bits):
+            def log_callback(
+                r, w, s, tl, ent, agn, cgn, rc, rpm, rbmin, rbmax, mismatch,
+                zero_bits, max_diff, mean_diff, ldn, lgn, lpn,
+            ):
                 if rbmax > 1.0 or mismatch > 0:
                     raise ValueError(
                         "Role extraction failed: obs unit-type bits disagree with env-state roles. "
@@ -445,22 +526,30 @@ def make_train(config):
                         f"NUM_UNIT_TYPES={config['NUM_UNIT_TYPES']}, "
                         f"ROLE_ID_SOURCE={config['ROLE_ID_SOURCE']!r}"
                     )
-                if zero_bits > 0:
-                    print(
-                        "WARNING: own-observation unit-type bits are zero for "
-                        f"{int(zero_bits)} transition rows, likely dead units; "
-                        "using env_state_unit_type roles for Stage 1 diagnostics."
-                    )
                 role_counts_str = " ".join(
                     f"role_count_{idx}: {int(count)}" for idx, count in enumerate(np.asarray(rc))
                 )
                 role_mask_str = "[" + " ".join(str(int(x)) for x in np.asarray(rpm)) + "]"
-                print(
+                msg = (
                     f"Step {s:8d} | Return: {r:10.2f} | Win Rate: {w:5.2f} "
                     f"| Loss: {tl:10.4f} | Ent: {ent:8.4f} "
                     f"| GradN(actor/critic): {agn:8.4f}/{cgn:8.4f} "
-                    f"| {role_counts_str} | role_present_mask: {role_mask_str}"
+                    f"| {role_counts_str} | role_present_mask: {role_mask_str} "
+                    f"| zero_obs_role_bits: {int(zero_bits)}"
                 )
+                if config["LOG_ZERO_LORA_EQUIV"] and int(s) == 0:
+                    msg += (
+                        f" | zero_lora_max_abs_logit_diff: {float(max_diff):.8e}"
+                        f" | zero_lora_mean_abs_logit_diff: {float(mean_diff):.8e}"
+                    )
+                if config["USE_ROLE_LORA"]:
+                    fmt = lambda xs: "[" + " ".join(f"{float(x):.4e}" for x in np.asarray(xs)) + "]"
+                    msg += (
+                        f" | lora_delta_norm_by_role: {fmt(ldn)}"
+                        f" | lora_grad_norm_by_role: {fmt(lgn)}"
+                        f" | lora_param_norm_by_role: {fmt(lpn)}"
+                    )
+                print(msg)
 
             step_count = update_steps * config["NUM_ENVS"] * config["NUM_STEPS"]
             jax.experimental.io_callback(
@@ -469,6 +558,8 @@ def make_train(config):
                 total_loss, entropy, actor_grad_norm, critic_grad_norm,
                 role_counts, role_present_mask, role_bit_sum_min, role_bit_sum_max,
                 obs_role_mismatch_count, zero_obs_role_bits,
+                max_abs_logit_diff, mean_abs_logit_diff,
+                lora_delta_norm_by_role, lora_grad_norm_by_role, lora_param_norm_by_role,
             )
             
             update_steps = update_steps + 1
@@ -515,6 +606,11 @@ if __name__ == "__main__":
         "ROLE_ID_SOURCE": "env_state_unit_type",
         "USE_ROLE_LORA": False,
         "USE_SEQUENTIAL_ROLE_UPDATES": False,
+        "ROLE_LORA_RANK": 4,
+        "ROLE_LORA_SCALE": 1.0,
+        "ROLE_LORA_A_INIT_STD": 0.01,
+        "LOG_ZERO_LORA_EQUIV": False,
+        "LOG_ROLE_DIAGNOSTICS": True,
         "ENV_KWARGS": {
             "see_enemy_actions": True,
             "walls_cause_death": True,
@@ -523,7 +619,7 @@ if __name__ == "__main__":
         "ANNEAL_LR": True
     }
 
-    print(f"Starting {config['MAP_NAME']} MAPPO Baseline...")
+    print(f"Starting {config['MAP_NAME']} ROSA-MAPPO experiment...")
     rng = jax.random.PRNGKey(config["SEED"])
     train_jit = jax.jit(make_train(config))
     
@@ -535,7 +631,7 @@ if __name__ == "__main__":
 
     model_dir = os.path.join(_REPO_ROOT, "model")
     os.makedirs(model_dir, exist_ok=True)
-    model_path = os.path.join(model_dir, "smax_mappo_gru_actor.pkl")
+    model_path = os.path.join(model_dir, "smax_rosa_mappo_actor.pkl")
 
     final_runner_state = out["runner_state"][0]
     final_train_states = final_runner_state[0]
@@ -548,7 +644,7 @@ if __name__ == "__main__":
     }
     with open(model_path, "wb") as f:
         pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
-    print(f"Saved GRU actor checkpoint to {model_path}")
+    print(f"Saved ROSA-MAPPO actor checkpoint to {model_path}")
     
     # Can optionally save metrics
     # jnp.save("gru_baseline_metrics.npy", out["metric"])
