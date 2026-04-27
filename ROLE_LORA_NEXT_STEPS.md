@@ -263,19 +263,19 @@ Commands:
 ```
 
 ```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_5_units --seed 42 --adapter_mode role_lora --total_timesteps 3000000 --run_name stage3_role_lora_smacv2_5_seed42
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_lora --total_timesteps 3000000 --run_name stage3_role_lora_smacv2_10_seed42
 ```
 
 ```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_5_units --seed 42 --adapter_mode global_lora --total_timesteps 3000000 --run_name global_lora_smacv2_5_seed42
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode global_lora --total_timesteps 3000000 --run_name global_lora_smacv2_10_seed42
 ```
 
 ```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_5_units --seed 42 --adapter_mode agent_lora --total_timesteps 3000000 --run_name agent_lora_smacv2_5_seed42
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode agent_lora --total_timesteps 3000000 --run_name agent_lora_smacv2_10_seed42
 ```
 
 ```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_5_units --seed 42 --adapter_mode sequential_polish --total_timesteps 3000000 --run_name seq_polish_smacv2_5_seed42
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode sequential_polish --total_timesteps 3000000 --run_name seq_polish_smacv2_10_seed42
 ```
 
 Question answered:
@@ -351,7 +351,7 @@ Suggested config:
 Suggested CLI:
 
 ```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_5_units --seed 42 --adapter_mode role_residual --total_timesteps 3000000 --run_name role_residual_smacv2_5_seed42
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_residual --total_timesteps 3000000 --run_name role_residual_smacv2_10_seed42
 ```
 
 New diagnostics to log:
@@ -438,7 +438,7 @@ Suggested config:
 Suggested CLI:
 
 ```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_5_units --seed 42 --adapter_mode role_context_residual --total_timesteps 3000000 --run_name role_context_residual_smacv2_5_seed42
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_context_residual --total_timesteps 3000000 --run_name role_context_residual_smacv2_10_seed42
 ```
 
 New diagnostics to log:
@@ -487,19 +487,19 @@ Run:
 Suggested commands:
 
 ```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_5_units --seed 42 --adapter_mode shuffled_context_residual --total_timesteps 3000000 --run_name shuffled_context_residual_smacv2_5_seed42
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode shuffled_context_residual --total_timesteps 3000000 --run_name shuffled_context_residual_smacv2_10_seed42
 ```
 
 ```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_5_units --seed 42 --adapter_mode global_residual --total_timesteps 3000000 --run_name global_residual_smacv2_5_seed42
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode global_residual --total_timesteps 3000000 --run_name global_residual_smacv2_10_seed42
 ```
 
 ```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_5_units --seed 42 --adapter_mode agent_residual --total_timesteps 3000000 --run_name agent_residual_smacv2_5_seed42
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode agent_residual --total_timesteps 3000000 --run_name agent_residual_smacv2_10_seed42
 ```
 
 ```python
-!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_5_units --seed 42 --adapter_mode role_balanced --total_timesteps 3000000 --run_name role_balanced_smacv2_5_seed42
+!python /content/jaxMARLV2/smax_ctm/train_rosa_mappo.py --map_name smacv2_10_units --seed 42 --adapter_mode role_balanced --total_timesteps 3000000 --run_name role_balanced_smacv2_10_seed42
 ```
 
 Question answered:
@@ -526,7 +526,6 @@ Goal: make the project about robustness under heterogeneous or randomized team c
 Priority maps:
 
 ```text
-smacv2_5_units
 smacv2_10_units
 2s3z
 3s5z
@@ -536,11 +535,10 @@ smacv2_10_units
 Most important:
 
 ```text
-smacv2_5_units
 smacv2_10_units
 ```
 
-These are the maps where unit types are randomly generated, so role/context conditioning is most defensible.
+This is the primary randomized-unit benchmark for the project. It is cheap enough to run, and existing baselines are already available, so do not spend the main ablation budget on `smacv2_5_units`.
 
 First multi-seed set:
 
@@ -564,7 +562,7 @@ Does the method improve robustness on randomized heterogeneous teams, not just o
 
 Decision gate:
 
-- If gains appear mainly on `smacv2_5_units` and `smacv2_10_units`, the generalization story is plausible.
+- If gains appear on `smacv2_10_units` across multiple seeds, the randomized heterogeneous-team story is plausible.
 - If gains appear only on `3m`, do not claim heterogeneous generalization.
 - If gains are seed-fragile, reduce the claim to exploratory evidence.
 
@@ -671,7 +669,7 @@ Role-Residual beats Stage 3 or gives clearly positive residual alignment
 Role-Context Residual beats Role-Residual
 real context beats shuffled context
 Role-Context Residual beats global residual
-gains appear on smacv2_5_units or smacv2_10_units across multiple seeds
+gains appear on smacv2_10_units across multiple seeds
 ```
 
 ---

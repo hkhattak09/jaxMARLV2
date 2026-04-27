@@ -13,6 +13,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from statistics import mean, stdev
 
 
 LOG_LINE_RE = re.compile(
@@ -37,7 +38,12 @@ def parse_args():
     parser.add_argument("--repo_root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--map_name", type=str, default="smacv2_5_units")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seeds", type=int, nargs="+", default=None)
     parser.add_argument("--total_timesteps", type=int, default=3_000_000)
+    parser.add_argument("--num_envs", type=int, default=256)
+    parser.add_argument("--num_steps", type=int, default=128)
+    parser.add_argument("--num_minibatches", type=int, default=4)
+    parser.add_argument("--update_epochs", type=int, default=4)
     parser.add_argument("--role_lora_rank", type=int, default=4)
     parser.add_argument("--role_lora_scale", type=float, default=1.0)
     parser.add_argument("--modes", nargs="+", default=list(DEFAULT_MODES))
@@ -95,11 +101,12 @@ def trapezoid_auc(points, key):
     return area / total_width
 
 
-def summarize_curve(mode, run_name, log_path, target_win_rate):
+def summarize_curve(mode, seed, run_name, log_path, target_win_rate):
     points = parse_curve(log_path)
     if not points:
         return {
             "mode": mode,
+            "seed": seed,
             "run_name": run_name,
             "status": "missing_or_unparsed",
             "num_points": 0,
@@ -122,6 +129,7 @@ def summarize_curve(mode, run_name, log_path, target_win_rate):
     final = points[-1]
     return {
         "mode": mode,
+        "seed": seed,
         "run_name": run_name,
         "status": "ok",
         "num_points": len(points),
@@ -140,6 +148,7 @@ def summarize_curve(mode, run_name, log_path, target_win_rate):
 def write_csv(rows, path):
     fieldnames = [
         "mode",
+        "seed",
         "run_name",
         "status",
         "num_points",
@@ -170,6 +179,7 @@ def format_value(value):
 def write_markdown(rows, path):
     columns = [
         "mode",
+        "seed",
         "status",
         "final_step",
         "final_return",
@@ -178,6 +188,53 @@ def write_markdown(rows, path):
         "best_win_rate_step",
         "auc_win_rate",
         "steps_to_target_win_rate",
+    ]
+    with path.open("w", encoding="utf-8") as f:
+        f.write("| " + " | ".join(columns) + " |\n")
+        f.write("| " + " | ".join(["---"] * len(columns)) + " |\n")
+        for row in rows:
+            f.write("| " + " | ".join(format_value(row[column]) for column in columns) + " |\n")
+
+
+def numeric_values(rows, mode, key):
+    values = []
+    for row in rows:
+        if row["mode"] != mode or row["status"] != "ok" or row[key] == "":
+            continue
+        values.append(float(row[key]))
+    return values
+
+
+def summarize_by_mode(rows, modes):
+    aggregate_rows = []
+    for mode in modes:
+        final_win_rates = numeric_values(rows, mode, "final_win_rate")
+        best_win_rates = numeric_values(rows, mode, "best_win_rate")
+        final_returns = numeric_values(rows, mode, "final_return")
+        auc_win_rates = numeric_values(rows, mode, "auc_win_rate")
+        aggregate_rows.append(
+            {
+                "mode": mode,
+                "num_seeds": len(final_win_rates),
+                "final_win_rate_mean": mean(final_win_rates) if final_win_rates else "",
+                "final_win_rate_std": stdev(final_win_rates) if len(final_win_rates) > 1 else "",
+                "best_win_rate_mean": mean(best_win_rates) if best_win_rates else "",
+                "final_return_mean": mean(final_returns) if final_returns else "",
+                "auc_win_rate_mean": mean(auc_win_rates) if auc_win_rates else "",
+            }
+        )
+    return aggregate_rows
+
+
+def write_aggregate_markdown(rows, path):
+    columns = [
+        "mode",
+        "num_seeds",
+        "final_win_rate_mean",
+        "final_win_rate_std",
+        "best_win_rate_mean",
+        "final_return_mean",
+        "auc_win_rate_mean",
     ]
     with path.open("w", encoding="utf-8") as f:
         f.write("| " + " | ".join(columns) + " |\n")
@@ -209,54 +266,75 @@ def tee_process(command, log_path):
 def main():
     args = parse_args()
     repo_root = args.repo_root.resolve()
+    seeds = args.seeds if args.seeds is not None else [args.seed]
     train_script = repo_root / "smax_ctm" / "train_rosa_mappo.py"
     if not train_script.exists():
         raise FileNotFoundError(f"Could not find training script: {train_script}")
 
     output_dir = args.output_dir
     if output_dir is None:
-        output_dir = repo_root / "logs" / f"stage3b_{args.map_name}_seed{args.seed}"
+        if len(seeds) == 1:
+            seed_suffix = f"seed{seeds[0]}"
+        else:
+            seed_suffix = "seeds_" + "_".join(str(seed) for seed in seeds)
+        output_dir = repo_root / "logs" / f"stage3b_{args.map_name}_{seed_suffix}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     rows = []
-    for mode in args.modes:
-        run_name = run_name_for(mode, args.map_name, args.seed)
-        log_path = output_dir / f"{run_name}.log"
-        if not args.summarize_only:
-            command = [
-                args.python,
-                str(train_script),
-                "--map_name",
-                args.map_name,
-                "--seed",
-                str(args.seed),
-                "--adapter_mode",
-                mode,
-                "--total_timesteps",
-                str(args.total_timesteps),
-                "--role_lora_rank",
-                str(args.role_lora_rank),
-                "--role_lora_scale",
-                str(args.role_lora_scale),
-                "--run_name",
-                run_name,
-            ]
-            print(f"\n[ablation_runner] Running {mode}: {' '.join(command)}")
-            return_code = tee_process(command, log_path)
-            if return_code != 0 and not args.keep_going:
-                raise RuntimeError(
-                    f"Ablation mode {mode!r} failed with return code {return_code}. "
-                    f"See log: {log_path}"
-                )
-        rows.append(summarize_curve(mode, run_name, log_path, args.target_win_rate))
+    for seed in seeds:
+        for mode in args.modes:
+            run_name = run_name_for(mode, args.map_name, seed)
+            log_path = output_dir / f"{run_name}.log"
+            if not args.summarize_only:
+                command = [
+                    args.python,
+                    str(train_script),
+                    "--map_name",
+                    args.map_name,
+                    "--seed",
+                    str(seed),
+                    "--adapter_mode",
+                    mode,
+                    "--total_timesteps",
+                    str(args.total_timesteps),
+                    "--num_envs",
+                    str(args.num_envs),
+                    "--num_steps",
+                    str(args.num_steps),
+                    "--num_minibatches",
+                    str(args.num_minibatches),
+                    "--update_epochs",
+                    str(args.update_epochs),
+                    "--role_lora_rank",
+                    str(args.role_lora_rank),
+                    "--role_lora_scale",
+                    str(args.role_lora_scale),
+                    "--run_name",
+                    run_name,
+                ]
+                print(f"\n[ablation_runner] Running seed={seed} mode={mode}: {' '.join(command)}")
+                return_code = tee_process(command, log_path)
+                if return_code != 0 and not args.keep_going:
+                    raise RuntimeError(
+                        f"Ablation seed={seed} mode={mode!r} failed with return code {return_code}. "
+                        f"See log: {log_path}"
+                    )
+            rows.append(summarize_curve(mode, seed, run_name, log_path, args.target_win_rate))
 
     csv_path = output_dir / "stage3b_ablation_summary.csv"
     md_path = output_dir / "stage3b_ablation_summary.md"
+    aggregate_md_path = output_dir / "stage3b_ablation_aggregate.md"
+    aggregate_rows = summarize_by_mode(rows, args.modes)
     write_csv(rows, csv_path)
     write_markdown(rows, md_path)
+    write_aggregate_markdown(aggregate_rows, aggregate_md_path)
 
     print(f"\n[ablation_runner] Wrote CSV summary: {csv_path}")
     print(f"[ablation_runner] Wrote Markdown summary: {md_path}")
+    print(f"[ablation_runner] Wrote aggregate Markdown summary: {aggregate_md_path}")
+    print("\n[ablation_runner] Aggregate summary:")
+    print(aggregate_md_path.read_text(encoding="utf-8"))
+    print("\n[ablation_runner] Per-run summary:")
     print(md_path.read_text(encoding="utf-8"))
 
 

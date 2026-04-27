@@ -64,6 +64,10 @@ def parse_args():
     parser.add_argument("--adapter_mode", type=str, choices=SUPPORTED_ADAPTER_MODES, default=None)
     parser.add_argument("--role_lora_rank", type=int, default=None)
     parser.add_argument("--role_lora_scale", type=float, default=None)
+    parser.add_argument("--num_envs", type=int, default=None)
+    parser.add_argument("--num_steps", type=int, default=None)
+    parser.add_argument("--num_minibatches", type=int, default=None)
+    parser.add_argument("--update_epochs", type=int, default=None)
     parser.add_argument("--run_name", type=str, default=None)
     return parser.parse_args()
 
@@ -79,6 +83,14 @@ def apply_cli_overrides(config: Dict, args):
         config["ROLE_LORA_RANK"] = args.role_lora_rank
     if args.role_lora_scale is not None:
         config["ROLE_LORA_SCALE"] = args.role_lora_scale
+    if args.num_envs is not None:
+        config["NUM_ENVS"] = args.num_envs
+    if args.num_steps is not None:
+        config["NUM_STEPS"] = args.num_steps
+    if args.num_minibatches is not None:
+        config["NUM_MINIBATCHES"] = args.num_minibatches
+    if args.update_epochs is not None:
+        config["UPDATE_EPOCHS"] = args.update_epochs
     if args.run_name is not None:
         config["RUN_NAME"] = args.run_name
     if args.adapter_mode is not None:
@@ -460,6 +472,18 @@ def make_train(config):
         config["LORA_NUM_ADAPTERS"] = config["NUM_UNIT_TYPES"]
     config["NUM_UPDATES"] = config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
     config["MINIBATCH_SIZE"] = config["NUM_ACTORS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
+    if config["NUM_ACTORS"] * config["NUM_STEPS"] % config["NUM_MINIBATCHES"] != 0:
+        raise ValueError(
+            "Invalid minibatch setup: NUM_ACTORS * NUM_STEPS must be divisible by "
+            f"NUM_MINIBATCHES. Got NUM_ACTORS={config['NUM_ACTORS']}, "
+            f"NUM_STEPS={config['NUM_STEPS']}, NUM_MINIBATCHES={config['NUM_MINIBATCHES']}."
+        )
+    if config["NUM_UPDATES"] <= 0:
+        raise ValueError(
+            "Invalid training horizon: TOTAL_TIMESTEPS must be at least NUM_ENVS * NUM_STEPS. "
+            f"Got TOTAL_TIMESTEPS={config['TOTAL_TIMESTEPS']}, NUM_ENVS={config['NUM_ENVS']}, "
+            f"NUM_STEPS={config['NUM_STEPS']}."
+        )
     config["CLIP_EPS"] = config["CLIP_EPS"] / env.num_agents if config["SCALE_CLIP_EPS"] else config["CLIP_EPS"]
 
     env = SMAXWorldStateWrapper(env, config["OBS_WITH_AGENT_ID"])
