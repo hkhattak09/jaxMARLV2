@@ -172,14 +172,18 @@ def unbatchify(x: jnp.ndarray, agent_list, num_envs, num_actors):
     x = x.reshape((num_actors, num_envs, -1))
     return {a: x[i] for i, a in enumerate(agent_list)}
 
-def extract_role_id(obs_batch: jnp.ndarray, config: Dict):
-    if config["ROLE_ID_SOURCE"] != "own_obs_unit_type":
+def extract_role_id(obs_batch: jnp.ndarray, env_state, env, config: Dict):
+    if config["ROLE_ID_SOURCE"] == "own_obs_unit_type":
+        own_type_bits = obs_batch[:, -config["NUM_UNIT_TYPES"]:]
+        return jnp.argmax(own_type_bits, axis=-1).astype(jnp.int32)
+    if config["ROLE_ID_SOURCE"] == "env_state_unit_type":
+        unit_types = env_state.env_state.state.unit_types[:, : env.num_agents]
+        return unit_types.T.reshape(-1).astype(jnp.int32)
+    else:
         raise ValueError(
             f"Unsupported ROLE_ID_SOURCE={config['ROLE_ID_SOURCE']!r}; "
-            "Stage 1 only supports 'own_obs_unit_type'."
+            "Stage 1 supports 'env_state_unit_type' and 'own_obs_unit_type'."
         )
-    own_type_bits = obs_batch[:, -config["NUM_UNIT_TYPES"]:]
-    return jnp.argmax(own_type_bits, axis=-1).astype(jnp.int32)
 
 def make_train(config):
     scenario = map_name_to_scenario(config["MAP_NAME"])
@@ -252,7 +256,7 @@ def make_train(config):
                 avail_actions = jax.vmap(env.get_avail_actions)(env_state.env_state)
                 avail_actions = jax.lax.stop_gradient(batchify(avail_actions, env.agents, config["NUM_ACTORS"]))
                 obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
-                role_id = extract_role_id(obs_batch, config)
+                role_id = extract_role_id(obs_batch, env_state, env, config)
                 ac_in = (obs_batch[np.newaxis, :], last_done[np.newaxis, :], avail_actions)
                 
                 ac_hstate, pi = actor_network.apply(train_states[0].params, hstates[0], ac_in)
@@ -420,16 +424,32 @@ def make_train(config):
                 length=config["NUM_UNIT_TYPES"],
             )
             role_present_mask = role_counts > 0
-            role_bit_sums = traj_batch.obs[:, :, -config["NUM_UNIT_TYPES"]:].sum(axis=-1)
+            role_bits = traj_batch.obs[:, :, -config["NUM_UNIT_TYPES"]:]
+            role_bit_sums = role_bits.sum(axis=-1)
             role_bit_sum_min = role_bit_sums.min()
             role_bit_sum_max = role_bit_sums.max()
+            nonzero_role_bits = role_bit_sums > 0
+            obs_role_id = jnp.argmax(role_bits, axis=-1).astype(jnp.int32)
+            obs_role_mismatch_count = jnp.sum(
+                nonzero_role_bits & (obs_role_id != traj_batch.role_id)
+            )
+            zero_obs_role_bits = jnp.sum(role_bit_sums == 0)
 
-            def log_callback(r, w, s, tl, ent, agn, cgn, rc, rpm, rbmin, rbmax):
-                if not np.isclose(rbmin, 1.0) or not np.isclose(rbmax, 1.0):
+            def log_callback(r, w, s, tl, ent, agn, cgn, rc, rpm, rbmin, rbmax, mismatch, zero_bits):
+                if rbmax > 1.0 or mismatch > 0:
                     raise ValueError(
-                        "Role extraction failed: own unit-type slice is not one-hot. "
+                        "Role extraction failed: obs unit-type bits disagree with env-state roles. "
                         f"role_bit_sum_min={rbmin}, role_bit_sum_max={rbmax}, "
-                        f"NUM_UNIT_TYPES={config['NUM_UNIT_TYPES']}"
+                        f"obs_role_mismatch_count={int(mismatch)}, "
+                        f"zero_obs_role_bits={int(zero_bits)}, "
+                        f"NUM_UNIT_TYPES={config['NUM_UNIT_TYPES']}, "
+                        f"ROLE_ID_SOURCE={config['ROLE_ID_SOURCE']!r}"
+                    )
+                if zero_bits > 0:
+                    print(
+                        "WARNING: own-observation unit-type bits are zero for "
+                        f"{int(zero_bits)} transition rows, likely dead units; "
+                        "using env_state_unit_type roles for Stage 1 diagnostics."
                     )
                 role_counts_str = " ".join(
                     f"role_count_{idx}: {int(count)}" for idx, count in enumerate(np.asarray(rc))
@@ -448,6 +468,7 @@ def make_train(config):
                 returns, win_rate, step_count,
                 total_loss, entropy, actor_grad_norm, critic_grad_norm,
                 role_counts, role_present_mask, role_bit_sum_min, role_bit_sum_max,
+                obs_role_mismatch_count, zero_obs_role_bits,
             )
             
             update_steps = update_steps + 1
@@ -491,7 +512,7 @@ if __name__ == "__main__":
         "MAP_NAME": "3m",    # We start with 3m
         "SEED": 42,
         "NUM_UNIT_TYPES": 6,
-        "ROLE_ID_SOURCE": "own_obs_unit_type",
+        "ROLE_ID_SOURCE": "env_state_unit_type",
         "USE_ROLE_LORA": False,
         "USE_SEQUENTIAL_ROLE_UPDATES": False,
         "ENV_KWARGS": {
