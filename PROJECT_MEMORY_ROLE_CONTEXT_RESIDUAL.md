@@ -327,6 +327,9 @@ Important:
 ```text
 For L_residual, shared hidden features and base logits must be stop_gradient.
 Only role LoRA and context gate should receive residual-loss gradients.
+Residual gradients must be added to normal actor gradients and applied in one optimizer step.
+Do not call actor_train_state.apply_gradients twice with the same Adam state.
+Even zero residual gradients can move parameters on a second Adam step because momentum is nonzero.
 ```
 
 KL:

@@ -402,6 +402,13 @@ Before applying residual gradients, zero every parameter gradient except:
     role_lora_A
     role_lora_B
     context gate parameters, only when USE_CONTEXT_GATE=True
+
+Then add the filtered residual gradients to the normal actor gradients and call
+actor_train_state.apply_gradients exactly once.
+
+Do not call apply_gradients once for MAPPO and a second time for residual.
+With Adam, a second optimizer step can move parameters even when residual
+gradients are zero, because the optimizer momentum state is nonzero.
 ```
 
 This explicit gradient filtering is preferred even if `stop_gradient` is used, because it gives a visible safety check that residual gradients cannot update the shared backbone.

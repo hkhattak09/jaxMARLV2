@@ -1016,9 +1016,17 @@ def make_train(config):
                     ):
                         actor_apply_grads = zero_role_lora_grads(actor_grads, config)
 
-                    actor_train_state = actor_train_state.apply_gradients(grads=actor_apply_grads)
                     if config["USE_ROLE_RESIDUAL_LOSS"]:
-                        actor_train_state = actor_train_state.apply_gradients(grads=residual_apply_grads)
+                        # Apply actor and residual gradients in one optimizer step. Calling
+                        # apply_gradients twice on the same Adam state can move parameters on
+                        # the second call even when residual gradients are exactly zero,
+                        # because Adam's momentum state is still active.
+                        actor_apply_grads = jax.tree.map(
+                            lambda actor_grad, residual_grad: actor_grad + residual_grad,
+                            actor_apply_grads,
+                            residual_apply_grads,
+                        )
+                    actor_train_state = actor_train_state.apply_gradients(grads=actor_apply_grads)
                     critic_train_state = critic_train_state.apply_gradients(grads=critic_grads)
 
                     residual_applied_loss = (
