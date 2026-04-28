@@ -138,13 +138,102 @@ class UniformUnitTypeDistribution(Distribution):
         if self.n_enemies >= self.n_allies:
             enemy_unit_types = jnp.zeros((self.n_enemies,), dtype=jnp.uint8)
             enemy_unit_types = enemy_unit_types.at[:self.n_allies].set(ally_unit_types)
-            enemy_unit_types.at[self.n_allies:].set(
-                    jax.random.categorical(
-                        enemy_key,
-                        jnp.log(jnp.ones((self.n_unit_types)) / self.n_unit_types),
-                        shape=(self.n_enemies - self.n_allies,),
-                    ).astype(jnp.uint8)
-                )
+            enemy_unit_types = enemy_unit_types.at[self.n_allies:].set(
+                jax.random.categorical(
+                    enemy_key,
+                    jnp.log(jnp.ones((self.n_unit_types)) / self.n_unit_types),
+                    shape=(self.n_enemies - self.n_allies,),
+                ).astype(jnp.uint8)
+            )
+        else:
+            enemy_unit_types = ally_unit_types[:self.n_enemies]
+
+        return jnp.concatenate([ally_unit_types, enemy_unit_types], dtype=jnp.uint8)
+
+
+class WeightedUnitTypeDistribution(Distribution):
+    """Weighted unit type distribution for race-specific SMACv2 scenarios.
+
+    Args:
+        n_allies: Number of allied units
+        n_enemies: Number of enemy units
+        map_width: Width of the map
+        map_height: Height of the map
+        unit_type_indices: List of unit type indices to sample from
+        weights: List of weights for each unit type (must sum to 1)
+        exception_unit_type_indices: Unit type indices that cannot be the whole team
+    """
+
+    def __init__(
+        self,
+        n_allies,
+        n_enemies,
+        map_width,
+        map_height,
+        unit_type_indices,
+        weights,
+        exception_unit_type_indices=(),
+    ):
+        super().__init__(n_allies, n_enemies, map_width, map_height)
+        self.unit_type_indices = jnp.array(unit_type_indices, dtype=jnp.uint8)
+        self.weights = jnp.array(weights)
+        self.logits = jnp.log(self.weights)
+        self.n_unit_types = len(unit_type_indices)
+        self.exception_unit_type_indices = jnp.array(
+            exception_unit_type_indices, dtype=jnp.uint8
+        )
+        self.has_exceptions = len(exception_unit_type_indices) > 0
+
+    def _all_exception_units(self, unit_types):
+        if not self.has_exceptions:
+            return jnp.array(False)
+        is_exception = unit_types[:, None] == self.exception_unit_type_indices[None, :]
+        return jnp.all(jnp.any(is_exception, axis=1))
+
+    def _sample_team(self, key, n_units, use_exceptions=True):
+        if n_units == 0:
+            return jnp.zeros((0,), dtype=jnp.uint8)
+
+        def sample(sample_key):
+            sampled_indices = jax.random.categorical(
+                sample_key,
+                self.logits,
+                shape=(n_units,),
+            ).astype(jnp.uint8)
+            return self.unit_type_indices[sampled_indices]
+
+        if not self.has_exceptions or not use_exceptions:
+            return sample(key)
+
+        key, sample_key = jax.random.split(key)
+        init_team = sample(sample_key)
+
+        def cond_fn(carry):
+            _, team = carry
+            return self._all_exception_units(team)
+
+        def body_fn(carry):
+            next_key, _ = carry
+            next_key, sample_key = jax.random.split(next_key)
+            return next_key, sample(sample_key)
+
+        _, team = jax.lax.while_loop(cond_fn, body_fn, (key, init_team))
+        return team
+
+    def generate(self, key):
+        enemy_key, ally_key = jax.random.split(key)
+
+        ally_unit_types = self._sample_team(ally_key, self.n_allies)
+
+        if self.n_enemies >= self.n_allies:
+            enemy_unit_types = jnp.zeros((self.n_enemies,), dtype=jnp.uint8)
+            enemy_unit_types = enemy_unit_types.at[:self.n_allies].set(ally_unit_types)
+            enemy_remaining = self._sample_team(
+                enemy_key, self.n_enemies - self.n_allies
+            )
+            enemy_unit_types = enemy_unit_types.at[self.n_allies:].set(
+                enemy_remaining
+            )
         else:
             enemy_unit_types = ally_unit_types[:self.n_enemies]
 

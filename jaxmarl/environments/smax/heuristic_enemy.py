@@ -9,6 +9,7 @@ from functools import partial
 class HeuristicPolicyState:
     default_target: chex.Array  # the place we are headed for
     last_attacked_enemy: int  # needed to remember where we attacked last
+    self_target_slot: int  # own-team action slot for support units
 
     def __eq__(self, other):
         return jnp.all(other.default_target == self.default_target) & (
@@ -85,6 +86,54 @@ def create_heuristic_policy(
             jnp.linalg.norm(enemy_positions, axis=-1) < attack_range
         ) & visible_enemy_mask
         can_shoot = jnp.any(shootable_enemy_mask)
+        is_medivac = env._is_medivac(unit_type)
+
+        ally_health = obs[:first_enemy_idx:num_unit_features]
+        ally_positions = jnp.zeros((team_size - 1, 2))
+        ally_positions = ally_positions.at[:, 0].set(
+            obs[1:first_enemy_idx:num_unit_features],
+        )
+        ally_positions = ally_positions.at[:, 1].set(
+            obs[2:first_enemy_idx:num_unit_features]
+        )
+        ally_positions = scaled_position_to_map(
+            ally_positions,
+            env.unit_type_sight_ranges[unit_type],
+            env.unit_type_sight_ranges[unit_type],
+        )
+        ally_features = obs[:first_enemy_idx].reshape((team_size - 1, num_unit_features))
+        ally_unit_types = jnp.argmax(
+            ally_features[:, 7 : 7 + env.unit_type_bits], axis=-1
+        )
+        if env.medivac_type_idx is None:
+            ally_is_medivac = jnp.zeros((team_size - 1,), dtype=jnp.bool_)
+        else:
+            ally_is_medivac = ally_unit_types == env.medivac_type_idx
+        healable_ally_mask = (
+            (ally_health > 0)
+            & (ally_health < 1.0)
+            & jnp.logical_not(ally_is_medivac)
+            & (
+                jnp.linalg.norm(ally_positions, axis=-1)
+                < env.unit_type_attack_ranges[unit_type]
+            )
+        )
+        can_heal = jnp.any(healable_ally_mask)
+        heal_dist = jnp.linalg.norm(ally_positions, axis=-1)
+        heal_dist = jnp.where(
+            healable_ally_mask,
+            heal_dist,
+            jnp.linalg.norm(jnp.array([env.map_width, env.map_height])),
+        )
+        heal_target_obs_idx = jnp.argmin(heal_dist)
+        heal_action = heal_target_obs_idx + num_move_actions
+        heal_action = jnp.where(
+            (state.self_target_slot >= 0)
+            & (heal_target_obs_idx >= state.self_target_slot),
+            heal_action + 1,
+            heal_action,
+        )
+
         key, key_attack = jax.random.split(key)
         random_attack_action = jax.random.choice(
             key_attack,
@@ -143,15 +192,25 @@ def create_heuristic_policy(
         action_vectors = jnp.array([[0, 1], [1, 0], [0, -1], [-1, 0]])
         similarity = jnp.dot(action_vectors, vector_to_target)
         move_action = jnp.argmax(similarity)
+        medivac_action = jax.lax.cond(
+            can_heal & shoot,
+            lambda: heal_action,
+            lambda: move_action,
+        )
+        combat_action = jax.lax.cond(
+            can_shoot & shoot, lambda: attack_action, lambda: move_action
+        )
         return (
-            jax.lax.cond(can_shoot & shoot, lambda: attack_action, lambda: move_action),
+            jax.lax.cond(is_medivac, lambda: medivac_action, lambda: combat_action),
             state,
         )
 
     return get_heuristic_action
 
 
-def get_heuristic_policy_initial_state():
+def get_heuristic_policy_initial_state(self_target_slot=-1):
     return HeuristicPolicyState(
-        default_target=jnp.array([0.0, 0.0]), last_attacked_enemy=-1
+        default_target=jnp.array([0.0, 0.0]),
+        last_attacked_enemy=-1,
+        self_target_slot=self_target_slot,
     )
