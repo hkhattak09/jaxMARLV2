@@ -27,7 +27,7 @@ from smax_ctm.rosa_config import (
     parse_args,
     print_resolved_config,
 )
-from smax_ctm.rosa_networks import ActorRNN, CriticRNN, ScannedRNN
+from smax_ctm.rosa.rosa_networks import ActorRNN, CriticRNN, ScannedRNN
 from smax_ctm.rosa_utils import (
     adapter_id_from_mode,
     batchify,

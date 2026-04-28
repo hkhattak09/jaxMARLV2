@@ -1197,7 +1197,7 @@ def make_train(config):
 
             def _checkpoint(step, actor_params, critic_params, r, w, ws):
                 s_int = int(step)
-                ckpt_dir = os.path.join(run_dir, f"update_{s_int}")
+                ckpt_dir = os.path.join(run_dir, f"step_{s_int}")
                 os.makedirs(ckpt_dir, exist_ok=True)
 
                 ap = jax.device_get(actor_params)
@@ -1225,11 +1225,12 @@ def make_train(config):
                 )
                 plt.xlabel("Timesteps")
                 plt.ylabel("Win Rate")
+                plt.xlim(0, config["TOTAL_TIMESTEPS"])
                 plt.title(f"MAPPO-T on {config['MAP_NAME']}")
                 plt.legend()
                 plt.grid(True, alpha=0.3)
                 plt.tight_layout()
-                plot_path = os.path.join(run_dir, "win_rate.png")
+                plot_path = os.path.join(run_dir, f"win_rate_{s_int}.png")
                 plt.savefig(plot_path, dpi=100, bbox_inches="tight")
                 plt.close()
 
@@ -1407,7 +1408,7 @@ if __name__ == "__main__":
     end_time = time.time()
     print(f"Training completed in {(end_time - start_time) / 60:.1f} minutes.")
 
-    model_dir = os.path.join(_REPO_ROOT, "model")
+    model_dir = os.path.join(_REPO_ROOT, "saved_model")
     os.makedirs(model_dir, exist_ok=True)
     model_path = os.path.join(model_dir, "smax_mappo_t_actor.pkl")
 
