@@ -17,7 +17,7 @@ def get_default_mappo_t_config():
     return {
         # === Environment ===
         "ENV_NAME": "HeuristicEnemySMAX",
-        "MAP_NAME": "3m",
+        "MAP_NAME": "protoss_10_vs_10",
         "NUM_ENVS": 20,
         "NUM_STEPS": 200,
         "TOTAL_TIMESTEPS": int(1e7),

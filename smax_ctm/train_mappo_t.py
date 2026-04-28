@@ -509,7 +509,7 @@ def make_train(config):
 
         # === Checkpoint / logging setup ===
         save_interval = config.get("SAVE_INTERVAL", 1000000)
-        print_interval = max(1, save_interval // 5)
+        print_interval = max(1, save_interval // 20)
 
         run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
         saved_models_dir = os.path.join(_REPO_ROOT, "saved_models")
