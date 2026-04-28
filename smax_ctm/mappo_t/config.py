@@ -18,13 +18,13 @@ def get_default_mappo_t_config():
         # === Environment ===
         "ENV_NAME": "HeuristicEnemySMAX",
         "MAP_NAME": "protoss_10_vs_10",
-        "NUM_ENVS": 20,
+        "NUM_ENVS": 150,
         "NUM_STEPS": 200,
-        "TOTAL_TIMESTEPS": int(1e7),
+        "TOTAL_TIMESTEPS": int(3e7),
         "SAVE_INTERVAL": 1000000,   # Timesteps between checkpoint saves
         
         # === Model Architecture ===
-        "hidden_sizes": [64, 64, 64],
+        "hidden_sizes": [128, 128, 128],
         "activation_func": "relu",
         "initialization_method": "orthogonal_",
         "gain": 0.01,
@@ -35,7 +35,7 @@ def get_default_mappo_t_config():
         
         # === Transformer Config ===
         "transformer": {
-            "n_embd": 64,            # Embedding dimension
+            "n_embd": 128,            # Embedding dimension
             "n_head": 1,              # Number of attention heads
             "n_encode_layer": 1,       # Number of encoder blocks (n_block = num_agents)
             "n_decode_layer": 0,       # MACA MAPPO-T default uses no decoder blocks
@@ -70,10 +70,10 @@ def get_default_mappo_t_config():
         "SCALE_CLIP_EPS": False,   # Scale clip epsilon by num_agents
         "PPO_EPOCH": 10,           # Actor PPO epochs
         "UPDATE_EPOCHS": 10,       # Backward-compatible alias for PPO_EPOCH
-        "ACTOR_NUM_MINI_BATCH": 1, # Paper actor minibatch count; can be increased
-        "NUM_MINIBATCHES": 1,      # Backward-compatible alias for ACTOR_NUM_MINI_BATCH
+        "ACTOR_NUM_MINI_BATCH": 4, # Paper actor minibatch count; can be increased
+        "NUM_MINIBATCHES": 4,      # Backward-compatible alias for ACTOR_NUM_MINI_BATCH
         "CRITIC_EPOCH": 10,        # Critic update epochs
-        "CRITIC_NUM_MINI_BATCH": 1,# Paper critic minibatch count; can be increased
+        "CRITIC_NUM_MINI_BATCH": 4,# Paper critic minibatch count; can be increased
         "DATA_CHUNK_LENGTH": 10,    # For recurrent generator
         
         # === Value Normalization ===
