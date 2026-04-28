@@ -2,26 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, NamedTuple, Tuple
+from typing import Any, Dict, Tuple
 
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
-import optax
 
 from .transformer import Encoder
-
-
-class CriticTrainState(NamedTuple):
-    apply_fn: Any
-    params: Any
-    tx: optax.GradientTransformation
-    opt_state: Any
-
-    def apply_gradients(self, *, grads):
-        updates, new_opt_state = self.tx.update(grads, self.opt_state, self.params)
-        new_params = optax.apply_updates(self.params, updates)
-        return self._replace(params=new_params, opt_state=new_opt_state)
 
 
 class TransVCritic(nn.Module):
@@ -135,48 +122,3 @@ class TransVCritic(nn.Module):
             output_attentions,
             deterministic,
         )
-
-
-def create_critic_train_state(
-    rng: jnp.ndarray,
-    config: Dict[str, Any],
-    share_obs_space: Any,
-    obs_space: Any,
-    act_space: Any,
-    num_agents: int,
-    state_type: str = "EP",
-) -> CriticTrainState:
-    critic = TransVCritic(
-        config=config,
-        share_obs_space=share_obs_space,
-        obs_space=obs_space,
-        act_space=act_space,
-        num_agents=num_agents,
-        state_type=state_type,
-    )
-
-    obs_dim = obs_space.shape[0]
-    action_dim = act_space.n
-    dummy_obs = jnp.zeros((1, num_agents, obs_dim), dtype=jnp.float32)
-    dummy_action = jnp.zeros((1, num_agents), dtype=jnp.int32)
-    dummy_policy = jnp.ones((1, num_agents, action_dim), dtype=jnp.float32) / action_dim
-    dummy_rnn = jnp.zeros((1, num_agents, config["transformer"]["n_embd"]), dtype=jnp.float32)
-    dummy_resets = jnp.zeros((1, num_agents), dtype=bool)
-
-    params = critic.init(
-        rng,
-        dummy_obs,
-        dummy_action,
-        dummy_policy,
-        dummy_rnn,
-        dummy_resets,
-        True,
-        True,
-    )
-    tx = optax.adam(config.get("CRITIC_LR", config.get("LR", 0.002)), eps=config.get("opti_eps", 1e-5))
-    return CriticTrainState(
-        apply_fn=critic.apply,
-        params=params,
-        tx=tx,
-        opt_state=tx.init(params),
-    )

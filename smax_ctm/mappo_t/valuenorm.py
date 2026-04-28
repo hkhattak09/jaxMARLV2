@@ -22,6 +22,9 @@ class ValueNormState:
         beta: EMA decay rate (default 0.99999 from MACA).
         epsilon: Small constant for numerical stability (default 1e-5).
         var_clamp_min: Minimum variance clamp value (default 1e-2).
+        norm_axes: Number of leading axes that constitute the batch over which
+            statistics are computed. 1 means scalar values (batch,), 2 means
+            per-agent or per-value-dim stats (batch, value_dim).
     """
     running_mean: jnp.ndarray
     running_mean_sq: jnp.ndarray
@@ -29,6 +32,7 @@ class ValueNormState:
     beta: float = struct.field(pytree_node=False, default=0.99999)
     epsilon: float = struct.field(pytree_node=False, default=1e-5)
     var_clamp_min: float = struct.field(pytree_node=False, default=1e-2)
+    norm_axes: int = struct.field(pytree_node=False, default=1)
 
 
 def init_value_norm(
@@ -36,6 +40,7 @@ def init_value_norm(
     beta: float = 0.99999,
     epsilon: float = 1e-5,
     var_clamp_min: float = 1e-2,
+    norm_axes: int = 1,
 ) -> ValueNormState:
     """Initialize a ValueNormState.
     
@@ -44,6 +49,7 @@ def init_value_norm(
         beta: EMA decay rate (default 0.99999 from MACA).
         epsilon: Small constant for numerical stability.
         var_clamp_min: Minimum variance clamp value.
+        norm_axes: Number of leading axes treated as batch dimensions.
         
     Returns:
         Initialized ValueNormState.
@@ -55,6 +61,7 @@ def init_value_norm(
         beta=beta,
         epsilon=epsilon,
         var_clamp_min=var_clamp_min,
+        norm_axes=norm_axes,
     )
 
 
@@ -95,10 +102,10 @@ def value_norm_update(state: ValueNormState, x: jnp.ndarray) -> ValueNormState:
     Returns:
         Updated ValueNormState.
     """
-    # Compute batch statistics (mean over all axes except the last norm_axes)
-    # For scalar values (shape: (batch,)), we compute mean over the batch dimension
-    batch_mean = jnp.mean(x)
-    batch_sq_mean = jnp.mean(x ** 2)
+    # Compute batch statistics over the leading norm_axes dimensions
+    axes = tuple(range(state.norm_axes))
+    batch_mean = jnp.mean(x, axis=axes)
+    batch_sq_mean = jnp.mean(x ** 2, axis=axes)
     
     # EMA update
     weight = state.beta
@@ -113,6 +120,7 @@ def value_norm_update(state: ValueNormState, x: jnp.ndarray) -> ValueNormState:
         beta=state.beta,
         epsilon=state.epsilon,
         var_clamp_min=state.var_clamp_min,
+        norm_axes=state.norm_axes,
     )
 
 
@@ -127,8 +135,8 @@ def value_norm_normalize(state: ValueNormState, x: jnp.ndarray) -> jnp.ndarray:
         Normalized input.
     """
     mean, var = value_norm_running_stats(state)
-    std = jnp.sqrt(var)
-    return (x - mean) / std
+    prefix = (None,) * state.norm_axes
+    return (x - mean[prefix]) / jnp.sqrt(var)[prefix]
 
 
 def value_norm_denormalize(state: ValueNormState, x: jnp.ndarray) -> jnp.ndarray:
@@ -142,8 +150,8 @@ def value_norm_denormalize(state: ValueNormState, x: jnp.ndarray) -> jnp.ndarray
         Denormalized input.
     """
     mean, var = value_norm_running_stats(state)
-    std = jnp.sqrt(var)
-    return x * std + mean
+    prefix = (None,) * state.norm_axes
+    return x * jnp.sqrt(var)[prefix] + mean[prefix]
 
 
 def create_value_norm_dict(
@@ -154,6 +162,7 @@ def create_value_norm_dict(
     beta: float = 0.99999,
     epsilon: float = 1e-5,
     var_clamp_min: float = 1e-2,
+    norm_axes: int = 1,
 ) -> Optional[dict]:
     """Create a dictionary of ValueNorm states for v, q, and eq.
     
@@ -165,6 +174,7 @@ def create_value_norm_dict(
         beta: EMA decay rate.
         epsilon: Numerical stability constant.
         var_clamp_min: Minimum variance clamp.
+        norm_axes: Number of leading axes treated as batch dimensions.
         
     Returns:
         Dictionary with 'v', 'q', 'eq' ValueNormState or None.
@@ -173,9 +183,9 @@ def create_value_norm_dict(
         return None
     
     return {
-        "v": init_value_norm(v_shape, beta, epsilon, var_clamp_min),
-        "q": init_value_norm(q_shape, beta, epsilon, var_clamp_min),
-        "eq": init_value_norm(eq_shape, beta, epsilon, var_clamp_min),
+        "v": init_value_norm(v_shape, beta, epsilon, var_clamp_min, norm_axes),
+        "q": init_value_norm(q_shape, beta, epsilon, var_clamp_min, norm_axes),
+        "eq": init_value_norm(eq_shape, beta, epsilon, var_clamp_min, norm_axes),
     }
 
 

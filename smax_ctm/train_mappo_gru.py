@@ -53,13 +53,15 @@ class SMAXWorldStateWrapper(JaxMARLWrapper):
         return obs, env_state, reward, done, info
 
     @partial(jax.jit, static_argnums=0)
-    def ws_just_env_state(self, obs, state):
+    def ws_just_env_state(self, obs, env_state):
+        del env_state
         world_state = obs["world_state"]
         world_state = world_state[None].repeat(self._env.num_allies, axis=0)
         return world_state
 
     @partial(jax.jit, static_argnums=0)
-    def ws_with_agent_id(self, obs, state):
+    def ws_with_agent_id(self, obs, env_state):
+        del env_state
         world_state = obs["world_state"]
         world_state = world_state[None].repeat(self._env.num_allies, axis=0)
         one_hot = jnp.eye(self._env.num_allies)

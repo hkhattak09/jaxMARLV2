@@ -34,14 +34,10 @@ from jaxmarl.wrappers.baselines import JaxMARLWrapper, SMAXLogWrapper
 from mappo_t import ActorTrans, ScannedRNN, TransVCritic, get_default_mappo_t_config
 from mappo_t.utils import batchify, unbatchify
 from mappo_t.valuenorm import (
-    init_value_norm,
-    value_norm_update,
-    value_norm_normalize,
-    value_norm_denormalize,
     create_value_norm_dict,
-    update_value_norm_dict,
-    normalize_targets,
-    denormalize_predictions,
+    value_norm_denormalize,
+    value_norm_normalize,
+    value_norm_update,
 )
 
 
@@ -68,6 +64,7 @@ class Transition(NamedTuple):
     vq_coma_value_env: jnp.ndarray
     baseline_weights: jnp.ndarray
     attn_weights: jnp.ndarray
+    bad_mask: jnp.ndarray
 
 
 class SMAXWorldStateWrapper(JaxMARLWrapper):
@@ -83,6 +80,18 @@ class SMAXWorldStateWrapper(JaxMARLWrapper):
             self._world_state_size = self._env.state_size + self._env.num_allies
             self.world_state_fn = self.ws_with_agent_id
 
+    def _battle_terminal(self, raw_state):
+        ally_alive = raw_state.unit_alive[: self._env.num_allies]
+        enemy_alive = raw_state.unit_alive[self._env.num_allies :]
+        if self._env.medivac_type_idx is not None:
+            ally_alive = ally_alive & (
+                raw_state.unit_types[: self._env.num_allies] != self._env.medivac_type_idx
+            )
+            enemy_alive = enemy_alive & (
+                raw_state.unit_types[self._env.num_allies :] != self._env.medivac_type_idx
+            )
+        return jnp.all(~ally_alive) | jnp.all(~enemy_alive)
+
     @partial(jax.jit, static_argnums=0)
     def reset(self, key):
         obs, env_state = self._env.reset(key)
@@ -91,19 +100,38 @@ class SMAXWorldStateWrapper(JaxMARLWrapper):
 
     @partial(jax.jit, static_argnums=0)
     def step(self, key, state, action):
-        obs, env_state, reward, done, info = self._env.step(key, state, action)
+        # Use step_env to access pre-auto-reset state for timeout detection.
+        step_key, reset_key = jax.random.split(key)
+        obs_st, state_st, reward, done, info = self._env.step_env(step_key, state, action)
+
+        # Compute bad_transition before losing stepped state.
+        raw_step_state = state_st.state
+        battle_done = self._battle_terminal(raw_step_state)
+        timeout_done = raw_step_state.time >= self._env.max_steps
+        bad_transition = done["__all__"] & timeout_done & ~battle_done
+        info["bad_transition"] = jnp.full((self._env.num_allies,), bad_transition)
+
+        # Manual auto-reset matching MultiAgentEnv.step.
+        obs_reset, state_reset = self._env.reset(reset_key)
+        env_state = jax.tree.map(
+            lambda x, y: jax.lax.select(done["__all__"], x, y), state_reset, state_st
+        )
+        obs = jax.tree.map(
+            lambda x, y: jax.lax.select(done["__all__"], x, y), obs_reset, obs_st
+        )
+
         obs["world_state"] = self.world_state_fn(obs, env_state)
         return obs, env_state, reward, done, info
 
     @partial(jax.jit, static_argnums=0)
-    def ws_just_env_state(self, obs, state):
-        del state
+    def ws_just_env_state(self, obs, env_state):
+        del env_state
         world_state = obs["world_state"]
         return world_state[None].repeat(self._env.num_allies, axis=0)
 
     @partial(jax.jit, static_argnums=0)
-    def ws_with_agent_id(self, obs, state):
-        del state
+    def ws_with_agent_id(self, obs, env_state):
+        del env_state
         world_state = obs["world_state"]
         world_state = world_state[None].repeat(self._env.num_allies, axis=0)
         one_hot = jnp.eye(self._env.num_allies)
@@ -163,13 +191,6 @@ def make_train(config):
         values = jnp.broadcast_to(values[:, None, :], (config["NUM_ENVS"], env.num_agents, values.shape[-1]))
         return env_agent_to_actor(values).squeeze(-1)
 
-    def env_value_to_actor_time(values):
-        values = jnp.broadcast_to(
-            values[:, :, None, :],
-            (values.shape[0], config["NUM_ENVS"], env.num_agents, values.shape[-1]),
-        )
-        return values.swapaxes(1, 2).reshape((config["NUM_STEPS"], config["NUM_ACTORS"]))
-
     def linear_schedule(base_lr, steps_per_update):
         """Linear schedule with proper minibatch step counting.
         
@@ -191,7 +212,7 @@ def make_train(config):
         base_lr = config["CRITIC_LR"]
         min_lr = config["transformer"].get("min_lr", 0.1 * base_lr)
         warmup_epochs = config["transformer"].get("warmup_epochs", 10)
-        critic_steps_per_update = config.get("CRITIC_EPOCH", 10) * config.get("CRITIC_NUM_MINI_BATCH", 1)
+        critic_steps_per_update = config["CRITIC_EPOCH"] * config["CRITIC_NUM_MINI_BATCH"]
 
         def schedule(count):
             # count is the total number of gradient steps taken.
@@ -214,9 +235,36 @@ def make_train(config):
         return schedule
 
     def train(rng):
-        # Validate minibatch configuration
+        # Validate configuration
         from mappo_t.config import validate_mappo_t_config
         validate_mappo_t_config(config, env.num_agents)
+
+        # Guard unsupported features
+        if config["transformer"].get("next_s_pred_loss_coef", 0.0) > 0.0:
+            raise NotImplementedError(
+                "next_s_pred_loss_coef > 0 requires recurrent sequence minibatches, which are not yet implemented."
+            )
+        if not config.get("share_param", True):
+            raise NotImplementedError(
+                "This JAX MAPPO-T trainer currently implements MACA's shared-parameter actor path only."
+            )
+        if not config.get("use_gae", True):
+            raise NotImplementedError(
+                "use_gae=False is not implemented in this JAX MAPPO-T trainer."
+            )
+        if config["transformer"].get("dropout", 0.0) != 0.0:
+            raise NotImplementedError(
+                "Transformer dropout > 0 requires training-time dropout RNG plumbing, which is not implemented."
+            )
+        action_space = env.action_space(env.agents[0])
+        if not hasattr(action_space, "n"):
+            raise ValueError(
+                f"This port currently supports Discrete action spaces only. Got {type(action_space).__name__}."
+            )
+        if config.get("action_aggregation", "single") not in ("single", "prod", "mean"):
+            raise ValueError(
+                f"Unsupported action_aggregation: {config.get('action_aggregation', 'single')}"
+            )
         
         actor_network = ActorTrans(action_dim=action_dim, config=config)
         critic_network = TransVCritic(
@@ -257,8 +305,8 @@ def make_train(config):
             critic_params = apply_tfixup_scaling(critic_params, config["transformer"])
 
         # Calculate steps per update for learning rate schedules
-        actor_steps_per_update = config.get("PPO_EPOCH", config.get("UPDATE_EPOCHS", 10)) * config.get("ACTOR_NUM_MINI_BATCH", config.get("NUM_MINIBATCHES", 1))
-        critic_steps_per_update = config.get("CRITIC_EPOCH", 10) * config.get("CRITIC_NUM_MINI_BATCH", 1)
+        actor_steps_per_update = config["PPO_EPOCH"] * config["ACTOR_NUM_MINI_BATCH"]
+        critic_steps_per_update = config["CRITIC_EPOCH"] * config["CRITIC_NUM_MINI_BATCH"]
 
         if config["ANNEAL_LR"]:
             actor_lr = linear_schedule(config["LR"], actor_steps_per_update)
@@ -276,9 +324,22 @@ def make_train(config):
             optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
             optax.adam(actor_lr, eps=config.get("opti_eps", 1e-5)),
         )
+        betas = config["transformer"].get("betas", [0.9, 0.95])
+        weight_decay = config["transformer"].get("wght_decay", 0.01)
+
+        def decay_mask(params):
+            return jax.tree.map(lambda p: p.ndim >= 2, params)
+
         critic_tx = optax.chain(
             optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-            optax.adam(critic_lr, eps=config.get("opti_eps", 1e-5)),
+            optax.adamw(
+                learning_rate=critic_lr,
+                b1=betas[0],
+                b2=betas[1],
+                eps=config.get("opti_eps", 1e-5),
+                weight_decay=weight_decay,
+                mask=decay_mask(critic_params),
+            ),
         )
         actor_train_state = TrainState.create(
             apply_fn=actor_network.apply, params=actor_params, tx=actor_tx
@@ -304,6 +365,55 @@ def make_train(config):
         cr_init_hstate = jnp.zeros(
             (config["NUM_ENVS"], env.num_agents, critic_hidden_dim), dtype=jnp.float32
         )
+
+        def _run_eval(eval_rng, actor_ts):
+            eval_num_envs = config.get("EVAL_NUM_ENVS", config["NUM_ENVS"])
+            eval_steps = config.get("EVAL_STEPS", config["NUM_STEPS"])
+            eval_rng, reset_rng = jax.random.split(eval_rng)
+            reset_rng = jax.random.split(reset_rng, eval_num_envs)
+            eval_obsv, eval_env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng)
+            eval_ac_hstate = ScannedRNN.initialize_carry(
+                eval_num_envs * env.num_agents, actor_hidden_dim
+            )
+
+            def _eval_env_step(carry, _):
+                actor_train_state, env_s, last_obs, ac_hstate, rng = carry
+                rng, _ = jax.random.split(rng)
+                avail_actions = jax.vmap(env.get_avail_actions)(env_s.env_state)
+                avail_actions = jax.lax.stop_gradient(
+                    batchify(avail_actions, env.agents, eval_num_envs * env.num_agents)
+                )
+                obs_batch = batchify(last_obs, env.agents, eval_num_envs * env.num_agents)
+                ac_in = (
+                    obs_batch[None, :],
+                    jnp.zeros((1, eval_num_envs * env.num_agents), dtype=bool),
+                    avail_actions[None, :],
+                )
+                ac_hstate, pi = actor_network.apply(
+                    actor_train_state.params, ac_hstate, ac_in
+                )
+                action = jnp.argmax(pi.logits, axis=-1).squeeze(0)
+                env_act = unbatchify(
+                    action, env.agents, eval_num_envs, eval_num_envs * env.num_agents
+                )
+                env_act = {k: v.squeeze(-1) for k, v in env_act.items()}
+                rng, step_rng = jax.random.split(rng)
+                step_rng = jax.random.split(step_rng, eval_num_envs)
+                obsv, env_s, reward, done, info = jax.vmap(
+                    env.step, in_axes=(0, 0, 0)
+                )(step_rng, env_s, env_act)
+                reward_batch = batchify(
+                    reward, env.agents, eval_num_envs * env.num_agents
+                ).squeeze()
+                return (actor_train_state, env_s, obsv, ac_hstate, rng), reward_batch
+
+            _, eval_rewards = jax.lax.scan(
+                _eval_env_step,
+                (actor_ts, eval_env_state, eval_obsv, eval_ac_hstate, eval_rng),
+                None,
+                eval_steps,
+            )
+            return jnp.mean(eval_rewards)
 
         def _update_step(update_runner_state, unused):
             runner_state, update_steps = update_runner_state
@@ -372,6 +482,8 @@ def make_train(config):
                 obsv, env_state, reward, done, info = jax.vmap(env.step, in_axes=(0, 0, 0))(
                     step_rng, env_state, env_act
                 )
+                bad_mask_env = 1.0 - info["bad_transition"][:, 0].astype(jnp.float32)
+                bad_mask = jnp.tile(bad_mask_env, env.num_agents)
                 info = jax.tree.map(lambda x: x.reshape((config["NUM_ACTORS"])), info)
                 env_done_batch = jnp.tile(done["__all__"], env.num_agents)
                 agent_done_batch = batchify(done, env.agents, config["NUM_ACTORS"]).squeeze()
@@ -404,6 +516,7 @@ def make_train(config):
                     vq_coma_values.squeeze(-1),
                     baseline_weights,
                     attn_weights,
+                    bad_mask,
                 )
                 runner_state = (
                     train_states,
@@ -456,59 +569,81 @@ def make_train(config):
                 True,
                 True,
             )
-            last_val = env_value_to_actor(last_values)
 
-            # Denormalize predictions for GAE calculation if ValueNorm is enabled
-            if use_valuenorm:
-                last_val_denorm = value_norm_denormalize(value_norm_dict["v"], last_val)
-                last_q_denorm = value_norm_denormalize(value_norm_dict["q"], env_value_to_actor(last_q_values))
-                last_eq_denorm = value_norm_denormalize(value_norm_dict["eq"], env_value_to_actor(last_eq_values))
-            else:
-                last_val_denorm = last_val
-                last_q_denorm = env_value_to_actor(last_q_values)
-                last_eq_denorm = env_value_to_actor(last_eq_values)
+            def _denorm_if_needed(norm_key, x):
+                if use_valuenorm:
+                    return value_norm_denormalize(value_norm_dict[norm_key], x[..., None]).squeeze(-1)
+                return x
 
-            def _calculate_gae(preds, rewards, dones, last_pred):
+            # GAE helper — computes returns from denormalized raw-scale value
+            # predictions when ValueNorm is enabled (matching MACA).
+            # MACA computes GAE with raw values, stores raw returns, and only
+            # normalizes targets inside the critic loss via ValueNorm.
+            def _calculate_gae(preds, rewards, dones, bad_masks, last_pred):
                 def _get_advantages(gae_and_next_value, transition):
                     gae, next_value = gae_and_next_value
-                    done, value, reward = transition
-                    delta = (
-                        reward
-                        + config["GAMMA"] * next_value * (1 - done)
-                        - value
-                    )
-                    gae = delta + config["GAMMA"] * config["GAE_LAMBDA"] * (1 - done) * gae
+                    done, bad_mask, value, reward = transition
+                    mask = 1.0 - done
+                    delta = reward + config["GAMMA"] * next_value * mask - value
+                    gae = delta + config["GAMMA"] * config["GAE_LAMBDA"] * mask * gae
+                    if config.get("use_proper_time_limits", True):
+                        gae = bad_mask * gae
                     return (gae, value), gae
 
                 _, advantages = jax.lax.scan(
                     _get_advantages,
                     (jnp.zeros_like(last_pred), last_pred),
-                    (dones, preds, rewards),
+                    (dones, bad_masks, preds, rewards),
                     reverse=True,
                     unroll=16,
                 )
                 return advantages + preds
 
-            # Use denormalized values for GAE targets
+            # Compute GAE at env-level (T, NUM_ENVS) with denormalized raw-scale
+            # values when ValueNorm is enabled.
+            reward_env = actor_to_env_agent_time(traj_batch.reward)[..., 0]  # (T, NUM_ENVS)
+            done_env = actor_to_env_agent_time(traj_batch.global_done)[..., 0]  # (T, NUM_ENVS)
+            bad_mask_env = actor_to_env_agent_time(traj_batch.bad_mask)[..., 0]  # (T, NUM_ENVS)
+
+            value_preds_for_gae = _denorm_if_needed("v", traj_batch.value_env)
+            q_preds_for_gae = _denorm_if_needed("q", traj_batch.q_value_env)
+            eq_preds_for_gae = _denorm_if_needed("eq", traj_batch.eq_value_env)
+
+            last_values_for_gae = _denorm_if_needed("v", last_values.squeeze(-1))
+            last_q_values_for_gae = _denorm_if_needed("q", last_q_values.squeeze(-1))
+            last_eq_values_for_gae = _denorm_if_needed("eq", last_eq_values.squeeze(-1))
+
             value_targets = _calculate_gae(
-                value_norm_denormalize(value_norm_dict["v"], traj_batch.value) if use_valuenorm else traj_batch.value,
-                traj_batch.reward,
-                traj_batch.global_done,
-                last_val_denorm,
-            )
+                value_preds_for_gae,
+                reward_env,
+                done_env,
+                bad_mask_env,
+                last_values_for_gae,
+            )  # (T, NUM_ENVS) — env-level value returns
             q_targets = _calculate_gae(
-                env_value_to_actor_time(value_norm_denormalize(value_norm_dict["q"], traj_batch.q_value_env[..., None])) if use_valuenorm else env_value_to_actor_time(traj_batch.q_value_env[..., None]),
-                traj_batch.reward,
-                traj_batch.global_done,
-                last_q_denorm,
-            )
+                q_preds_for_gae,
+                reward_env,
+                done_env,
+                bad_mask_env,
+                last_q_values_for_gae,
+            )  # (T, NUM_ENVS)
             eq_targets = _calculate_gae(
-                env_value_to_actor_time(value_norm_denormalize(value_norm_dict["eq"], traj_batch.eq_value_env[..., None])) if use_valuenorm else env_value_to_actor_time(traj_batch.eq_value_env[..., None]),
-                traj_batch.reward,
-                traj_batch.global_done,
-                last_eq_denorm,
-            )
-            eq_returns_env = actor_to_env_agent_time(eq_targets)
+                eq_preds_for_gae,
+                reward_env,
+                done_env,
+                bad_mask_env,
+                last_eq_values_for_gae,
+            )  # (T, NUM_ENVS)
+
+            # Broadcast eq returns to (T, NUM_ENVS, num_agents) for advantage
+            # computation. Each agent in an env sees the same env-level return.
+            eq_returns_env = jnp.broadcast_to(
+                eq_targets[..., None],
+                (config["NUM_STEPS"], config["NUM_ENVS"], env.num_agents),
+            )  # (T, NUM_ENVS, num_agents)
+
+            # Denormalize eq predictions for the baseline (matching MACA).
+            # VQ and VQ_COMA stay raw — ValueNorm is not used for vq pred.
             eq_value_env_for_baseline = (
                 value_norm_denormalize(
                     value_norm_dict["eq"], traj_batch.eq_value_env[..., None]
@@ -535,7 +670,7 @@ def make_train(config):
             # === Prepare actor minibatch data ===
             # Flatten: (T, NUM_ACTORS, ...) -> (T * NUM_ACTORS, ...)
             actor_batch_size = config["NUM_STEPS"] * config["NUM_ACTORS"]
-            actor_num_mini_batch = config.get("ACTOR_NUM_MINI_BATCH", config.get("NUM_MINIBATCHES", 1))
+            actor_num_mini_batch = config["ACTOR_NUM_MINI_BATCH"]
             actor_mini_batch_size = actor_batch_size // actor_num_mini_batch
             
             # Flatten actor tensors
@@ -550,7 +685,7 @@ def make_train(config):
             # === Prepare critic minibatch data ===
             # Flatten: (T, NUM_ENVS, ...) -> (T * NUM_ENVS, ...) but preserve agent axis
             critic_batch_size = config["NUM_STEPS"] * config["NUM_ENVS"]
-            critic_num_mini_batch = config.get("CRITIC_NUM_MINI_BATCH", 1)
+            critic_num_mini_batch = config["CRITIC_NUM_MINI_BATCH"]
             critic_mini_batch_size = critic_batch_size // critic_num_mini_batch
             
             # Critic tensors: reshape to (T*NUM_ENVS, num_agents, ...)
@@ -559,12 +694,11 @@ def make_train(config):
             critic_policy_probs_all = traj_batch.policy_probs_all.reshape(critic_batch_size, env.num_agents, action_dim)  # (T*NE, agents, action_dim)
             critic_done = actor_to_env_agent_time(traj_batch.done).reshape(critic_batch_size, env.num_agents)  # (T*NE, agents)
             
-            # Critic targets are env-level. Returns were calculated in actor order
-            # for PPO advantages, so convert back to (T, env, agent) and average
-            # the broadcast agent dimension.
-            critic_value_targets = actor_to_env_agent_time(value_targets).mean(axis=-1).reshape(critic_batch_size)
-            critic_q_targets = actor_to_env_agent_time(q_targets).mean(axis=-1).reshape(critic_batch_size)
-            critic_eq_targets = actor_to_env_agent_time(eq_targets).mean(axis=-1).reshape(critic_batch_size)
+            # Critic targets are already env-level (T, NUM_ENVS) from raw GAE.
+            # Flatten to (T*NUM_ENVS,) for minibatch indexing.
+            critic_value_targets = value_targets.reshape(critic_batch_size)
+            critic_q_targets = q_targets.reshape(critic_batch_size)
+            critic_eq_targets = eq_targets.reshape(critic_batch_size)
             
             # Old predictions for clipping: (T*NUM_ENVS,)
             critic_value_old = traj_batch.value_env.reshape(critic_batch_size)
@@ -597,8 +731,24 @@ def make_train(config):
                         (mb_obs, mb_done, mb_avail),
                     )
                     log_prob = pi.log_prob(mb_action)
-                    logratio = log_prob - mb_log_prob
-                    ratio = jnp.exp(logratio)
+
+                    def _aggregate_ratio_and_logratio(lp, old_lp):
+                        logratio_parts = lp - old_lp
+                        ratio_parts = jnp.exp(logratio_parts)
+                        if ratio_parts.ndim > mb_adv.ndim:
+                            agg = config.get("action_aggregation", "single")
+                            if agg == "prod":
+                                return (
+                                    jnp.prod(ratio_parts, axis=-1),
+                                    jnp.sum(logratio_parts, axis=-1),
+                                )
+                            if agg == "mean":
+                                ratio = jnp.mean(ratio_parts, axis=-1)
+                                return ratio, jnp.log(jnp.maximum(ratio, 1e-8))
+                            raise ValueError(f"Unsupported action_aggregation: {agg}")
+                        return ratio_parts, logratio_parts
+
+                    ratio, logratio = _aggregate_ratio_and_logratio(log_prob, mb_log_prob)
                     loss_actor1 = ratio * mb_adv
                     loss_actor2 = (
                         jnp.clip(ratio, 1.0 - config["CLIP_PARAM"], 1.0 + config["CLIP_PARAM"])
@@ -624,6 +774,12 @@ def make_train(config):
                 actor_grad_norm = optax.global_norm(actor_grads)
                 actor_train_state = actor_train_state.apply_gradients(grads=actor_grads)
                 
+                actor_grad_var = 0.0
+                if config.get("log_actor_grad_var", False):
+                    flat_grads = jax.flatten_util.ravel_pytree(actor_grads)[0]
+                    actor_grad_var = jnp.mean(jnp.square(flat_grads)) - jnp.square(jnp.mean(flat_grads))
+                    actor_grad_var = jnp.linalg.norm(actor_grad_var)
+
                 actor_info = {
                     "actor_loss": actor_aux[0],
                     "entropy": actor_aux[1],
@@ -631,6 +787,7 @@ def make_train(config):
                     "clip_frac": actor_aux[3],
                     "actor_grad_norm": actor_grad_norm,
                     "mb_active_count": actor_aux[4],
+                    "actor_grad_var": actor_grad_var,
                 }
                 return actor_train_state, actor_info
             
@@ -685,17 +842,26 @@ def make_train(config):
                     
                     # Update ValueNorm with raw targets before computing loss
                     if norm_dict is not None and use_valuenorm:
-                        new_v_norm = value_norm_update(norm_dict["v"], mb_value_targets)
-                        new_q_norm = value_norm_update(norm_dict["q"], mb_q_targets)
-                        new_eq_norm = value_norm_update(norm_dict["eq"], mb_eq_targets)
+                        mb_value_targets_vn = mb_value_targets[..., None]
+                        mb_q_targets_vn = mb_q_targets[..., None]
+                        mb_eq_targets_vn = mb_eq_targets[..., None]
+                        new_v_norm = value_norm_update(norm_dict["v"], mb_value_targets_vn)
+                        new_q_norm = value_norm_update(norm_dict["q"], mb_q_targets_vn)
+                        new_eq_norm = value_norm_update(norm_dict["eq"], mb_eq_targets_vn)
                         norm_dict = {
                             "v": new_v_norm,
                             "q": new_q_norm,
                             "eq": new_eq_norm,
                         }
-                        v_targets_norm = value_norm_normalize(norm_dict["v"], mb_value_targets)
-                        q_targets_norm = value_norm_normalize(norm_dict["q"], mb_q_targets)
-                        eq_targets_norm = value_norm_normalize(norm_dict["eq"], mb_eq_targets)
+                        v_targets_norm = value_norm_normalize(
+                            norm_dict["v"], mb_value_targets_vn
+                        ).squeeze(-1)
+                        q_targets_norm = value_norm_normalize(
+                            norm_dict["q"], mb_q_targets_vn
+                        ).squeeze(-1)
+                        eq_targets_norm = value_norm_normalize(
+                            norm_dict["eq"], mb_eq_targets_vn
+                        ).squeeze(-1)
                     else:
                         v_targets_norm = mb_value_targets
                         q_targets_norm = mb_q_targets
@@ -748,6 +914,7 @@ def make_train(config):
                     "q_value_loss": critic_aux[1],
                     "eq_value_loss": critic_aux[2],
                     "critic_grad_norm": critic_grad_norm,
+                    "next_s_pred_loss": 0.0,
                 }
                 return (critic_train_state, value_norm_dict), critic_info
             
@@ -804,7 +971,7 @@ def make_train(config):
                 _scan_actor_epoch,
                 (actor_train_state, actor_rng),
                 None,
-                config.get("PPO_EPOCH", config.get("UPDATE_EPOCHS", 10)),
+                config["PPO_EPOCH"],
             )
             
             # Run epochs for critic
@@ -818,7 +985,7 @@ def make_train(config):
                 _scan_critic_epoch,
                 ((critic_train_state, value_norm_dict), critic_rng),
                 None,
-                config.get("CRITIC_EPOCH", 10),
+                config["CRITIC_EPOCH"],
             )
             actor_epoch_infos = jax.tree.map(lambda x: x.mean(), actor_epoch_infos)
             critic_epoch_infos = jax.tree.map(lambda x: x.mean(), critic_epoch_infos)
@@ -841,6 +1008,18 @@ def make_train(config):
                 + config["transformer"]["q_value_loss_coef"] * loss_info["q_value_loss"]
                 + config["transformer"]["eq_value_loss_coef"] * loss_info["eq_value_loss"]
             )
+
+            rng, eval_rng = jax.random.split(rng)
+            do_eval = config.get("USE_EVAL", False) & (
+                update_steps % config.get("EVAL_INTERVAL", 100) == 0
+            )
+            eval_return = jax.lax.cond(
+                do_eval,
+                lambda r: _run_eval(r, actor_train_state),
+                lambda _: jnp.array(0.0),
+                eval_rng,
+            )
+            loss_info["eval_return"] = eval_return
 
             metric = jax.tree.map(
                 lambda x: x.reshape((config["NUM_STEPS"], config["NUM_ENVS"], env.num_agents)),

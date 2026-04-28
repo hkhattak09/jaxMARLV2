@@ -97,18 +97,11 @@ class ActorTrans(nn.Module):
             rnn_states, embedding = ScannedRNN(name="rnn")(rnn_states, (embedding, resets))
 
         logits = nn.Dense(
-            hidden_sizes[-1],
-            kernel_init=orthogonal(2.0),
-            bias_init=constant(0.0),
-            name="action_0",
-        )(embedding)
-        logits = active_fn(logits)
-        logits = nn.Dense(
             self.action_dim,
             kernel_init=orthogonal(cfg.get("gain", 0.01)),
             bias_init=constant(0.0),
-            name="action_1",
-        )(logits)
+            name="action_out",
+        )(embedding)
 
         if available_actions is not None:
             if available_actions.ndim == logits.ndim - 1:

@@ -1,0 +1,70 @@
+import torch
+import torch.nn as nn
+from harl.models.base.mlp import MLPBase
+from harl.models.base.rnn import RNNLayer
+from harl.utils.envs_tools import check, get_shape_from_obs_space, get_dim_from_act_space
+from harl.utils.models_tools import init, get_init_method
+
+
+class DiscreteQNet(nn.Module):
+    """V Network. Outputs value function predictions given global states."""
+
+    def __init__(self, args, obs_space, action_space, device=torch.device("cpu")):
+        """Initialize VNet model.
+        Args:
+            args: (dict) arguments containing relevant model information.
+            obs_space: (gym.Space) observation space.
+            device: (torch.device) specifies the device to run on (cpu/gpu).
+        """
+        super().__init__()
+        args = args.copy()
+        self.critic_hidden_x = args["critic_hidden_x"]
+        args["hidden_sizes"] = [self.critic_hidden_x*size for size in args["hidden_sizes"][:-1]]
+        self.hidden_sizes = args["hidden_sizes"]
+        self.initialization_method = args["initialization_method"]
+        self.use_naive_recurrent_policy = args["use_naive_recurrent_policy"]
+        self.use_recurrent_policy = args["use_recurrent_policy"]
+        self.recurrent_n = args["recurrent_n"]
+        self.tpdv = dict(dtype=torch.float32, device=device)
+        init_method = get_init_method(self.initialization_method)
+
+        obs_shape = get_shape_from_obs_space(obs_space)
+        base = MLPBase
+        self.base = base(args, obs_shape)
+
+        if self.use_naive_recurrent_policy or self.use_recurrent_policy:
+            self.rnn = RNNLayer(
+                self.hidden_sizes[-1],
+                self.hidden_sizes[-1],
+                self.recurrent_n,
+                self.initialization_method,
+            )
+
+        def init_(m):
+            return init(m, init_method, lambda x: nn.init.constant_(x, 0))
+
+        action_dim = get_dim_from_act_space(action_space)
+        self.q_out = init_(nn.Linear(self.hidden_sizes[-1], action_dim))
+
+        self.to(device)
+
+    def forward(self, obs, rnn_states, masks):
+        """Compute actions from the given inputs.
+        Args:
+            obs: (np.ndarray / torch.Tensor) observation inputs into network.
+            rnn_states: (np.ndarray / torch.Tensor) if RNN network, hidden states for RNN.
+            masks: (np.ndarray / torch.Tensor) mask tensor denoting if RNN states should be reinitialized to zeros.
+        Returns:
+            q_values: (torch.Tensor) value function predictions.
+            rnn_states: (torch.Tensor) updated RNN hidden states.
+        """
+        obs = check(obs).to(**self.tpdv)
+        rnn_states = check(rnn_states).to(**self.tpdv)
+        masks = check(masks).to(**self.tpdv)
+
+        critic_features = self.base(obs)
+        if self.use_naive_recurrent_policy or self.use_recurrent_policy:
+            critic_features, rnn_states = self.rnn(critic_features, rnn_states, masks)
+        q_values = self.q_out(critic_features)
+
+        return q_values, rnn_states
