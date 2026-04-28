@@ -122,6 +122,115 @@ class SurroundAndReflectPositionDistribution(Distribution):
         )
 
 
+class SMACv2ReflectPositionDistribution(Distribution):
+    @partial(jax.jit, static_argnums=(0,))
+    def generate(self, key: chex.PRNGKey):
+        key, ally_key = jax.random.split(key)
+        ally_pos = jax.random.uniform(
+            ally_key,
+            shape=(self.n_allies, 2),
+            minval=jnp.array([0.0, 0.0]),
+            maxval=jnp.array([self.map_width / 2 - 1, self.map_height]),
+        )
+        enemy_pos = jnp.zeros((self.n_enemies, 2))
+
+        if self.n_enemies >= self.n_allies:
+            enemy_pos = enemy_pos.at[: self.n_allies, 0].set(self.map_width - ally_pos[:, 0])
+            enemy_pos = enemy_pos.at[: self.n_allies, 1].set(ally_pos[:, 1])
+            enemy_pos = enemy_pos.at[self.n_allies :, :].set(
+                jax.random.uniform(
+                    key,
+                    shape=(self.n_enemies - self.n_allies, 2),
+                    minval=jnp.array([self.map_width / 2, 0.0]),
+                    maxval=jnp.array([self.map_width, self.map_height]),
+                )
+            )
+        else:
+            enemy_pos = enemy_pos.at[:, 0].set(self.map_width - ally_pos[: self.n_enemies, 0])
+            enemy_pos = enemy_pos.at[:, 1].set(ally_pos[: self.n_enemies, 1])
+
+        return jnp.concatenate([ally_pos, enemy_pos])
+
+
+class SMACv2SurroundPositionDistribution(Distribution):
+    @partial(jax.jit, static_argnums=(0,))
+    def generate(self, key):
+        def draw_positions(key_, n_inside, n_outside):
+            centre_pos = jnp.zeros((n_inside, 2))
+            centre_pos = centre_pos.at[:, :].set(
+                jnp.array([self.map_width / 2, self.map_height / 2])
+            )
+
+            # Random number of active groups 1..4
+            key_, n_groups_key = jax.random.split(key_)
+            n_groups = jax.random.randint(n_groups_key, shape=(), minval=1, maxval=5)
+
+            # Select n_groups corners without replacement via permutation ranking
+            key_, perm_key = jax.random.split(key_)
+            corner_scores = jax.random.uniform(perm_key, shape=(4,))
+            corner_ranks = jnp.argsort(corner_scores)
+            is_active = jnp.arange(4) < n_groups
+            active_by_raw_corner = jnp.zeros((4,), dtype=jnp.bool_)
+            active_by_raw_corner = active_by_raw_corner.at[corner_ranks].set(is_active)
+
+            # Assign each outside unit to one of the active corners
+            key_, assign_key = jax.random.split(key_)
+            logits = jnp.where(active_by_raw_corner, 0.0, -1e9)
+            group_assignments = jax.random.categorical(
+                assign_key, logits, shape=(n_outside,)
+            )
+
+            corners = jnp.array(
+                [
+                    [0.0, 0.0],
+                    [0.0, self.map_height],
+                    [self.map_width, 0.0],
+                    [self.map_width, self.map_height],
+                ]
+            )
+            corner_positions = corners[group_assignments]
+
+            centre = jnp.array([self.map_width / 2, self.map_height / 2])
+            key_, t_key = jax.random.split(key_)
+            # Near-center diagonal placement: t in [0.5, 1.0]
+            t_vals = jax.random.uniform(t_key, shape=(4, 1), minval=0.5, maxval=1.0)
+            t = t_vals[group_assignments]
+            outside_pos = t * centre[None, :] + (1 - t) * corner_positions
+            return {"outside": outside_pos, "inside": centre_pos}
+
+        key, ally_key, enemy_key = jax.random.split(key, num=3)
+        ally_inside_positions = draw_positions(ally_key, self.n_allies, self.n_enemies)
+        ally_inside_positions = jnp.concatenate(
+            [ally_inside_positions["inside"], ally_inside_positions["outside"]]
+        )
+        enemy_inside_positions = draw_positions(enemy_key, self.n_enemies, self.n_allies)
+        enemy_inside_positions = jnp.concatenate(
+            [enemy_inside_positions["outside"], enemy_inside_positions["inside"]]
+        )
+        ally_inside = jax.random.randint(key, shape=(), minval=0, maxval=2)
+        return jax.lax.select(ally_inside, ally_inside_positions, enemy_inside_positions)
+
+
+class SMACv2SurroundAndReflectPositionDistribution(Distribution):
+    def __init__(self, n_allies, n_enemies, map_width, map_height):
+        super().__init__(n_allies, n_enemies, map_width, map_height)
+        self.surround_distribution = SMACv2SurroundPositionDistribution(
+            n_allies, n_enemies, map_width, map_height
+        )
+        self.reflect_distribution = SMACv2ReflectPositionDistribution(
+            n_allies, n_enemies, map_width, map_height
+        )
+
+    def generate(self, key):
+        key_draw, key_surround, key_reflect = jax.random.split(key, num=3)
+        val = jax.random.uniform(key_draw)
+        return jax.lax.select(
+            val < 0.5,
+            self.surround_distribution.generate(key_surround),
+            self.reflect_distribution.generate(key_reflect),
+        )
+
+
 class UniformUnitTypeDistribution(Distribution):
     def __init__(self, n_allies, n_enemies, map_width, map_height, n_unit_types):
         super().__init__(n_allies, n_enemies, map_width, map_height)

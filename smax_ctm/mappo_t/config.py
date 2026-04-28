@@ -112,6 +112,11 @@ def get_default_mappo_t_config():
             # Match MACA's SMACv2 paper profile, where episode_length=200 is
             # also the battle horizon. JaxMARL SMAX defaults to 100.
             "max_steps": 200,
+            # Opt-in SMACv2 parity flags for race scenarios
+            "smacv2_unit_stats": True,
+            "smacv2_position_parity": True,
+            "reward_mode": "smacv2",
+            "movement_mode": "smacv2",
         },
         
         # === Seed ===

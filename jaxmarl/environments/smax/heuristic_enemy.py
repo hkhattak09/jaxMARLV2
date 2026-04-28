@@ -189,9 +189,17 @@ def create_heuristic_policy(
             can_see, lambda: random_enemy_target, lambda: state.default_target
         )
         vector_to_target = target - own_position
-        action_vectors = jnp.array([[0, 1], [1, 0], [0, -1], [-1, 0]])
-        similarity = jnp.dot(action_vectors, vector_to_target)
-        move_action = jnp.argmax(similarity)
+        if env.movement_mode == "smacv2":
+            # SMACv2 action ids: 2=north, 3=south, 4=east, 5=west
+            action_vectors = jnp.array(
+                [[0.0, 1.0], [0.0, -1.0], [1.0, 0.0], [-1.0, 0.0]]
+            )
+            similarity = jnp.dot(action_vectors, vector_to_target)
+            move_action = jnp.argmax(similarity) + 2
+        else:
+            action_vectors = jnp.array([[0, 1], [1, 0], [0, -1], [-1, 0]])
+            similarity = jnp.dot(action_vectors, vector_to_target)
+            move_action = jnp.argmax(similarity)
         medivac_action = jax.lax.cond(
             can_heal & shoot,
             lambda: heal_action,

@@ -6,6 +6,7 @@ from jaxmarl.environments.multi_agent_env import MultiAgentEnv
 from jaxmarl.environments.spaces import Box, Discrete
 from jaxmarl.environments.smax.distributions import (
     SurroundAndReflectPositionDistribution,
+    SMACv2SurroundAndReflectPositionDistribution,
     UniformUnitTypeDistribution,
     WeightedUnitTypeDistribution,
 )
@@ -293,6 +294,10 @@ class SMAX(MultiAgentEnv):
         max_steps=100,
         smacv2_position_generation=False,
         smacv2_unit_type_generation=False,
+        smacv2_unit_stats=False,
+        smacv2_position_parity=False,
+        reward_mode="smax",
+        movement_mode="smax",
         observation_type="unit_list",
         action_type="discrete",
     ) -> None:
@@ -301,11 +306,16 @@ class SMAX(MultiAgentEnv):
             unit_type_shorthands = SMACV2_UNIT_TYPE_SHORTHANDS
             unit_type_velocities = SMACV2_UNIT_TYPE_VELOCITIES
             unit_type_attacks = SMACV2_UNIT_TYPE_ATTACKS
-            unit_type_attack_ranges = SMACV2_UNIT_TYPE_ATTACK_RANGES
+            unit_type_attack_ranges = jnp.copy(SMACV2_UNIT_TYPE_ATTACK_RANGES)
             unit_type_sight_ranges = SMACV2_UNIT_TYPE_SIGHT_RANGES
             unit_type_radiuses = SMACV2_UNIT_TYPE_RADII
-            unit_type_health = SMACV2_UNIT_TYPE_HEALTH
+            unit_type_health = jnp.copy(SMACV2_UNIT_TYPE_HEALTH)
             unit_type_weapon_cooldowns = SMACV2_UNIT_TYPE_WEAPON_COOLDOWNS
+            if smacv2_unit_stats:
+                # Colossus health: 200 -> 350
+                unit_type_health = unit_type_health.at[6].set(350.0)
+                # Baneling attack range: 1.0 -> 2.0
+                unit_type_attack_ranges = unit_type_attack_ranges.at[8].set(2.0)
 
         self.num_allies = num_allies if scenario is None else scenario.num_allies
         self.num_enemies = num_enemies if scenario is None else scenario.num_enemies
@@ -313,7 +323,8 @@ class SMAX(MultiAgentEnv):
         self.walls_cause_death = walls_cause_death
         self.unit_type_names = unit_type_names
         self.unit_type_shorthands = unit_type_shorthands
-        self.num_movement_actions = 5  # 5 cardinal directions + stop
+        self.movement_mode = movement_mode
+        self.num_movement_actions = 6 if self.movement_mode == "smacv2" else 5
         self.world_steps_per_env_step = world_steps_per_env_step
         self.map_width = map_width
         self.map_height = map_height
@@ -352,9 +363,16 @@ class SMAX(MultiAgentEnv):
             if scenario is None
             else scenario.smacv2_position_generation
         )
-        self.position_generator = SurroundAndReflectPositionDistribution(
-            self.num_allies, self.num_enemies, self.map_width, self.map_height
-        )
+        self.smacv2_position_parity = smacv2_position_parity
+        self.reward_mode = reward_mode
+        if self.smacv2_position_parity and self.smacv2_position_generation:
+            self.position_generator = SMACv2SurroundAndReflectPositionDistribution(
+                self.num_allies, self.num_enemies, self.map_width, self.map_height
+            )
+        else:
+            self.position_generator = SurroundAndReflectPositionDistribution(
+                self.num_allies, self.num_enemies, self.map_width, self.map_height
+            )
         # Default to uniform distribution; can be overridden for race-specific scenarios
         self.unit_type_generator = UniformUnitTypeDistribution(
             self.num_allies,
@@ -587,15 +605,58 @@ class SMAX(MultiAgentEnv):
     def compute_reward(self, state, health_before, health_after):
         @partial(jax.jit, static_argnums=(0,))
         def compute_team_reward(team_idx):
-            # compute how much the enemy team health has decreased
             other_team_idx = jnp.logical_not(team_idx).astype(jnp.uint32)
             other_team_start_idx = jnp.array([0, self.num_allies])[other_team_idx]
             team_start_idx = jnp.array([0, self.num_allies])[team_idx]
 
             team_size = self.num_allies if team_idx == 0 else self.num_enemies
-
             enemy_team_size = self.num_enemies if team_idx == 0 else self.num_allies
 
+            if self.reward_mode == "smacv2":
+                other_team_health_before = jax.lax.dynamic_slice_in_dim(
+                    health_before, other_team_start_idx, enemy_team_size
+                )
+                other_team_health_after = jax.lax.dynamic_slice_in_dim(
+                    health_after, other_team_start_idx, enemy_team_size
+                )
+                other_team_types = jax.lax.dynamic_slice_in_dim(
+                    state.unit_types, other_team_start_idx, enemy_team_size
+                )
+
+                health_damage = jnp.maximum(
+                    other_team_health_before - other_team_health_after, 0.0
+                )
+                damage_reward = jnp.sum(health_damage)
+
+                newly_dead = (other_team_health_before > 0) & (other_team_health_after <= 0)
+                death_reward = jnp.sum(newly_dead) * 10.0
+
+                own_team_alive = jax.lax.dynamic_slice_in_dim(
+                    state.unit_alive, team_start_idx, team_size
+                )
+                other_team_alive = jax.lax.dynamic_slice_in_dim(
+                    state.unit_alive, other_team_start_idx, enemy_team_size
+                )
+                if self.medivac_type_idx is not None:
+                    other_team_is_medivac = other_team_types == self.medivac_type_idx
+                    own_team_types = jax.lax.dynamic_slice_in_dim(
+                        state.unit_types, team_start_idx, team_size
+                    )
+                    own_team_alive = own_team_alive & (
+                        own_team_types != self.medivac_type_idx
+                    )
+                    other_team_alive = other_team_alive & (~other_team_is_medivac)
+
+                won_battle = jnp.all(~other_team_alive) & jnp.any(own_team_alive)
+                win_reward = jnp.where(won_battle, 200.0, 0.0)
+
+                max_health_reward = jnp.sum(self.unit_type_health[other_team_types])
+                max_reward = max_health_reward + enemy_team_size * 10.0 + 200.0
+                scale = max_reward / 20.0
+                reward = (damage_reward + death_reward + win_reward) / scale
+                return jax.lax.select(self.use_self_play_reward, 0.0, reward)
+
+            # Default SMAX reward mode
             enemy_health_delta = jax.lax.dynamic_slice_in_dim(
                 (health_after - health_before)
                 / self.unit_type_health[state.unit_types],
@@ -726,29 +787,46 @@ class SMAX(MultiAgentEnv):
         self, actions: chex.Array
     ) -> Tuple[chex.Array, chex.Array]:
         def _decode_movement_action(action):
-            vec = jax.lax.cond(
-                # action is an attack action OR stop (action 4)
-                action >= self.num_movement_actions - 1,
-                lambda: jnp.zeros((2,)),
-                lambda: jnp.array(
+            if self.movement_mode == "smacv2":
+                is_stationary = (action <= 1) | (action >= self.num_movement_actions)
+                vec = jax.lax.cond(
+                    is_stationary,
+                    lambda: jnp.zeros((2,)),
+                    lambda: jax.lax.switch(
+                        action - 2,
+                        [
+                            lambda: jnp.array([0.0, 1.0]),   # north
+                            lambda: jnp.array([0.0, -1.0]),  # south
+                            lambda: jnp.array([1.0, 0.0]),   # east
+                            lambda: jnp.array([-1.0, 0.0]),  # west
+                        ],
+                    ),
+                )
+                return vec
+            else:
+                vec = jax.lax.cond(
+                    # action is an attack action OR stop (action 4)
+                    action >= self.num_movement_actions - 1,
+                    lambda: jnp.zeros((2,)),
+                    lambda: jnp.array(
+                        [
+                            (-1) ** (action // 2) * (1.0 / jnp.sqrt(2)),
+                            (-1) ** (action // 2 + action % 2) * (1.0 / jnp.sqrt(2)),
+                        ]
+                    ),
+                )
+                rotation = jnp.array(
                     [
-                        (-1) ** (action // 2) * (1.0 / jnp.sqrt(2)),
-                        (-1) ** (action // 2 + action % 2) * (1.0 / jnp.sqrt(2)),
+                        [1.0 / jnp.sqrt(2), -1.0 / jnp.sqrt(2)],
+                        [1.0 / jnp.sqrt(2), 1.0 / jnp.sqrt(2)],
                     ]
-                ),
-            )
-            rotation = jnp.array(
-                [
-                    [1.0 / jnp.sqrt(2), -1.0 / jnp.sqrt(2)],
-                    [1.0 / jnp.sqrt(2), 1.0 / jnp.sqrt(2)],
-                ]
-            )
-            vec = rotation @ vec
-            return vec
+                )
+                vec = rotation @ vec
+                return vec
 
         movement_actions = jax.vmap(_decode_movement_action)(actions)
         attack_actions = jnp.where(
-            actions > self.num_movement_actions - 1, actions, jnp.zeros_like(actions)
+            actions >= self.num_movement_actions, actions, jnp.zeros_like(actions)
         )
         return movement_actions, attack_actions
 
@@ -862,12 +940,17 @@ class SMAX(MultiAgentEnv):
             # diagonal directions. Then rotate the velocity 45
             # degrees anticlockwise to compute the movement.
             pos = state.unit_positions[idx]
-            new_pos = (
-                pos
-                + vec
-                * self.unit_type_velocities[state.unit_types[idx]]
-                * self.time_per_step
-            )
+            if self.movement_mode == "smacv2":
+                # SMACv2 fixed move amount per env step = 2.0
+                step_move_amount = 2.0 / self.world_steps_per_env_step
+                new_pos = pos + vec * step_move_amount
+            else:
+                new_pos = (
+                    pos
+                    + vec
+                    * self.unit_type_velocities[state.unit_types[idx]]
+                    * self.time_per_step
+                )
             # avoid going out of bounds
             new_pos = jnp.maximum(
                 jnp.minimum(new_pos, jnp.array([self.map_width, self.map_height])),
@@ -1189,15 +1272,26 @@ class SMAX(MultiAgentEnv):
             num_actions = {0: self.num_ally_actions, 1: self.num_enemy_actions}[team]
             is_alive = state.unit_alive[i]
             mask = jnp.zeros((num_actions,), dtype=jnp.uint8)
-            # always can take the stop action
-            mask = mask.at[self.num_movement_actions - 1].set(1)
-            mask = mask.at[: self.num_movement_actions - 1].set(
-                jax.lax.select(
-                    is_alive,
-                    jnp.ones((self.num_movement_actions - 1,), dtype=jnp.uint8),
-                    jnp.zeros((self.num_movement_actions - 1,), dtype=jnp.uint8),
+            if self.movement_mode == "smacv2":
+                # SMACv2: no-op (0) only when dead; stop/moves (1..5) only when alive
+                mask = mask.at[0].set(jax.lax.select(is_alive, 0, 1))
+                mask = mask.at[1 : self.num_movement_actions].set(
+                    jax.lax.select(
+                        is_alive,
+                        jnp.ones((self.num_movement_actions - 1,), dtype=jnp.uint8),
+                        jnp.zeros((self.num_movement_actions - 1,), dtype=jnp.uint8),
+                    )
                 )
-            )
+            else:
+                # always can take the stop action
+                mask = mask.at[self.num_movement_actions - 1].set(1)
+                mask = mask.at[: self.num_movement_actions - 1].set(
+                    jax.lax.select(
+                        is_alive,
+                        jnp.ones((self.num_movement_actions - 1,), dtype=jnp.uint8),
+                        jnp.zeros((self.num_movement_actions - 1,), dtype=jnp.uint8),
+                    )
+                )
             in_range_alive = (
                 jnp.linalg.norm(state.unit_positions - state.unit_positions[i], axis=-1)
                 < self.unit_type_attack_ranges[state.unit_types[i]]

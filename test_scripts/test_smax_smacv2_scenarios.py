@@ -361,6 +361,153 @@ def test_baneling_mechanics():
     assert_true(new_state.unit_health[6] < state.unit_health[6], "Baneling splash target did not take damage")
 
 
+def test_smacv2_parity_mode():
+    """Validate SMACv2 parity flags for race scenarios."""
+    env = SMAX(
+        scenario=map_name_to_scenario("protoss_10_vs_10"),
+        max_steps=200,
+        smacv2_unit_stats=True,
+        smacv2_position_parity=True,
+        reward_mode="smacv2",
+        movement_mode="smacv2",
+    )
+    assert_true(env.max_steps == 200, "max_steps should be 200")
+    assert_true(env.num_movement_actions == 6, "SMACv2 movement mode should have 6 movement actions")
+    expected_actions = 6 + max(env.num_allies, env.num_enemies)
+    assert_true(
+        env.action_spaces["ally_0"].n == expected_actions,
+        f"SMACv2 action space should be {expected_actions}, got {env.action_spaces['ally_0'].n}",
+    )
+
+    # Unit stats
+    colossus_idx = 6
+    baneling_idx = 8
+    assert_true(
+        float(env.unit_type_health[colossus_idx]) == 350.0,
+        f"Colossus health should be 350, got {env.unit_type_health[colossus_idx]}",
+    )
+    assert_true(
+        float(env.unit_type_attack_ranges[baneling_idx]) == 2.0,
+        f"Baneling range should be 2.0, got {env.unit_type_attack_ranges[baneling_idx]}",
+    )
+
+    # Position parity: surround mode inside team at exact center
+    # We test via multiple resets and verify inside team has exact center positions
+    from jaxmarl.environments.smax.distributions import SMACv2SurroundPositionDistribution
+    dist = SMACv2SurroundPositionDistribution(10, 10, 32, 32)
+    for seed in range(20):
+        pos = dist.generate(jax.random.PRNGKey(seed))
+        # ally_inside = True means allies are inside (first 10 units)
+        # The generate method randomly decides ally_inside, so we check whichever half is inside
+        # Inside units are at positions [0..n_inside-1] or [n_outside..n_outside+n_inside-1]
+        # For the SurroundAndReflect wrapper, allies are first 10, enemies next 10.
+        # In draw_positions: ally_inside_positions = concat(inside, outside)
+        # enemy_inside_positions = concat(outside, inside)
+        # Then select based on ally_inside.
+        # Since we're testing the distribution directly, we can't easily know which is inside.
+        # Instead, verify that some units are exactly at (16, 16).
+        center = jnp.array([16.0, 16.0])
+        at_center = jnp.all(jnp.isclose(pos, center), axis=-1)
+        assert_true(
+            jnp.any(at_center),
+            f"SMACv2 surround: no unit at exact center for seed {seed}",
+        )
+
+    # Avail actions in SMACv2 movement mode
+    key = jax.random.PRNGKey(50_000)
+    _, state = env.reset(key)
+    avail = env.get_avail_actions(state)
+    for agent in env.agents:
+        # All units alive at reset -> no-op (0) should be unavailable
+        assert_true(
+            int(avail[agent][0]) == 0,
+            f"Alive agent {agent} should not have no-op available in SMACv2 mode",
+        )
+        # Stop (1) and moves (2..5) should be available
+        assert_true(
+            int(jnp.sum(avail[agent][1:6])) == 5,
+            f"Alive agent {agent} should have stop+moves available in SMACv2 mode",
+        )
+
+    # Kill one ally and verify only no-op is available
+    dead_health = jnp.copy(state.unit_health)
+    dead_health = dead_health.at[0].set(0.0)
+    dead_alive = jnp.copy(state.unit_alive)
+    dead_alive = dead_alive.at[0].set(False)
+    dead_state = state.replace(unit_health=dead_health, unit_alive=dead_alive)
+    dead_avail = env.get_avail_actions(dead_state)
+    assert_true(
+        int(dead_avail["ally_0"][0]) == 1,
+        "Dead agent should only have no-op available in SMACv2 mode",
+    )
+    assert_true(
+        int(jnp.sum(dead_avail["ally_0"][1:])) == 0,
+        "Dead agent should have no other actions available in SMACv2 mode",
+    )
+
+    # SMACv2 reward mode: dummy rollout should produce finite rewards
+    key = jax.random.PRNGKey(60_000)
+    key, reset_key = jax.random.split(key)
+    obs, state = env.reset(reset_key)
+    for _ in range(4):
+        key, action_key, step_key = jax.random.split(key, 3)
+        action_key, actions = random_valid_actions(action_key, env, state)
+        obs, state, rewards, dones, infos = env.step_env(step_key, state, actions)
+        for agent in env.agents:
+            assert_true(
+                jnp.isfinite(rewards[agent]),
+                f"SMACv2 reward should be finite for {agent}",
+            )
+
+    # Reward scale should follow SMAC's max_reward / reward_scale_rate:
+    # enemy max HP + death rewards + win reward, divided by 20.
+    _, state = env.reset(jax.random.PRNGKey(61_000))
+    health_before = state.unit_health
+    damage = 10.0
+    target_idx = env.num_allies
+    health_after = health_before.at[target_idx].add(-damage)
+    rewards = env.compute_reward(state, health_before, health_after)
+    enemy_types = state.unit_types[env.num_allies :]
+    max_reward = jnp.sum(env.unit_type_health[enemy_types]) + env.num_enemies * 10.0 + 200.0
+    expected_reward = damage / (max_reward / 20.0)
+    assert_true(
+        jnp.isclose(rewards["ally_0"], expected_reward),
+        f"SMACv2 reward scaling mismatch: got {rewards['ally_0']}, expected {expected_reward}",
+    )
+
+
+def test_smacv2_parity_rollout_with_heuristic():
+    """SMACv2 parity with heuristic enemy should compile and run."""
+    env = HeuristicEnemySMAX(
+        scenario=map_name_to_scenario("protoss_10_vs_10"),
+        enemy_shoots=True,
+        max_steps=8,
+        smacv2_unit_stats=True,
+        smacv2_position_parity=True,
+        reward_mode="smacv2",
+        movement_mode="smacv2",
+    )
+    key = jax.random.PRNGKey(70_000)
+    key, reset_key = jax.random.split(key)
+    obs, state = env.reset(reset_key)
+    assert_true(set(obs.keys()) == set(env.agents + ["world_state"]), "Heuristic wrapper reset obs keys mismatch")
+
+    for _ in range(3):
+        key, action_key, step_key = jax.random.split(key, 3)
+        avail = env.get_avail_actions(state)
+        actions = {}
+        for agent in env.agents:
+            action_key, subkey = jax.random.split(action_key)
+            valid = jnp.nonzero(avail[agent], size=env.action_spaces[agent].n)[0]
+            n_valid = jnp.sum(avail[agent])
+            choice = jax.random.randint(subkey, shape=(), minval=0, maxval=n_valid)
+            actions[agent] = valid[choice].astype(jnp.int32)
+        obs, state, rewards, dones, infos = env.step_env(step_key, state, actions)
+        del rewards, infos
+        assert_true("__all__" in dones, "Heuristic wrapper missing __all__ done")
+        assert_true("world_state" in obs, "Heuristic wrapper missing world_state")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--samples", type=int, default=256, help="Number of resets per scenario for distribution checks")
@@ -378,6 +525,10 @@ def main():
     test_medivac_mechanics()
     print("Testing baneling mechanics...")
     test_baneling_mechanics()
+    print("Testing SMACv2 parity mode...")
+    test_smacv2_parity_mode()
+    print("Testing SMACv2 parity rollout with heuristic enemy...")
+    test_smacv2_parity_rollout_with_heuristic()
     print("All SMAX SMACv2 scenario tests passed.")
 
 
