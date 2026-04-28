@@ -21,6 +21,7 @@ def get_default_mappo_t_config():
         "NUM_ENVS": 20,
         "NUM_STEPS": 200,
         "TOTAL_TIMESTEPS": int(1e7),
+        "SAVE_INTERVAL": 1000000,   # Timesteps between checkpoint saves
         
         # === Model Architecture ===
         "hidden_sizes": [64, 64, 64],

@@ -7,12 +7,20 @@ to the same JaxMARL SMAX wrapper style used by ``train_mappo_gru.py``.
 
 from __future__ import annotations
 
+import argparse
+import csv
+import json
 import os
 import pickle
 import sys
 import time
+from datetime import datetime
 from functools import partial
 from typing import NamedTuple
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 import jax
 import jax.numpy as jnp
@@ -434,6 +442,29 @@ def make_train(config):
                 eval_steps,
             )
             return jnp.mean(eval_rewards)
+
+        # === Checkpoint / logging setup ===
+        save_interval = config.get("SAVE_INTERVAL", 1000000)
+        print_interval = max(1, save_interval // 5)
+
+        run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        saved_models_dir = os.path.join(_REPO_ROOT, "saved_models")
+        os.makedirs(saved_models_dir, exist_ok=True)
+        run_dir = os.path.join(saved_models_dir, run_timestamp)
+        os.makedirs(run_dir, exist_ok=True)
+
+        params_path = os.path.join(run_dir, "run_params.json")
+        with open(params_path, "w") as f:
+            json.dump(config, f, indent=2, default=str)
+
+        csv_path = os.path.join(run_dir, "progress.csv")
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                "step", "update", "return", "win_rate", "win_rate_std",
+                "value_loss", "entropy", "clip_frac", "approx_kl",
+                "actor_grad_norm", "critic_grad_norm",
+            ])
 
         def _update_step(update_runner_state, unused):
             runner_state, update_steps = update_runner_state
@@ -1131,25 +1162,91 @@ def make_train(config):
             ep_count = jnp.sum(mask) + 1e-8
             returns = jnp.sum(metric["returned_episode_returns"][:, :, 0] * mask) / ep_count
             win_rate = jnp.sum(metric["returned_won_episode"][:, :, 0] * mask) / ep_count
-
-            def log_callback(r, w, s, tl, ent, agn, cgn):
-                print(
-                    f"Step {s:8d} | Return: {r:10.2f} | Win Rate: {w:5.2f} "
-                    f"| Loss: {tl:10.4f} | Ent: {ent:8.4f} "
-                    f"| GradN(actor/critic): {agn:8.4f}/{cgn:8.4f}"
-                )
+            env_ep_count = jnp.sum(mask, axis=0)
+            env_wins = jnp.sum(metric["returned_won_episode"][:, :, 0] * mask, axis=0)
+            env_win_rates = env_wins / (env_ep_count + 1e-8)
+            win_rate_std = jnp.std(env_win_rates, ddof=1)
 
             step_count = update_steps * config["NUM_ENVS"] * config["NUM_STEPS"]
+
+            def _print_and_csv(r, w, ws, s, u, vl, ent, cf, akl, agn, cgn):
+                s_int = int(s)
+                if s_int > 0 and s_int % print_interval == 0:
+                    msg = (
+                        f"Step {s:8d} | Update {u:5d} | Return: {r:10.2f} | "
+                        f"Win: {w:5.2f}+-{ws:5.2f} | VLoss: {vl:8.4f} | "
+                        f"Ent: {ent:6.4f} | Clip: {cf:5.3f} | KL: {akl:6.5f} | "
+                        f"GradN(A/C): {agn:6.3f}/{cgn:6.3f}"
+                    )
+                    print(msg)
+                    with open(csv_path, "a", newline="") as f_csv:
+                        writer = csv.writer(f_csv)
+                        writer.writerow([
+                            s_int, int(u), float(r), float(w), float(ws),
+                            float(vl), float(ent), float(cf), float(akl),
+                            float(agn), float(cgn),
+                        ])
+
             jax.experimental.io_callback(
-                log_callback,
-                None,
-                returns,
-                win_rate,
-                step_count,
-                loss_info["total_loss"],
-                loss_info["entropy"],
-                loss_info["actor_grad_norm"],
-                loss_info["critic_grad_norm"],
+                _print_and_csv, None,
+                returns, win_rate, win_rate_std, step_count, update_steps,
+                loss_info["value_loss"], loss_info["entropy"],
+                loss_info["clip_frac"], loss_info["approx_kl"],
+                loss_info["actor_grad_norm"], loss_info["critic_grad_norm"],
+            )
+
+            def _checkpoint(step, actor_params, critic_params, r, w, ws):
+                s_int = int(step)
+                ckpt_dir = os.path.join(run_dir, f"update_{s_int}")
+                os.makedirs(ckpt_dir, exist_ok=True)
+
+                ap = jax.device_get(actor_params)
+                cp = jax.device_get(critic_params)
+
+                with open(os.path.join(ckpt_dir, f"actor_{s_int}.pkl"), "wb") as fa:
+                    pickle.dump(ap, fa, protocol=pickle.HIGHEST_PROTOCOL)
+                with open(os.path.join(ckpt_dir, f"critic_{s_int}.pkl"), "wb") as fc:
+                    pickle.dump(cp, fc, protocol=pickle.HIGHEST_PROTOCOL)
+
+                csv_data = np.genfromtxt(
+                    csv_path, delimiter=",", names=True, dtype=None,
+                )
+                steps = csv_data["step"].astype(float)
+                win_rates = csv_data["win_rate"].astype(float)
+                win_stds = csv_data["win_rate_std"].astype(float)
+
+                plt.figure(figsize=(10, 6))
+                plt.plot(steps, win_rates, "b-", linewidth=1.5, label="Win Rate")
+                plt.fill_between(
+                    steps,
+                    win_rates - win_stds,
+                    win_rates + win_stds,
+                    alpha=0.2, color="b", label=r"$\pm$1 std",
+                )
+                plt.xlabel("Timesteps")
+                plt.ylabel("Win Rate")
+                plt.title(f"MAPPO-T on {config['MAP_NAME']}")
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                plt.tight_layout()
+                plot_path = os.path.join(run_dir, "win_rate.png")
+                plt.savefig(plot_path, dpi=100, bbox_inches="tight")
+                plt.close()
+
+                print(f"Checkpoint saved to {ckpt_dir}/")
+                print(f"Plot saved to {plot_path}")
+
+            should_save = (step_count > 0) & (step_count % save_interval == 0)
+            jax.lax.cond(
+                should_save,
+                lambda: jax.experimental.io_callback(
+                    _checkpoint, None,
+                    step_count,
+                    actor_train_state.params,
+                    critic_train_state.params,
+                    returns, win_rate, win_rate_std,
+                ),
+                lambda: None,
             )
 
             runner_state = (
@@ -1183,8 +1280,123 @@ def make_train(config):
     return train
 
 
+def _override_config_from_cli(config):
+    """Override config values with command-line arguments."""
+    parser = argparse.ArgumentParser(description="MAPPO-T training for SMAX")
+
+    # Environment & training
+    parser.add_argument("--map_name", type=str, default=None)
+    parser.add_argument("--num_envs", type=int, default=None)
+    parser.add_argument("--num_steps", type=int, default=None)
+    parser.add_argument("--total_timesteps", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--save_interval", type=int, default=None)
+
+    # Learning rates & scheduling
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--critic_lr", type=float, default=None)
+    parser.add_argument("--anneal_lr", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--use_critic_lr_decay", action=argparse.BooleanOptionalAction, default=None)
+
+    # Epochs & minibatches
+    parser.add_argument("--ppo_epoch", type=int, default=None)
+    parser.add_argument("--critic_epoch", type=int, default=None)
+    parser.add_argument("--actor_num_mini_batch", type=int, default=None)
+    parser.add_argument("--critic_num_mini_batch", type=int, default=None)
+
+    # Algorithm hyperparameters
+    parser.add_argument("--clip_param", type=float, default=None)
+    parser.add_argument("--ent_coef", type=float, default=None)
+    parser.add_argument("--gamma", type=float, default=None)
+    parser.add_argument("--gae_lambda", type=float, default=None)
+    parser.add_argument("--max_grad_norm", type=float, default=None)
+    parser.add_argument("--value_loss_coef", type=float, default=None)
+
+    # Architecture & features
+    parser.add_argument("--use_recurrent_policy", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--data_chunk_length", type=int, default=None)
+    parser.add_argument("--use_valuenorm", action=argparse.BooleanOptionalAction, default=None)
+
+    # Transformer-specific
+    parser.add_argument("--transformer_n_embd", type=int, default=None)
+    parser.add_argument("--transformer_n_head", type=int, default=None)
+    parser.add_argument("--transformer_n_encode_layer", type=int, default=None)
+    parser.add_argument("--transformer_q_value_loss_coef", type=float, default=None)
+    parser.add_argument("--transformer_eq_value_loss_coef", type=float, default=None)
+    parser.add_argument("--transformer_weight_init", type=str, default=None)
+
+    args = parser.parse_args()
+
+    # Top-level overrides
+    if args.map_name is not None:
+        config["MAP_NAME"] = args.map_name
+    if args.num_envs is not None:
+        config["NUM_ENVS"] = args.num_envs
+    if args.num_steps is not None:
+        config["NUM_STEPS"] = args.num_steps
+    if args.total_timesteps is not None:
+        config["TOTAL_TIMESTEPS"] = args.total_timesteps
+    if args.seed is not None:
+        config["SEED"] = args.seed
+    if args.save_interval is not None:
+        config["SAVE_INTERVAL"] = args.save_interval
+    if args.lr is not None:
+        config["LR"] = args.lr
+    if args.critic_lr is not None:
+        config["CRITIC_LR"] = args.critic_lr
+    if args.anneal_lr is not None:
+        config["ANNEAL_LR"] = args.anneal_lr
+    if args.use_critic_lr_decay is not None:
+        config["USE_CRITIC_LR_DECAY"] = args.use_critic_lr_decay
+    if args.ppo_epoch is not None:
+        config["PPO_EPOCH"] = args.ppo_epoch
+        config["UPDATE_EPOCHS"] = args.ppo_epoch
+    if args.critic_epoch is not None:
+        config["CRITIC_EPOCH"] = args.critic_epoch
+    if args.actor_num_mini_batch is not None:
+        config["ACTOR_NUM_MINI_BATCH"] = args.actor_num_mini_batch
+        config["NUM_MINIBATCHES"] = args.actor_num_mini_batch
+    if args.critic_num_mini_batch is not None:
+        config["CRITIC_NUM_MINI_BATCH"] = args.critic_num_mini_batch
+    if args.clip_param is not None:
+        config["CLIP_PARAM"] = args.clip_param
+    if args.ent_coef is not None:
+        config["ENT_COEF"] = args.ent_coef
+    if args.gamma is not None:
+        config["GAMMA"] = args.gamma
+    if args.gae_lambda is not None:
+        config["GAE_LAMBDA"] = args.gae_lambda
+    if args.max_grad_norm is not None:
+        config["MAX_GRAD_NORM"] = args.max_grad_norm
+    if args.value_loss_coef is not None:
+        config["VALUE_LOSS_COEF"] = args.value_loss_coef
+    if args.use_recurrent_policy is not None:
+        config["use_recurrent_policy"] = args.use_recurrent_policy
+    if args.data_chunk_length is not None:
+        config["DATA_CHUNK_LENGTH"] = args.data_chunk_length
+    if args.use_valuenorm is not None:
+        config["use_valuenorm"] = args.use_valuenorm
+
+    # Transformer overrides
+    if args.transformer_n_embd is not None:
+        config["transformer"]["n_embd"] = args.transformer_n_embd
+    if args.transformer_n_head is not None:
+        config["transformer"]["n_head"] = args.transformer_n_head
+    if args.transformer_n_encode_layer is not None:
+        config["transformer"]["n_encode_layer"] = args.transformer_n_encode_layer
+    if args.transformer_q_value_loss_coef is not None:
+        config["transformer"]["q_value_loss_coef"] = args.transformer_q_value_loss_coef
+    if args.transformer_eq_value_loss_coef is not None:
+        config["transformer"]["eq_value_loss_coef"] = args.transformer_eq_value_loss_coef
+    if args.transformer_weight_init is not None:
+        config["transformer"]["weight_init"] = args.transformer_weight_init
+
+    return config
+
+
 if __name__ == "__main__":
     config = get_default_mappo_t_config()
+    config = _override_config_from_cli(config)
 
     print(f"Starting MAPPO-T training on {config['MAP_NAME']}...")
     rng = jax.random.PRNGKey(config["SEED"])
