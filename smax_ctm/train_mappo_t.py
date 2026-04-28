@@ -27,6 +27,7 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from flax.training.train_state import TrainState
+from flax.traverse_util import flatten_dict
 
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 if _REPO_ROOT not in sys.path:
@@ -282,7 +283,12 @@ def make_train(config):
 
         return schedule
 
-    def train(rng):
+    def train(
+        rng,
+        loaded_actor_params=None,
+        loaded_critic_params=None,
+        loaded_value_norm_dict=None,
+    ):
         # Validate configuration
         from mappo_t.config import validate_mappo_t_config
         validate_mappo_t_config(config, env.num_agents)
@@ -333,6 +339,24 @@ def make_train(config):
         )
         actor_params = actor_network.init(actor_rng, ac_init_hstate_small, ac_init_x)
 
+        def _validate_loaded_tree(name, initialized, loaded):
+            initialized_flat = flatten_dict(initialized)
+            loaded_flat = flatten_dict(loaded)
+            if set(initialized_flat.keys()) != set(loaded_flat.keys()):
+                raise ValueError(
+                    f"Loaded {name} params structure does not match initialized {name}. "
+                    f"Keys only in initialized: "
+                    f"{set(initialized_flat.keys()) - set(loaded_flat.keys())}. "
+                    f"Keys only in loaded: "
+                    f"{set(loaded_flat.keys()) - set(initialized_flat.keys())}."
+                )
+            for key, value in loaded_flat.items():
+                if value.shape != initialized_flat[key].shape:
+                    raise ValueError(
+                        f"Loaded {name} param {key} shape {value.shape} does not "
+                        f"match initialized shape {initialized_flat[key].shape}."
+                    )
+
         cr_init_hstate_small = jnp.zeros(
             (config["NUM_ENVS"], env.num_agents, critic_hidden_dim), dtype=jnp.float32
         )
@@ -346,9 +370,19 @@ def make_train(config):
             True,
             True,
         )
-        
-        # Apply T-Fixup initialization scaling if configured
-        if config["transformer"].get("weight_init") == "tfixup":
+
+        warm_starting = loaded_actor_params is not None or loaded_critic_params is not None
+        if warm_starting:
+            if loaded_actor_params is None:
+                raise ValueError("loaded_actor_params is required when warm-starting MAPPO-T.")
+            if loaded_critic_params is None:
+                raise ValueError("loaded_critic_params is required when warm-starting MAPPO-T.")
+            _validate_loaded_tree("actor", actor_params, loaded_actor_params)
+            _validate_loaded_tree("critic", critic_params, loaded_critic_params)
+            actor_params = loaded_actor_params
+            critic_params = loaded_critic_params
+        elif config["transformer"].get("weight_init") == "tfixup":
+            # Apply T-Fixup initialization scaling only for fresh critic params.
             from mappo_t.transformer import apply_tfixup_scaling
             critic_params = apply_tfixup_scaling(critic_params, config["transformer"])
 
@@ -398,12 +432,23 @@ def make_train(config):
 
         # Initialize ValueNorm for v, q, eq if enabled
         use_valuenorm = config.get("use_valuenorm", True)
-        value_norm_dict = create_value_norm_dict(
-            use_valuenorm=use_valuenorm,
-            v_shape=(1,),
-            q_shape=(1,),
-            eq_shape=(1,),
-        )
+        if warm_starting and use_valuenorm:
+            if loaded_value_norm_dict is None:
+                raise ValueError(
+                    "Warm-start checkpoint is missing value_norm_dict while "
+                    "use_valuenorm=True. Provide a unified checkpoint containing "
+                    "actor_params, critic_params, and value_norm_dict."
+                )
+            value_norm_dict = loaded_value_norm_dict
+        elif warm_starting and loaded_value_norm_dict is not None:
+            value_norm_dict = loaded_value_norm_dict
+        else:
+            value_norm_dict = create_value_norm_dict(
+                use_valuenorm=use_valuenorm,
+                v_shape=(1,),
+                q_shape=(1,),
+                eq_shape=(1,),
+            )
 
         rng, reset_rng = jax.random.split(rng)
         reset_rng = jax.random.split(reset_rng, config["NUM_ENVS"])
@@ -1527,6 +1572,10 @@ def _override_config_from_cli(config):
     parser.add_argument("--transformer_eq_value_loss_coef", type=float, default=None)
     parser.add_argument("--transformer_weight_init", type=str, default=None)
 
+    # Warm-start / continuation
+    parser.add_argument("--pretrained_checkpoint_path", type=str, default=None)
+    parser.add_argument("--resume_checkpoint_path", type=str, default=None)
+
     args = parser.parse_args()
 
     # Top-level overrides
@@ -1597,7 +1646,60 @@ def _override_config_from_cli(config):
     if args.transformer_weight_init is not None:
         config["transformer"]["weight_init"] = args.transformer_weight_init
 
+    # Warm-start overrides. ``resume_checkpoint_path`` is an alias for the
+    # unified checkpoint path, but the trainer intentionally runs for the new
+    # TOTAL_TIMESTEPS budget rather than continuing old plot/checkpoint step ids.
+    if args.pretrained_checkpoint_path is not None and args.resume_checkpoint_path is not None:
+        if args.pretrained_checkpoint_path != args.resume_checkpoint_path:
+            raise ValueError(
+                "--pretrained_checkpoint_path and --resume_checkpoint_path were both "
+                "provided with different values. Use only one checkpoint path."
+            )
+    checkpoint_path = args.pretrained_checkpoint_path or args.resume_checkpoint_path
+    if checkpoint_path is not None:
+        config["PRETRAINED_CHECKPOINT_PATH"] = checkpoint_path
+
     return config
+
+
+def _load_pretrained_state(config):
+    """Load optional MAPPO-T warm-start state from one unified checkpoint."""
+    checkpoint_path = config.get("PRETRAINED_CHECKPOINT_PATH")
+
+    if checkpoint_path is None:
+        return None, None, None
+
+    if not os.path.isfile(checkpoint_path):
+        raise FileNotFoundError(
+            f"--pretrained_checkpoint_path not found: {checkpoint_path}"
+        )
+    with open(checkpoint_path, "rb") as f:
+        ckpt = pickle.load(f)
+    if not isinstance(ckpt, dict):
+        raise ValueError(
+            f"Checkpoint at {checkpoint_path} is not a dict. "
+            f"Got {type(ckpt).__name__}."
+        )
+    model_type = ckpt.get("model_type")
+    if model_type not in (None, "mappo_t_backbone"):
+        raise ValueError(
+            f"Expected a MAPPO-T backbone checkpoint, got model_type={model_type!r}."
+        )
+    loaded_actor_params = ckpt.get("actor_params")
+    loaded_critic_params = ckpt.get("critic_params")
+    loaded_value_norm_dict = ckpt.get("value_norm_dict")
+
+    if loaded_actor_params is None:
+        raise ValueError(f"Checkpoint at {checkpoint_path} missing 'actor_params'.")
+    if loaded_critic_params is None:
+        raise ValueError(f"Checkpoint at {checkpoint_path} missing 'critic_params'.")
+    if config.get("use_valuenorm", True) and loaded_value_norm_dict is None:
+        raise ValueError(
+            f"Checkpoint at {checkpoint_path} missing 'value_norm_dict', but "
+            "use_valuenorm=True."
+        )
+
+    return loaded_actor_params, loaded_critic_params, loaded_value_norm_dict
 
 
 if __name__ == "__main__":
@@ -1606,11 +1708,25 @@ if __name__ == "__main__":
 
     print(f"Starting MAPPO-T training on {config['MAP_NAME']}...")
     print(f"SMAX env max_steps={config['ENV_KWARGS'].get('max_steps', config['NUM_STEPS'])}")
+    loaded_actor_params, loaded_critic_params, loaded_value_norm_dict = _load_pretrained_state(config)
+    if loaded_actor_params is not None:
+        print(
+            "Warm-starting MAPPO-T from "
+            f"{config['PRETRAINED_CHECKPOINT_PATH']}"
+        )
     rng = jax.random.PRNGKey(config["SEED"])
     train_jit = jax.jit(make_train(config))
 
     start_time = time.time()
-    out = train_jit(rng)
+    if loaded_actor_params is None:
+        out = train_jit(rng)
+    else:
+        out = train_jit(
+            rng,
+            loaded_actor_params,
+            loaded_critic_params,
+            loaded_value_norm_dict,
+        )
     jax.block_until_ready(out)
     end_time = time.time()
     print(f"Training completed in {(end_time - start_time) / 60:.1f} minutes.")
