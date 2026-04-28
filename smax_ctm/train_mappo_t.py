@@ -1304,18 +1304,54 @@ def make_train(config):
                 loss_info["actor_grad_norm"], loss_info["critic_grad_norm"],
             )
 
-            def _checkpoint(step, actor_params, critic_params, r, w, ws):
+            def _checkpoint(
+                step,
+                update,
+                actor_params,
+                critic_params,
+                value_norm_state,
+                actor_opt_state,
+                critic_opt_state,
+                actor_step,
+                critic_step,
+                r,
+                w,
+                ws,
+            ):
                 s_int = int(step)
-                ckpt_dir = os.path.join(run_dir, f"step_{s_int}")
-                os.makedirs(ckpt_dir, exist_ok=True)
+                ckpt_path = os.path.join(run_dir, f"checkpoint_{s_int}.pkl")
 
                 ap = jax.device_get(actor_params)
                 cp = jax.device_get(critic_params)
+                vn = jax.device_get(value_norm_state)
+                aos = jax.device_get(actor_opt_state)
+                cos = jax.device_get(critic_opt_state)
+                actor_step_int = int(jax.device_get(actor_step))
+                critic_step_int = int(jax.device_get(critic_step))
+                update_int = int(jax.device_get(update))
 
-                with open(os.path.join(ckpt_dir, f"actor_{s_int}.pkl"), "wb") as fa:
-                    pickle.dump(ap, fa, protocol=pickle.HIGHEST_PROTOCOL)
-                with open(os.path.join(ckpt_dir, f"critic_{s_int}.pkl"), "wb") as fc:
-                    pickle.dump(cp, fc, protocol=pickle.HIGHEST_PROTOCOL)
+                checkpoint = {
+                    "model_type": "mappo_t_backbone",
+                    "format_version": 1,
+                    "checkpoint_kind": "periodic",
+                    "step": s_int,
+                    "update": update_int,
+                    "config": config,
+                    "actor_params": ap,
+                    "critic_params": cp,
+                    "value_norm_dict": vn,
+                    "actor_opt_state": aos,
+                    "critic_opt_state": cos,
+                    "actor_step": actor_step_int,
+                    "critic_step": critic_step_int,
+                    "metrics": {
+                        "return": float(r),
+                        "win_rate": float(w),
+                        "win_rate_std": float(ws),
+                    },
+                }
+                with open(ckpt_path, "wb") as fckpt:
+                    pickle.dump(checkpoint, fckpt, protocol=pickle.HIGHEST_PROTOCOL)
 
                 csv_data = np.genfromtxt(
                     csv_path, delimiter=",", names=True, dtype=None,
@@ -1343,7 +1379,7 @@ def make_train(config):
                 plt.savefig(plot_path, dpi=100, bbox_inches="tight")
                 plt.close()
 
-                print(f"Checkpoint saved to {ckpt_dir}/")
+                print(f"Checkpoint saved to {ckpt_path}")
                 print(f"Plot saved to {plot_path}")
 
             should_save = (step_count > 0) & (step_count % save_interval == 0)
@@ -1352,8 +1388,14 @@ def make_train(config):
                 lambda: jax.experimental.io_callback(
                     _checkpoint, None,
                     step_count,
+                    update_steps,
                     actor_train_state.params,
                     critic_train_state.params,
+                    value_norm_dict,
+                    actor_train_state.opt_state,
+                    critic_train_state.opt_state,
+                    actor_train_state.step,
+                    critic_train_state.step,
                     returns, win_rate, win_rate_std,
                 ),
                 lambda: None,
@@ -1384,6 +1426,54 @@ def make_train(config):
         )
         runner_state, metric = jax.lax.scan(
             _update_step, (runner_state, 0), None, config["NUM_UPDATES"]
+        )
+
+        def _final_checkpoint(
+            update,
+            actor_params,
+            critic_params,
+            value_norm_state,
+            actor_opt_state,
+            critic_opt_state,
+            actor_step,
+            critic_step,
+        ):
+            update_int = int(jax.device_get(update))
+            s_int = update_int * config["NUM_ENVS"] * config["NUM_STEPS"]
+            ckpt_path = os.path.join(run_dir, "checkpoint_final.pkl")
+            checkpoint = {
+                "model_type": "mappo_t_backbone",
+                "format_version": 1,
+                "checkpoint_kind": "final",
+                "step": s_int,
+                "update": update_int,
+                "config": config,
+                "actor_params": jax.device_get(actor_params),
+                "critic_params": jax.device_get(critic_params),
+                "value_norm_dict": jax.device_get(value_norm_state),
+                "actor_opt_state": jax.device_get(actor_opt_state),
+                "critic_opt_state": jax.device_get(critic_opt_state),
+                "actor_step": int(jax.device_get(actor_step)),
+                "critic_step": int(jax.device_get(critic_step)),
+            }
+            with open(ckpt_path, "wb") as fckpt:
+                pickle.dump(checkpoint, fckpt, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f"Final checkpoint saved to {ckpt_path}")
+
+        final_runner_state, final_update_steps = runner_state
+        final_actor_state, final_critic_state = final_runner_state[0]
+        final_value_norm_dict = final_runner_state[6]
+        jax.experimental.io_callback(
+            _final_checkpoint,
+            None,
+            final_update_steps,
+            final_actor_state.params,
+            final_critic_state.params,
+            final_value_norm_dict,
+            final_actor_state.opt_state,
+            final_critic_state.opt_state,
+            final_actor_state.step,
+            final_critic_state.step,
         )
         return {"runner_state": runner_state, "metric": metric}
 
@@ -1521,20 +1611,6 @@ if __name__ == "__main__":
 
     start_time = time.time()
     out = train_jit(rng)
+    jax.block_until_ready(out)
     end_time = time.time()
     print(f"Training completed in {(end_time - start_time) / 60:.1f} minutes.")
-
-    model_dir = os.path.join(_REPO_ROOT, "saved_model")
-    os.makedirs(model_dir, exist_ok=True)
-    model_path = os.path.join(model_dir, "smax_mappo_t_actor.pkl")
-
-    final_runner_state = out["runner_state"][0]
-    final_actor_state = final_runner_state[0][0]
-    checkpoint = {
-        "model_type": "transformer",
-        "config": config,
-        "actor_params": jax.device_get(final_actor_state.params),
-    }
-    with open(model_path, "wb") as f:
-        pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
-    print(f"Saved Transformer actor checkpoint to {model_path}")

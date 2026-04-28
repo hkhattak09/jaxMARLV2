@@ -12,13 +12,54 @@ import functools
 from typing import Any, Dict, Optional, Tuple
 
 import distrax
-import jax
 import jax.numpy as jnp
 import numpy as np
 import flax.linen as nn
 from flax.linen.initializers import constant, orthogonal
 
 from .transformer import get_active_func
+
+
+class ExplicitGRUCell(nn.Module):
+    """GRU cell with explicit input/recurrent kernels.
+
+    The standard Flax GRUCell hides the recurrent pathway behind its internal
+    parameter layout.  Keeping the gates explicit makes phase-1 checkpoints
+    easier to adapt with LoRA in phase 2.
+    """
+
+    features: int
+
+    @nn.compact
+    def __call__(self, carry, inputs):
+        dense_in = functools.partial(
+            nn.Dense,
+            self.features,
+            use_bias=True,
+            kernel_init=orthogonal(np.sqrt(2.0)),
+            bias_init=constant(0.0),
+        )
+        dense_hidden = functools.partial(
+            nn.Dense,
+            self.features,
+            use_bias=False,
+            kernel_init=orthogonal(1.0),
+        )
+
+        reset = nn.sigmoid(
+            dense_in(name="input_reset")(inputs)
+            + dense_hidden(name="recurrent_reset")(carry)
+        )
+        update = nn.sigmoid(
+            dense_in(name="input_update")(inputs)
+            + dense_hidden(name="recurrent_update")(carry)
+        )
+        candidate = jnp.tanh(
+            dense_in(name="input_candidate")(inputs)
+            + reset * dense_hidden(name="recurrent_candidate")(carry)
+        )
+        new_carry = (1.0 - update) * candidate + update * carry
+        return new_carry, new_carry
 
 
 class ScannedRNN(nn.Module):
@@ -44,14 +85,15 @@ class ScannedRNN(nn.Module):
             self.initialize_carry(ins.shape[0], ins.shape[1]),
             rnn_state,
         )
-        new_rnn_state, y = nn.GRUCell(features=ins.shape[1])(rnn_state, ins)
+        new_rnn_state, y = ExplicitGRUCell(features=ins.shape[1], name="gru_cell")(
+            rnn_state, ins
+        )
         y = nn.LayerNorm(epsilon=1e-5, name="rnn_norm")(y)
         return new_rnn_state, y
 
     @staticmethod
     def initialize_carry(batch_size, hidden_size):
-        cell = nn.GRUCell(features=hidden_size)
-        return cell.initialize_carry(jax.random.PRNGKey(0), (batch_size, hidden_size))
+        return jnp.zeros((batch_size, hidden_size), dtype=jnp.float32)
 
 
 class ActorTrans(nn.Module):

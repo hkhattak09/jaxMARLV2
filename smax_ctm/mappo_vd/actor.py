@@ -1,0 +1,87 @@
+"""MAPPO-VD actor network.
+
+Follows the existing JAX training scripts in this repository:
+GRU-based actor with ScannedRNN scanning over the time axis.
+"""
+
+import functools
+from typing import Dict, Sequence
+
+import distrax
+import jax
+import jax.numpy as jnp
+import numpy as np
+import flax.linen as nn
+from flax.linen.initializers import constant, orthogonal
+
+
+class ScannedRNN(nn.Module):
+    """GRU layer scanned over the leading time axis.
+
+    ``resets`` follows the convention used by the repo's JAX MAPPO scripts:
+    True/1 means the hidden state should be reset before this step.
+    """
+
+    @functools.partial(
+        nn.scan,
+        variable_broadcast="params",
+        in_axes=0,
+        out_axes=0,
+        split_rngs={"params": False},
+    )
+    @nn.compact
+    def __call__(self, carry, x):
+        rnn_state = carry
+        ins, resets = x
+        rnn_state = jnp.where(
+            resets[:, None],
+            self.initialize_carry(ins.shape[0], ins.shape[1]),
+            rnn_state,
+        )
+        new_rnn_state, y = nn.GRUCell(features=ins.shape[1])(rnn_state, ins)
+        return new_rnn_state, y
+
+    @staticmethod
+    def initialize_carry(batch_size, hidden_size):
+        cell = nn.GRUCell(features=hidden_size)
+        return cell.initialize_carry(jax.random.PRNGKey(0), (batch_size, hidden_size))
+
+
+class ActorRNN(nn.Module):
+    """GRU-based stochastic actor for discrete SMAX actions."""
+
+    action_dim: Sequence[int]
+    config: Dict
+
+    @nn.compact
+    def __call__(self, hidden, x):
+        obs, dones, avail_actions = x
+        cfg = self.config
+
+        embedding = nn.Dense(
+            cfg["FC_DIM_SIZE"],
+            kernel_init=orthogonal(np.sqrt(2)),
+            bias_init=constant(0.0),
+        )(obs)
+        embedding = nn.relu(embedding)
+
+        rnn_in = (embedding, dones)
+        hidden, embedding = ScannedRNN()(hidden, rnn_in)
+
+        actor_mean = nn.Dense(
+            cfg["GRU_HIDDEN_DIM"],
+            kernel_init=orthogonal(2),
+            bias_init=constant(0.0),
+        )(embedding)
+        actor_mean = nn.relu(actor_mean)
+        actor_mean = nn.Dense(
+            self.action_dim,
+            kernel_init=orthogonal(cfg.get("gain", 0.01)),
+            bias_init=constant(0.0),
+        )(actor_mean)
+        unavail_actions = 1 - avail_actions
+        action_logits = actor_mean - (unavail_actions * 1e10)
+
+        pi = distrax.Categorical(logits=action_logits)
+
+        return hidden, pi
