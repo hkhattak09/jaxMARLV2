@@ -58,59 +58,47 @@ class TransVCritic(nn.Module):
         action_onehot = self._one_hot_actions(action)
 
         if obs.ndim == 4:
-            values = []
-            q_values = []
-            eq_values = []
-            vq_values = []
-            vq_coma_values = []
-            baseline_weights = []
-            attn_weights = []
-            zs_values = []
-            zsa_values = []
-            carry = rnn_states
-            for t in range(obs.shape[0]):
+            def scan_body(carry, inputs):
+                obs_t, action_t, policy_t, reset_t = inputs
                 out = encoder(
-                    obs[t],
-                    action_onehot[t],
-                    policy_prob[t],
+                    obs_t,
+                    action_t,
+                    policy_t,
                     carry,
-                    resets[t],
+                    reset_t,
                     output_attentions,
                     deterministic,
                 )
-                (
-                    value,
-                    q_value,
-                    eq_value,
-                    vq_value,
-                    vq_coma_value,
-                    weights,
-                    attn,
-                    zs,
-                    zsa,
-                    carry,
-                ) = out
-                values.append(value)
-                q_values.append(q_value)
-                eq_values.append(eq_value)
-                vq_values.append(vq_value)
-                vq_coma_values.append(vq_coma_value)
-                baseline_weights.append(weights)
-                attn_weights.append(attn)
-                zs_values.append(zs)
-                zsa_values.append(zsa)
+                new_carry = out[-1]
+                outputs = out[:-1]
+                return new_carry, outputs
+
+            final_carry, outputs = jax.lax.scan(
+                scan_body, rnn_states, (obs, action_onehot, policy_prob, resets)
+            )
+            (
+                values,
+                q_values,
+                eq_values,
+                vq_values,
+                vq_coma_values,
+                baseline_weights,
+                attn_weights,
+                zs_values,
+                zsa_values,
+            ) = outputs
 
             return (
-                jnp.stack(values),
-                jnp.stack(q_values),
-                jnp.stack(eq_values),
-                jnp.stack(vq_values) if vq_values[0] is not None else None,
-                jnp.stack(vq_coma_values) if vq_coma_values[0] is not None else None,
-                jnp.stack(baseline_weights) if baseline_weights[0] is not None else None,
-                jnp.stack(attn_weights) if attn_weights[0] is not None else None,
-                jnp.stack(zs_values),
-                jnp.stack(zsa_values),
-                carry,
+                values,
+                q_values,
+                eq_values,
+                vq_values,
+                vq_coma_values,
+                baseline_weights,
+                attn_weights,
+                zs_values,
+                zsa_values,
+                final_carry,
             )
 
         return encoder(
