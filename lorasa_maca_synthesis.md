@@ -407,17 +407,28 @@ rnn_norm parameters
 
 Important checkpoint compatibility requirement:
 
-Before adding nonzero LoRA behavior, the custom LoRA-capable GRU must reproduce
-the original `nn.GRUCell` actor numerically when all LoRA adapters are zero.
+The phase-1 backbone actor now uses the explicit GRU implementation in
+`smax_ctm/mappo_t/actor.py`, not Flax's opaque `nn.GRUCell`. The LoRASA GRU
+must therefore mirror the explicit phase-1 GRU parameter layout, including the
+named gate modules:
 
-The implementing agent must not guess the old Flax GRU parameter layout. It
-must inspect the initialized/checkpointed actor parameter tree and write an
-explicit conversion helper if the custom GRU parameter names differ.
+```text
+rnn/gru_cell/input_reset
+rnn/gru_cell/input_update
+rnn/gru_cell/input_candidate
+rnn/gru_cell/recurrent_reset
+rnn/gru_cell/recurrent_update
+rnn/gru_cell/recurrent_candidate
+```
+
+Before adding nonzero LoRA behavior, the LoRA-capable GRU must reproduce the
+current explicit-GRU `ActorTrans` numerically when all LoRA adapters are zero.
+Do not implement a new GRU formula that silently changes phase-1 behavior.
 
 Required validation:
 
 ```text
-original ActorTrans logits
+current explicit-GRU ActorTrans logits
 LoRASAActorTrans logits with zero LoRA
 max absolute difference <= 1e-5
 ```
@@ -604,18 +615,41 @@ adapter_ids[None, :]
 Add these arguments to `train_mappo_t_lorasa.py`:
 
 ```text
---pretrained_actor_path   required
---pretrained_critic_path  required
---pretrained_valuenorm_path optional
+--pretrained_checkpoint_path required
+--pretrained_actor_path   optional fallback
+--pretrained_critic_path  optional fallback
+--pretrained_valuenorm_path optional fallback
 --lorasa_rank default 8
 --lorasa_init_scale default 0.01
 ```
 
-The loader should accept both checkpoint styles:
+Prefer loading a single backbone checkpoint:
 
 ```text
-raw params pickle
-dict pickle containing "actor_params" or "critic_params"
+saved_models/<run>/checkpoint_<step>.pkl
+saved_models/<run>/checkpoint_final.pkl
+```
+
+These contain all phase-1 state needed by phase 2. The loader should read:
+
+```text
+actor_params
+critic_params
+value_norm_dict
+config
+step/update metadata
+```
+
+Separate actor/critic/ValueNorm paths are only fallback compatibility options
+for manually constructed or older artifacts. If `--pretrained_checkpoint_path`
+is provided, it should override the separate paths.
+
+The loader should accept these checkpoint styles:
+
+```text
+single dict pickle containing actor_params, critic_params, value_norm_dict
+raw params pickle for separate fallback actor/critic paths
+dict pickle containing "actor_params" or "critic_params" for separate fallback paths
 ```
 
 The updated backbone trainer should be treated as the preferred source. Its
@@ -662,9 +696,8 @@ Recommended structure:
 ```text
 __main__:
   parse CLI
-  load actor params with pickle
-  load critic params with pickle
-  load or initialize ValueNorm dict
+  load the single backbone checkpoint with pickle
+  extract actor_params, critic_params, value_norm_dict, and pretrained config
   build train_jit
   call train_jit(rng, loaded_actor_params, loaded_critic_params, value_norm_dict)
 ```
@@ -699,10 +732,13 @@ ValueNorm.
 The new LoRASA trainer's own checkpoints must save:
 
 ```text
-actor params, including frozen backbone and adapters
-critic params
-value_norm_dict
-config
+one single checkpoint file containing:
+  actor params, including frozen backbone and adapters
+  critic params
+  value_norm_dict
+  config
+  LoRASA metadata
+  step/update metadata
 ```
 
 Recommended checkpoint file:
@@ -720,11 +756,17 @@ with keys:
     "actor_params": actor_params,
     "critic_params": critic_params,
     "value_norm_dict": value_norm_dict,
+    "lorasa": {
+        "rank": rank,
+        "num_adapter_slots": num_adapter_slots,
+        "routing": "unit_type_id",
+    },
 }
 ```
 
-It may also save separate actor/critic pickle files for compatibility, but the
-combined checkpoint is the safer canonical artifact.
+Do not save split actor/critic/ValueNorm files for the new LoRASA trainer unless
+the user explicitly asks for compatibility artifacts. The canonical artifact is
+one complete checkpoint.
 
 ## 7. Optimizer and Freezing
 
