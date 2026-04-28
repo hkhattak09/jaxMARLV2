@@ -179,6 +179,7 @@ class TestPaperConfig:
         assert cfg["transformer"]["wght_decay"] == 0.01
         assert cfg["transformer"]["betas"] == [0.9, 0.95]
         assert cfg["transformer"]["weight_init"] == "tfixup"
+        assert cfg["LOCAL_OBS_WITH_AGENT_ID"] is True
 
     def test_recurrent_config_validation_allows_real_minibatches(self):
         cfg = get_default_mappo_t_config()

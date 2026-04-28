@@ -37,6 +37,7 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, _SCRIPT_DIR)
 
 from jaxmarl.environments.smax import HeuristicEnemySMAX, map_name_to_scenario
+from jaxmarl.environments.spaces import Box
 from jaxmarl.wrappers.baselines import JaxMARLWrapper, SMAXLogWrapper
 
 from mappo_t import ActorTrans, ScannedRNN, TransVCritic, get_default_mappo_t_config
@@ -47,6 +48,32 @@ from mappo_t.valuenorm import (
     value_norm_normalize,
     value_norm_update,
 )
+
+
+def _debug_print(condition, fmt, *args, **kwargs):
+    """Conditional JAX debug print inside JIT."""
+    jax.lax.cond(
+        condition,
+        lambda: jax.debug.print(fmt, *args, **kwargs),
+        lambda: None,
+    )
+
+
+def _check_finite(x, name, update_steps, step_idx=-1):
+    """Warn if tensor contains NaN or Inf."""
+    all_finite = jnp.all(jnp.isfinite(x))
+    jax.lax.cond(
+        jnp.logical_not(all_finite),
+        lambda: jax.debug.print(
+            "!!! NON-FINITE in {name} at update {upd} step {step} | finite={fc}/{tot} !!!",
+            name=name,
+            upd=update_steps,
+            step=step_idx,
+            fc=jnp.sum(jnp.isfinite(x)),
+            tot=x.size,
+        ),
+        lambda: None,
+    )
 
 
 class Transition(NamedTuple):
@@ -78,11 +105,21 @@ class Transition(NamedTuple):
 
 
 class SMAXWorldStateWrapper(JaxMARLWrapper):
-    """Provides a per-agent ``world_state`` observation for centralized critics."""
+    """Provides MACA-style local observations and per-agent world_state."""
 
-    def __init__(self, env: HeuristicEnemySMAX, obs_with_agent_id=True):
+    def __init__(
+        self,
+        env: HeuristicEnemySMAX,
+        obs_with_agent_id=True,
+        local_obs_with_agent_id=True,
+    ):
         super().__init__(env)
         self.obs_with_agent_id = obs_with_agent_id
+        self.local_obs_with_agent_id = local_obs_with_agent_id
+        base_obs_space = self._env.observation_space(self._env.agents[0])
+        self._obs_size = base_obs_space.shape[0] + (
+            self._env.num_allies if self.local_obs_with_agent_id else 0
+        )
         if not self.obs_with_agent_id:
             self._world_state_size = self._env.state_size
             self.world_state_fn = self.ws_just_env_state
@@ -100,12 +137,15 @@ class SMAXWorldStateWrapper(JaxMARLWrapper):
             enemy_alive = enemy_alive & (
                 raw_state.unit_types[self._env.num_allies :] != self._env.medivac_type_idx
             )
-        return jnp.all(~ally_alive) | jnp.all(~enemy_alive)
+        battle_done = jnp.all(~ally_alive) | jnp.all(~enemy_alive)
+        won_battle = jnp.all(~enemy_alive) & jnp.any(ally_alive)
+        return battle_done, won_battle
 
     @partial(jax.jit, static_argnums=0)
     def reset(self, key):
         obs, env_state = self._env.reset(key)
         obs["world_state"] = self.world_state_fn(obs, env_state)
+        obs = self.local_obs_fn(obs)
         return obs, env_state
 
     @partial(jax.jit, static_argnums=0)
@@ -116,10 +156,11 @@ class SMAXWorldStateWrapper(JaxMARLWrapper):
 
         # Compute bad_transition before losing stepped state.
         raw_step_state = state_st.state
-        battle_done = self._battle_terminal(raw_step_state)
+        battle_done, won_battle = self._battle_terminal(raw_step_state)
         timeout_done = raw_step_state.time >= self._env.max_steps
         bad_transition = done["__all__"] & timeout_done & ~battle_done
         info["bad_transition"] = jnp.full((self._env.num_allies,), bad_transition)
+        info["battle_won"] = jnp.full((self._env.num_allies,), won_battle)
 
         # Manual auto-reset matching MultiAgentEnv.step.
         obs_reset, state_reset = self._env.reset(reset_key)
@@ -131,7 +172,17 @@ class SMAXWorldStateWrapper(JaxMARLWrapper):
         )
 
         obs["world_state"] = self.world_state_fn(obs, env_state)
+        obs = self.local_obs_fn(obs)
         return obs, env_state, reward, done, info
+
+    def local_obs_fn(self, obs):
+        if not self.local_obs_with_agent_id:
+            return obs
+        one_hot = jnp.eye(self._env.num_allies, dtype=jnp.float32)
+        obs = dict(obs)
+        for idx, agent in enumerate(self._env.agents):
+            obs[agent] = jnp.concatenate((obs[agent], one_hot[idx]), axis=-1)
+        return obs
 
     @partial(jax.jit, static_argnums=0)
     def ws_just_env_state(self, obs, env_state):
@@ -149,6 +200,10 @@ class SMAXWorldStateWrapper(JaxMARLWrapper):
 
     def world_state_size(self):
         return self._world_state_size
+
+    def observation_space(self, agent):
+        base = self._env.observation_space(agent)
+        return Box(low=base.low, high=base.high, shape=(self._obs_size,), dtype=base.dtype)
 
 
 def make_train(config):
@@ -176,7 +231,13 @@ def make_train(config):
     if config.get("SCALE_CLIP_EPS", False):
         config["CLIP_PARAM"] = config["CLIP_PARAM"] / env.num_agents
 
-    env = SMAXWorldStateWrapper(env, config["OBS_WITH_AGENT_ID"])
+    env = SMAXWorldStateWrapper(
+        env,
+        obs_with_agent_id=config["OBS_WITH_AGENT_ID"],
+        local_obs_with_agent_id=config.get(
+            "LOCAL_OBS_WITH_AGENT_ID", config["OBS_WITH_AGENT_ID"]
+        ),
+    )
     env = SMAXLogWrapper(env)
 
     action_dim = env.action_space(env.agents[0]).n
@@ -473,7 +534,7 @@ def make_train(config):
         def _update_step(update_runner_state, unused):
             runner_state, update_steps = update_runner_state
 
-            def _env_step(runner_state, unused):
+            def _env_step(runner_state, step_idx):
                 (
                     train_states,
                     env_state,
@@ -549,6 +610,76 @@ def make_train(config):
                     jnp.ones_like(last_agent_done, dtype=jnp.float32),
                     1.0 - last_agent_done.astype(jnp.float32),
                 )
+                reward_batch = batchify(reward, env.agents, config["NUM_ACTORS"]).squeeze()
+
+                # --- Comprehensive Environment Step Debugging ---
+                _check_finite(obs_batch, "obs_batch", update_steps, step_idx)
+                _check_finite(avail_actions, "avail_actions", update_steps, step_idx)
+                _check_finite(pi.logits, "pi.logits", update_steps, step_idx)
+                _check_finite(action, "action", update_steps, step_idx)
+                _check_finite(values, "critic_values", update_steps, step_idx)
+                _check_finite(reward_batch, "reward", update_steps, step_idx)
+                _check_finite(ac_hstate, "ac_hstate", update_steps, step_idx)
+                _check_finite(cr_hstate, "cr_hstate", update_steps, step_idx)
+
+                zero_avail = jnp.any(jnp.sum(avail_actions, axis=-1) == 0)
+                jax.lax.cond(
+                    zero_avail,
+                    lambda: jax.debug.print(
+                        "!!! ZERO AVAIL ACTIONS at upd {upd} step {step} !!!",
+                        upd=update_steps,
+                        step=step_idx,
+                    ),
+                    lambda: None,
+                )
+
+                action_out_of_bounds = jnp.any(action < 0) | jnp.any(action >= action_dim)
+                jax.lax.cond(
+                    action_out_of_bounds,
+                    lambda: jax.debug.print(
+                        "!!! ACTION OUT OF BOUNDS at upd {upd} step {step} | min={amin} max={amax} dim={adim} !!!",
+                        upd=update_steps,
+                        step=step_idx,
+                        amin=jnp.min(action),
+                        amax=jnp.max(action),
+                        adim=action_dim,
+                    ),
+                    lambda: None,
+                )
+
+                debug_env = (update_steps < 2) & (step_idx < 3)
+                _debug_print(
+                    debug_env,
+                    "[ENV] upd={upd} step={step} | "
+                    "obs(min/max/mean)={omin:.3f}/{omax:.3f}/{omean:.3f} | "
+                    "avail_sum={asum:.1f} | "
+                    "logits(min/max)={lmin:.3f}/{lmax:.3f} | "
+                    "actions(min/max)={amin}/{amax} | "
+                    "rew(sum/mean)={rsum:.3f}/{rmean:.3f} | "
+                    "done_all={dsum} | won={wsum} | "
+                    "values(min/max/mean)={vmin:.3f}/{vmax:.3f}/{vmean:.3f} | "
+                    "ac_hstate_norm={hn:.3f} | cr_hstate_norm={crn:.3f}",
+                    upd=update_steps,
+                    step=step_idx,
+                    omin=jnp.min(obs_batch),
+                    omax=jnp.max(obs_batch),
+                    omean=jnp.mean(obs_batch),
+                    asum=jnp.sum(avail_actions),
+                    lmin=jnp.min(pi.logits),
+                    lmax=jnp.max(pi.logits),
+                    amin=jnp.min(action),
+                    amax=jnp.max(action),
+                    rsum=jnp.sum(reward_batch),
+                    rmean=jnp.mean(reward_batch),
+                    dsum=jnp.sum(done["__all__"].astype(jnp.int32)),
+                    wsum=jnp.sum(info["battle_won"].astype(jnp.int32)),
+                    vmin=jnp.min(env_value_to_actor(values)),
+                    vmax=jnp.max(env_value_to_actor(values)),
+                    vmean=jnp.mean(env_value_to_actor(values)),
+                    hn=jnp.linalg.norm(ac_hstate),
+                    crn=jnp.linalg.norm(cr_hstate),
+                )
+                # --- End Environment Step Debugging ---
 
                 transition = Transition(
                     env_done_batch,
@@ -556,7 +687,7 @@ def make_train(config):
                     active_mask,
                     action,
                     env_value_to_actor(values),
-                    batchify(reward, env.agents, config["NUM_ACTORS"]).squeeze(),
+                    reward_batch,
                     log_prob,
                     obs_batch,
                     last_obs["world_state"].swapaxes(0, 1).reshape((config["NUM_ACTORS"], -1)),
@@ -590,7 +721,7 @@ def make_train(config):
                 return runner_state, transition
 
             runner_state, traj_batch = jax.lax.scan(
-                _env_step, runner_state, None, config["NUM_STEPS"]
+                _env_step, runner_state, jnp.arange(config["NUM_STEPS"])
             )
 
             (
@@ -725,7 +856,44 @@ def make_train(config):
             mean_adv = jnp.sum(advantages * active_masks) / active_count
             var_adv = jnp.sum(jnp.square(advantages - mean_adv) * active_masks) / active_count
             norm_advantages = (advantages - mean_adv) / jnp.sqrt(var_adv + 1e-8)
-            
+
+            # --- Trajectory / GAE Debugging ---
+            _check_finite(value_targets, "value_targets", update_steps)
+            _check_finite(q_targets, "q_targets", update_steps)
+            _check_finite(eq_targets, "eq_targets", update_steps)
+            _check_finite(advantages, "advantages", update_steps)
+            _check_finite(norm_advantages, "norm_advantages", update_steps)
+
+            debug_gae = update_steps < 2
+            _debug_print(
+                debug_gae,
+                "[GAE] upd={upd} | "
+                "val_targ(min/max/mean)={vtmin:.3f}/{vtmax:.3f}/{vtmean:.3f} | "
+                "q_targ(min/max/mean)={qtmin:.3f}/{qtmax:.3f}/{qtmean:.3f} | "
+                "eq_targ(min/max/mean)={etmin:.3f}/{etmax:.3f}/{etmean:.3f} | "
+                "adv(min/max/mean/std)={amin:.3f}/{amax:.3f}/{amean:.3f}/{astd:.3f} | "
+                "norm_adv(min/max)={namin:.3f}/{namax:.3f} | "
+                "active_count={ac}",
+                upd=update_steps,
+                vtmin=jnp.min(value_targets),
+                vtmax=jnp.max(value_targets),
+                vtmean=jnp.mean(value_targets),
+                qtmin=jnp.min(q_targets),
+                qtmax=jnp.max(q_targets),
+                qtmean=jnp.mean(q_targets),
+                etmin=jnp.min(eq_targets),
+                etmax=jnp.max(eq_targets),
+                etmean=jnp.mean(eq_targets),
+                amin=jnp.min(advantages),
+                amax=jnp.max(advantages),
+                amean=jnp.mean(advantages),
+                astd=jnp.std(advantages),
+                namin=jnp.min(norm_advantages),
+                namax=jnp.max(norm_advantages),
+                ac=jnp.sum(active_masks),
+            )
+            # --- End Trajectory / GAE Debugging ---
+
             # === Prepare minibatch data ===
             use_recurrent = config.get("use_recurrent_policy", False)
             data_chunk_length = config.get("DATA_CHUNK_LENGTH", config["NUM_STEPS"])
@@ -886,12 +1054,31 @@ def make_train(config):
                         / mb_active_count
                     )
                     actor_loss = policy_loss - config["ENT_COEF"] * entropy
+
+                    _debug_print(
+                        update_steps < 2,
+                        "[ACTOR] upd={upd} | loss={loss:.4f} | pl={pl:.4f} | ent={ent:.4f} | "
+                        "kl={kl:.6f} | clip={cf:.4f} | ratio(min/max/mean)={rmin:.4f}/{rmax:.4f}/{rmean:.4f}",
+                        upd=update_steps,
+                        loss=actor_loss,
+                        pl=policy_loss,
+                        ent=entropy,
+                        kl=approx_kl,
+                        cf=clip_frac,
+                        rmin=jnp.min(ratio),
+                        rmax=jnp.max(ratio),
+                        rmean=jnp.mean(ratio),
+                    )
+                    _check_finite(actor_loss, "actor_loss", update_steps)
+                    _check_finite(ratio, "actor_ratio", update_steps)
+
                     return actor_loss, (policy_loss, entropy, approx_kl, clip_frac, mb_active_count)
                 
                 (actor_loss, actor_aux), actor_grads = jax.value_and_grad(
                     _actor_loss_fn, has_aux=True
                 )(actor_train_state.params)
                 actor_grad_norm = optax.global_norm(actor_grads)
+                _check_finite(actor_grad_norm, "actor_grad_norm", update_steps)
                 actor_train_state = actor_train_state.apply_gradients(grads=actor_grads)
                 
                 actor_grad_var = 0.0
@@ -1034,12 +1221,25 @@ def make_train(config):
                         + config["transformer"]["q_value_loss_coef"] * q_value_loss
                         + config["transformer"]["eq_value_loss_coef"] * eq_value_loss
                     )
+
+                    _debug_print(
+                        update_steps < 2,
+                        "[CRITIC] upd={upd} | loss={loss:.4f} | v={vl:.4f} | q={ql:.4f} | eq={eql:.4f}",
+                        upd=update_steps,
+                        loss=critic_loss,
+                        vl=value_loss,
+                        ql=q_value_loss,
+                        eql=eq_value_loss,
+                    )
+                    _check_finite(critic_loss, "critic_loss", update_steps)
+
                     return critic_loss, (value_loss, q_value_loss, eq_value_loss, norm_dict)
                 
                 (critic_loss, critic_aux), critic_grads = jax.value_and_grad(
                     _critic_loss_fn, has_aux=True
                 )(critic_train_state.params, value_norm_dict)
                 critic_grad_norm = optax.global_norm(critic_grads)
+                _check_finite(critic_grad_norm, "critic_grad_norm", update_steps)
                 critic_train_state = critic_train_state.apply_gradients(grads=critic_grads)
                 
                 # Update value_norm_dict from critic loss output
@@ -1330,6 +1530,7 @@ def _override_config_from_cli(config):
     parser.add_argument("--use_recurrent_policy", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--data_chunk_length", type=int, default=None)
     parser.add_argument("--use_valuenorm", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--local_obs_with_agent_id", action=argparse.BooleanOptionalAction, default=None)
 
     # Transformer-specific
     parser.add_argument("--transformer_n_embd", type=int, default=None)
@@ -1392,6 +1593,8 @@ def _override_config_from_cli(config):
         config["DATA_CHUNK_LENGTH"] = args.data_chunk_length
     if args.use_valuenorm is not None:
         config["use_valuenorm"] = args.use_valuenorm
+    if args.local_obs_with_agent_id is not None:
+        config["LOCAL_OBS_WITH_AGENT_ID"] = args.local_obs_with_agent_id
 
     # Transformer overrides
     if args.transformer_n_embd is not None:
@@ -1416,6 +1619,7 @@ if __name__ == "__main__":
 
     print(f"Starting MAPPO-T training on {config['MAP_NAME']}...")
     print(f"SMAX env max_steps={config['ENV_KWARGS'].get('max_steps', config['NUM_STEPS'])}")
+    print("Comprehensive debugging enabled (verbose for first 2 updates).")
     rng = jax.random.PRNGKey(config["SEED"])
     train_jit = jax.jit(make_train(config))
 

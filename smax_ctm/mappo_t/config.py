@@ -104,7 +104,12 @@ def get_default_mappo_t_config():
         "use_proper_time_limits": True,
         
         # === Observation ===
+        # MACA's SMAC wrapper exposes agent IDs in local observations by default
+        # (obs_agent_id=True). MAPPO-T feeds local obs to both actor and
+        # transformer critic, so this must affect local obs, not only the
+        # centralized world_state used by older GRU baselines.
         "OBS_WITH_AGENT_ID": True,
+        "LOCAL_OBS_WITH_AGENT_ID": True,
         "ENV_KWARGS": {
             "see_enemy_actions": True,
             "walls_cause_death": True,

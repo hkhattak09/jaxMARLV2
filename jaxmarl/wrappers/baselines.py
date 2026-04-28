@@ -178,7 +178,10 @@ class SMAXLogWrapper(JaxMARLWrapper):
         batch_reward = self._batchify_floats(reward)
         new_episode_return = state.episode_returns + self._batchify_floats(reward)
         new_episode_length = state.episode_lengths + 1
-        new_won_episode = (batch_reward >= 1.0).astype(jnp.float32)
+        if "battle_won" in info:
+            new_won_episode = info["battle_won"].astype(jnp.float32)
+        else:
+            new_won_episode = (batch_reward >= 1.0).astype(jnp.float32)
         state = SMAXLogEnvState(
             env_state=env_state,
             won_episode=new_won_episode * (1 - ep_done),
