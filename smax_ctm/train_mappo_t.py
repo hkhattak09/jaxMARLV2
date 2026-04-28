@@ -543,14 +543,58 @@ def make_train(config):
             json.dump(config, f, indent=2, default=str)
 
         csv_path = os.path.join(run_dir, "progress.csv")
+        pretrained_progress_path = config.get("PRETRAINED_PROGRESS_PATH")
+        progress_step_offset = 0
+        progress_header = [
+            "step", "update", "return", "win_rate", "win_rate_std",
+            "ep_len", "timeout_rate",
+            "value_loss", "entropy", "clip_frac", "approx_kl",
+            "actor_grad_norm", "critic_grad_norm",
+        ]
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([
-                "step", "update", "return", "win_rate", "win_rate_std",
-                "ep_len", "timeout_rate",
-                "value_loss", "entropy", "clip_frac", "approx_kl",
-                "actor_grad_norm", "critic_grad_norm",
-            ])
+            writer.writerow(progress_header)
+
+            if pretrained_progress_path is not None:
+                if not os.path.isfile(pretrained_progress_path):
+                    raise FileNotFoundError(
+                        f"--pretrained_progress_path not found: {pretrained_progress_path}"
+                    )
+                with open(pretrained_progress_path, "r", newline="") as f_in:
+                    reader = csv.DictReader(f_in)
+                    missing_columns = [
+                        col for col in progress_header
+                        if reader.fieldnames is None or col not in reader.fieldnames
+                    ]
+                    if missing_columns:
+                        raise ValueError(
+                            "Pretrained progress CSV is missing required columns: "
+                            f"{missing_columns}. Path: {pretrained_progress_path}"
+                        )
+
+                    copied_rows = 0
+                    last_step = None
+                    for row in reader:
+                        step = int(float(row["step"]))
+                        if last_step is not None and step < last_step:
+                            raise ValueError(
+                                "Pretrained progress CSV steps must be nondecreasing. "
+                                f"Found {step} after {last_step} in {pretrained_progress_path}."
+                            )
+                        writer.writerow([row[col] for col in progress_header])
+                        last_step = step
+                        copied_rows += 1
+
+                    if copied_rows == 0 or last_step is None:
+                        raise ValueError(
+                            f"Pretrained progress CSV has no data rows: {pretrained_progress_path}"
+                        )
+                    progress_step_offset = last_step
+                print(
+                    "Loaded pretrained progress "
+                    f"{pretrained_progress_path}; MAPPO-T logging starts after "
+                    f"step {progress_step_offset}."
+                )
 
         def _update_step(update_runner_state, unused):
             runner_state, update_steps = update_runner_state
@@ -1319,6 +1363,7 @@ def make_train(config):
             win_rate_std = jnp.std(env_win_rates, ddof=1)
 
             step_count = update_steps * config["NUM_ENVS"] * config["NUM_STEPS"]
+            global_step_count = step_count + progress_step_offset
 
             def _print_and_csv(r, w, ws, el, tr, s, u, vl, ent, cf, akl, agn, cgn):
                 s_int = int(s)
@@ -1343,7 +1388,7 @@ def make_train(config):
             jax.experimental.io_callback(
                 _print_and_csv, None,
                 returns, win_rate, win_rate_std, ep_len, timeout_rate,
-                step_count, update_steps,
+                global_step_count, update_steps,
                 loss_info["value_loss"], loss_info["entropy"],
                 loss_info["clip_frac"], loss_info["approx_kl"],
                 loss_info["actor_grad_norm"], loss_info["critic_grad_norm"],
@@ -1415,7 +1460,7 @@ def make_train(config):
                 )
                 plt.xlabel("Timesteps")
                 plt.ylabel("Win Rate")
-                plt.xlim(0, config["TOTAL_TIMESTEPS"])
+                plt.xlim(0, progress_step_offset + config["TOTAL_TIMESTEPS"])
                 plt.title(f"MAPPO-T on {config['MAP_NAME']}")
                 plt.legend()
                 plt.grid(True, alpha=0.3)
@@ -1432,7 +1477,7 @@ def make_train(config):
                 should_save,
                 lambda: jax.experimental.io_callback(
                     _checkpoint, None,
-                    step_count,
+                    global_step_count,
                     update_steps,
                     actor_train_state.params,
                     critic_train_state.params,
@@ -1484,7 +1529,10 @@ def make_train(config):
             critic_step,
         ):
             update_int = int(jax.device_get(update))
-            s_int = update_int * config["NUM_ENVS"] * config["NUM_STEPS"]
+            s_int = (
+                progress_step_offset
+                + update_int * config["NUM_ENVS"] * config["NUM_STEPS"]
+            )
             ckpt_path = os.path.join(run_dir, "checkpoint_final.pkl")
             checkpoint = {
                 "model_type": "mappo_t_backbone",
@@ -1575,6 +1623,7 @@ def _override_config_from_cli(config):
     # Warm-start / continuation
     parser.add_argument("--pretrained_checkpoint_path", type=str, default=None)
     parser.add_argument("--resume_checkpoint_path", type=str, default=None)
+    parser.add_argument("--pretrained_progress_path", type=str, default=None)
 
     args = parser.parse_args()
 
@@ -1658,6 +1707,8 @@ def _override_config_from_cli(config):
     checkpoint_path = args.pretrained_checkpoint_path or args.resume_checkpoint_path
     if checkpoint_path is not None:
         config["PRETRAINED_CHECKPOINT_PATH"] = checkpoint_path
+    if args.pretrained_progress_path is not None:
+        config["PRETRAINED_PROGRESS_PATH"] = args.pretrained_progress_path
 
     return config
 
