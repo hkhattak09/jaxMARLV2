@@ -71,6 +71,69 @@ RACE_SCENARIOS = {
         "weights": {4: 0.45, 5: 0.45, 8: 0.10},
         "exceptions": {8},
     },
+    "protoss_10_vs_11": {
+        "n_allies": 10,
+        "n_enemies": 11,
+        "allowed": {2, 3, 6},
+        "weights": {2: 0.45, 3: 0.45, 6: 0.10},
+        "exceptions": set(),
+    },
+    "protoss_20_vs_20": {
+        "n_allies": 20,
+        "n_enemies": 20,
+        "allowed": {2, 3, 6},
+        "weights": {2: 0.45, 3: 0.45, 6: 0.10},
+        "exceptions": set(),
+    },
+    "protoss_20_vs_23": {
+        "n_allies": 20,
+        "n_enemies": 23,
+        "allowed": {2, 3, 6},
+        "weights": {2: 0.45, 3: 0.45, 6: 0.10},
+        "exceptions": set(),
+    },
+    "terran_10_vs_11": {
+        "n_allies": 10,
+        "n_enemies": 11,
+        "allowed": {0, 1, 7},
+        "weights": {0: 0.45, 1: 0.45, 7: 0.10},
+        "exceptions": {7},
+    },
+    "terran_20_vs_20": {
+        "n_allies": 20,
+        "n_enemies": 20,
+        "allowed": {0, 1, 7},
+        "weights": {0: 0.45, 1: 0.45, 7: 0.10},
+        "exceptions": {7},
+    },
+    "terran_20_vs_23": {
+        "n_allies": 20,
+        "n_enemies": 23,
+        "allowed": {0, 1, 7},
+        "weights": {0: 0.45, 1: 0.45, 7: 0.10},
+        "exceptions": {7},
+    },
+    "zerg_10_vs_11": {
+        "n_allies": 10,
+        "n_enemies": 11,
+        "allowed": {4, 5, 8},
+        "weights": {4: 0.45, 5: 0.45, 8: 0.10},
+        "exceptions": {8},
+    },
+    "zerg_20_vs_20": {
+        "n_allies": 20,
+        "n_enemies": 20,
+        "allowed": {4, 5, 8},
+        "weights": {4: 0.45, 5: 0.45, 8: 0.10},
+        "exceptions": {8},
+    },
+    "zerg_20_vs_23": {
+        "n_allies": 20,
+        "n_enemies": 23,
+        "allowed": {4, 5, 8},
+        "weights": {4: 0.45, 5: 0.45, 8: 0.10},
+        "exceptions": {8},
+    },
 }
 
 
@@ -151,7 +214,17 @@ def test_short_rollouts():
         key = jax.random.PRNGKey(10_000)
         key, reset_key = jax.random.split(key)
         obs, state = env.reset(reset_key)
-        assert_true(obs["world_state"].shape == (env.state_size + env.num_agents * 2,), f"{scenario_name}: bad world state shape")
+        assert_true(
+            obs["world_state"].shape == (env.state_size,),
+            f"{scenario_name}: bad world state shape "
+            f"{obs['world_state'].shape}, expected {(env.state_size,)}",
+        )
+        for agent in env.agents:
+            assert_true(
+                obs[agent].shape == (env.obs_size,),
+                f"{scenario_name}: bad obs shape for {agent}: "
+                f"{obs[agent].shape}, expected {(env.obs_size,)}",
+            )
 
         for _ in range(4):
             key, action_key, step_key = jax.random.split(key, 3)

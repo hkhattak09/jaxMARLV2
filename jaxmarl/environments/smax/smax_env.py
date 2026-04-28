@@ -187,6 +187,66 @@ MAP_NAME_TO_SCENARIO = {
         exception_unit_type_indices=jnp.array([8], dtype=jnp.uint8),
         use_smacv2_unit_types=True,
     ),
+    "protoss_10_vs_11": Scenario(
+        jnp.zeros((21,), dtype=jnp.uint8), 10, 11, True, True,
+        unit_type_indices=jnp.array([2, 3, 6], dtype=jnp.uint8),
+        unit_type_weights=jnp.array([0.45, 0.45, 0.10], dtype=jnp.float32),
+        use_smacv2_unit_types=True,
+    ),
+    "protoss_20_vs_20": Scenario(
+        jnp.zeros((40,), dtype=jnp.uint8), 20, 20, True, True,
+        unit_type_indices=jnp.array([2, 3, 6], dtype=jnp.uint8),
+        unit_type_weights=jnp.array([0.45, 0.45, 0.10], dtype=jnp.float32),
+        use_smacv2_unit_types=True,
+    ),
+    "protoss_20_vs_23": Scenario(
+        jnp.zeros((43,), dtype=jnp.uint8), 20, 23, True, True,
+        unit_type_indices=jnp.array([2, 3, 6], dtype=jnp.uint8),
+        unit_type_weights=jnp.array([0.45, 0.45, 0.10], dtype=jnp.float32),
+        use_smacv2_unit_types=True,
+    ),
+    "terran_10_vs_11": Scenario(
+        jnp.zeros((21,), dtype=jnp.uint8), 10, 11, True, True,
+        unit_type_indices=jnp.array([0, 1, 7], dtype=jnp.uint8),
+        unit_type_weights=jnp.array([0.45, 0.45, 0.10], dtype=jnp.float32),
+        exception_unit_type_indices=jnp.array([7], dtype=jnp.uint8),
+        use_smacv2_unit_types=True,
+    ),
+    "terran_20_vs_20": Scenario(
+        jnp.zeros((40,), dtype=jnp.uint8), 20, 20, True, True,
+        unit_type_indices=jnp.array([0, 1, 7], dtype=jnp.uint8),
+        unit_type_weights=jnp.array([0.45, 0.45, 0.10], dtype=jnp.float32),
+        exception_unit_type_indices=jnp.array([7], dtype=jnp.uint8),
+        use_smacv2_unit_types=True,
+    ),
+    "terran_20_vs_23": Scenario(
+        jnp.zeros((43,), dtype=jnp.uint8), 20, 23, True, True,
+        unit_type_indices=jnp.array([0, 1, 7], dtype=jnp.uint8),
+        unit_type_weights=jnp.array([0.45, 0.45, 0.10], dtype=jnp.float32),
+        exception_unit_type_indices=jnp.array([7], dtype=jnp.uint8),
+        use_smacv2_unit_types=True,
+    ),
+    "zerg_10_vs_11": Scenario(
+        jnp.zeros((21,), dtype=jnp.uint8), 10, 11, True, True,
+        unit_type_indices=jnp.array([4, 8, 5], dtype=jnp.uint8),
+        unit_type_weights=jnp.array([0.45, 0.10, 0.45], dtype=jnp.float32),
+        exception_unit_type_indices=jnp.array([8], dtype=jnp.uint8),
+        use_smacv2_unit_types=True,
+    ),
+    "zerg_20_vs_20": Scenario(
+        jnp.zeros((40,), dtype=jnp.uint8), 20, 20, True, True,
+        unit_type_indices=jnp.array([4, 8, 5], dtype=jnp.uint8),
+        unit_type_weights=jnp.array([0.45, 0.10, 0.45], dtype=jnp.float32),
+        exception_unit_type_indices=jnp.array([8], dtype=jnp.uint8),
+        use_smacv2_unit_types=True,
+    ),
+    "zerg_20_vs_23": Scenario(
+        jnp.zeros((43,), dtype=jnp.uint8), 20, 23, True, True,
+        unit_type_indices=jnp.array([4, 8, 5], dtype=jnp.uint8),
+        unit_type_weights=jnp.array([0.45, 0.10, 0.45], dtype=jnp.float32),
+        exception_unit_type_indices=jnp.array([8], dtype=jnp.uint8),
+        use_smacv2_unit_types=True,
+    ),
 }
 
 
@@ -349,8 +409,11 @@ class SMAX(MultiAgentEnv):
         self.observation_spaces = {
             i: Box(low=-1.0, high=1.0, shape=(self.obs_size,)) for i in self.agents
         }
-        self.num_ally_actions = self.num_enemies + self.num_movement_actions
-        self.num_enemy_actions = self.num_allies + self.num_movement_actions
+        # Use a shared padded target width so medivacs can heal own-team units
+        # even when num_allies != num_enemies, e.g. SMACv2 10_vs_11 / 20_vs_23.
+        self.num_target_actions = max(self.num_allies, self.num_enemies)
+        self.num_ally_actions = self.num_target_actions + self.num_movement_actions
+        self.num_enemy_actions = self.num_target_actions + self.num_movement_actions
         self.action_spaces = {
             agent: self._get_individual_action_space(i)
             for i, agent in enumerate(self.agents)
@@ -813,31 +876,46 @@ class SMAX(MultiAgentEnv):
             return new_pos
 
         def update_agent_health(idx, action, key):
-            # for team 1, their attack actions are labelled in
-            # reverse order because that is the order they are
-            # observed in
-            attacked_idx = jax.lax.cond(
-                idx < self.num_allies,
-                lambda: action + self.num_allies - self.num_movement_actions,
-                lambda: self.num_allies - 1 - (action - self.num_movement_actions),
-            )
             action_slot = action - self.num_movement_actions
-            healed_idx = jax.lax.cond(
-                idx < self.num_allies,
+            is_ally = idx < self.num_allies
+
+            # Regular attacks:
+            # allies target enemies [num_allies ... num_agents-1]
+            # enemies target allies in reverse order, preserving existing convention.
+            raw_attacked_idx = jax.lax.cond(
+                is_ally,
+                lambda: self.num_allies + action_slot,
+                lambda: self.num_allies - 1 - action_slot,
+            )
+
+            # Medivac healing:
+            # allies heal allies in natural order;
+            # enemies heal enemies in reverse order, matching enemy observation/action order.
+            raw_healed_idx = jax.lax.cond(
+                is_ally,
                 lambda: action_slot,
                 lambda: self.num_agents - 1 - action_slot,
             )
-            is_medivac = self._is_medivac(state.unit_types[idx])
-            target_idx = jax.lax.select(is_medivac, healed_idx, attacked_idx)
 
-            # deal with no-op attack actions (i.e. agents that are moving instead)
-            target_idx = jax.lax.select(
-                action < self.num_movement_actions, idx, target_idx
+            is_medivac = self._is_medivac(state.unit_types[idx])
+            raw_target_idx = jax.lax.select(is_medivac, raw_healed_idx, raw_attacked_idx)
+
+            has_target_action = action >= self.num_movement_actions
+            target_in_bounds = (
+                has_target_action
+                & (raw_target_idx >= 0)
+                & (raw_target_idx < self.num_agents)
             )
+
+            # Avoid out-of-bounds gathers for padded target slots.
+            target_idx = jnp.clip(raw_target_idx, 0, self.num_agents - 1)
+            target_idx = jax.lax.select(has_target_action, target_idx, idx)
+
             target_is_medivac = self._is_medivac(state.unit_types[target_idx])
             target_is_ally = state.unit_teams[target_idx] == state.unit_teams[idx]
+
             valid_target_action = (
-                (action >= self.num_movement_actions)
+                target_in_bounds
                 & (idx != target_idx)
                 & (
                     jnp.linalg.norm(
@@ -849,13 +927,16 @@ class SMAX(MultiAgentEnv):
                 & state.unit_alive[target_idx]
                 & (state.unit_weapon_cooldowns[idx] <= 0.0)
             )
+
             heal_valid = valid_target_action & is_medivac & target_is_ally
             heal_valid = heal_valid & jnp.logical_not(target_is_medivac)
+
             attack_valid = (
                 valid_target_action
                 & jnp.logical_not(is_medivac)
                 & jnp.logical_not(target_is_ally)
             )
+
             is_baneling = self._is_baneling(state.unit_types[idx])
             baneling_attack_valid = attack_valid & is_baneling
             normal_attack_valid = attack_valid & jnp.logical_not(is_baneling)
@@ -869,6 +950,7 @@ class SMAX(MultiAgentEnv):
             )
             enemy_mask = state.unit_teams != state.unit_teams[idx]
             baneling_self_mask = jnp.arange(self.num_agents) == idx
+
             health_diff = (
                 normal_attack_valid
                 * target_mask
@@ -881,16 +963,15 @@ class SMAX(MultiAgentEnv):
                 * -self.unit_type_attacks[state.unit_types[idx]]
             )
             health_diff = health_diff + (
-                baneling_attack_valid * baneling_self_mask * -state.unit_health[idx]
+                baneling_attack_valid
+                * baneling_self_mask
+                * -state.unit_health[idx]
             )
             health_diff = health_diff + (
                 heal_valid
                 * target_mask
                 * self.unit_type_attacks[state.unit_types[idx]]
             )
-
-            # design choice based on the pysc2 randomness details.
-            # See https://github.com/deepmind/pysc2/blob/master/docs/environment.md#determinism-and-randomness
 
             cooldown_deviation = jax.random.uniform(
                 key, minval=-self.time_per_step, maxval=2 * self.time_per_step
@@ -899,15 +980,14 @@ class SMAX(MultiAgentEnv):
                 self.unit_type_weapon_cooldowns[state.unit_types[idx]]
                 + cooldown_deviation
             )
+
             action_valid = attack_valid | heal_valid
             cooldown_diff = jax.lax.select(
                 action_valid,
-                # subtract the current cooldown because we are
-                # going to add it back. This way we effectively
-                # set the new cooldown to `cooldown`
                 cooldown - state.unit_weapon_cooldowns[idx],
                 -self.time_per_step,
             )
+
             return health_diff, target_idx, cooldown_diff
 
         def perform_agent_action(idx, action, key):
@@ -991,7 +1071,7 @@ class SMAX(MultiAgentEnv):
                     & jnp.logical_not(self_mask)
                 )
                 idxes = jnp.nonzero(
-                    in_range_mask * jnp.arange(self.num_agents),
+                    in_range_mask,
                     size=self.max_units_per_section,
                     fill_value=-1,
                 )[0]
@@ -1118,7 +1198,7 @@ class SMAX(MultiAgentEnv):
                     jnp.zeros((self.num_movement_actions - 1,), dtype=jnp.uint8),
                 )
             )
-            shootable_mask = (
+            in_range_alive = (
                 jnp.linalg.norm(state.unit_positions - state.unit_positions[i], axis=-1)
                 < self.unit_type_attack_ranges[state.unit_types[i]]
             ) & state.unit_alive
@@ -1127,22 +1207,32 @@ class SMAX(MultiAgentEnv):
             else:
                 target_is_not_medivac = state.unit_types != self.medivac_type_idx
             target_is_not_self = jnp.arange(self.num_agents) != i
-            healable_mask = shootable_mask & target_is_not_medivac & target_is_not_self
-            shootable_mask = shootable_mask if team == 0 else shootable_mask[::-1]
+            # Regular combat units target the opposite team.
+            # Medivacs target own-team non-medivac units, excluding self.
+            healable_mask = in_range_alive & target_is_not_medivac & target_is_not_self
+            shootable_mask = in_range_alive
             if team == 0:
-                shootable_mask = shootable_mask[self.num_allies :]
-                healable_mask = healable_mask[: self.num_allies]
+                # Ally action slots target enemies in natural enemy order.
+                attack_targets = shootable_mask[self.num_allies :]
+                heal_targets = healable_mask[: self.num_allies]
             else:
-                shootable_mask = shootable_mask[self.num_enemies :]
-                healable_mask = healable_mask[::-1][: self.num_enemies]
-            if self.num_allies != self.num_enemies:
-                healable_mask = jnp.zeros_like(shootable_mask)
+                # Enemy action slots use the existing reversed ordering convention.
+                attack_targets = shootable_mask[: self.num_allies][::-1]
+                heal_targets = healable_mask[self.num_allies :][::-1]
+            attack_targets = jnp.pad(
+                attack_targets,
+                (0, self.num_target_actions - attack_targets.shape[0]),
+            )
+            heal_targets = jnp.pad(
+                heal_targets,
+                (0, self.num_target_actions - heal_targets.shape[0]),
+            )
             is_medivac = self._is_medivac(state.unit_types[i])
-            target_mask = jax.lax.select(is_medivac, healable_mask, shootable_mask)
-            shootable_mask = jax.lax.select(
+            target_mask = jax.lax.select(is_medivac, heal_targets, attack_targets)
+            target_mask = jax.lax.select(
                 is_alive, target_mask, jnp.zeros_like(target_mask)
             )
-            mask = mask.at[self.num_movement_actions :].set(shootable_mask)
+            mask = mask.at[self.num_movement_actions :].set(target_mask)
             return mask
 
         ally_avail_actions_masks = jax.vmap(

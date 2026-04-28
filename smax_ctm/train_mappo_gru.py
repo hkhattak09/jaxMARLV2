@@ -49,7 +49,7 @@ class SMAXWorldStateWrapper(JaxMARLWrapper):
     @partial(jax.jit, static_argnums=0)
     def step(self, key, state, action):
         obs, env_state, reward, done, info = self._env.step(key, state, action)
-        obs["world_state"] = self.world_state_fn(obs, state)
+        obs["world_state"] = self.world_state_fn(obs, env_state)
         return obs, env_state, reward, done, info
 
     @partial(jax.jit, static_argnums=0)
