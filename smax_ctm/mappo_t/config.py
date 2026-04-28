@@ -20,7 +20,7 @@ def get_default_mappo_t_config():
         "MAP_NAME": "protoss_10_vs_10",
         "NUM_ENVS": 20,
         "NUM_STEPS": 200,
-        "TOTAL_TIMESTEPS": int(3e7),
+        "TOTAL_TIMESTEPS": int(4e7),
         "SAVE_INTERVAL": 1000000,   # Timesteps between checkpoint saves
         
         # === Model Architecture ===
