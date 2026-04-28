@@ -50,32 +50,6 @@ from mappo_t.valuenorm import (
 )
 
 
-def _debug_print(condition, fmt, *args, **kwargs):
-    """Conditional JAX debug print inside JIT."""
-    jax.lax.cond(
-        condition,
-        lambda: jax.debug.print(fmt, *args, **kwargs),
-        lambda: None,
-    )
-
-
-def _check_finite(x, name, update_steps, step_idx=-1):
-    """Warn if tensor contains NaN or Inf."""
-    all_finite = jnp.all(jnp.isfinite(x))
-    jax.lax.cond(
-        jnp.logical_not(all_finite),
-        lambda: jax.debug.print(
-            "!!! NON-FINITE in {name} at update {upd} step {step} | finite={fc}/{tot} !!!",
-            name=name,
-            upd=update_steps,
-            step=step_idx,
-            fc=jnp.sum(jnp.isfinite(x)),
-            tot=x.size,
-        ),
-        lambda: None,
-    )
-
-
 class Transition(NamedTuple):
     global_done: jnp.ndarray
     done: jnp.ndarray
@@ -612,75 +586,6 @@ def make_train(config):
                 )
                 reward_batch = batchify(reward, env.agents, config["NUM_ACTORS"]).squeeze()
 
-                # --- Comprehensive Environment Step Debugging ---
-                _check_finite(obs_batch, "obs_batch", update_steps, step_idx)
-                _check_finite(avail_actions, "avail_actions", update_steps, step_idx)
-                _check_finite(pi.logits, "pi.logits", update_steps, step_idx)
-                _check_finite(action, "action", update_steps, step_idx)
-                _check_finite(values, "critic_values", update_steps, step_idx)
-                _check_finite(reward_batch, "reward", update_steps, step_idx)
-                _check_finite(ac_hstate, "ac_hstate", update_steps, step_idx)
-                _check_finite(cr_hstate, "cr_hstate", update_steps, step_idx)
-
-                zero_avail = jnp.any(jnp.sum(avail_actions, axis=-1) == 0)
-                jax.lax.cond(
-                    zero_avail,
-                    lambda: jax.debug.print(
-                        "!!! ZERO AVAIL ACTIONS at upd {upd} step {step} !!!",
-                        upd=update_steps,
-                        step=step_idx,
-                    ),
-                    lambda: None,
-                )
-
-                action_out_of_bounds = jnp.any(action < 0) | jnp.any(action >= action_dim)
-                jax.lax.cond(
-                    action_out_of_bounds,
-                    lambda: jax.debug.print(
-                        "!!! ACTION OUT OF BOUNDS at upd {upd} step {step} | min={amin} max={amax} dim={adim} !!!",
-                        upd=update_steps,
-                        step=step_idx,
-                        amin=jnp.min(action),
-                        amax=jnp.max(action),
-                        adim=action_dim,
-                    ),
-                    lambda: None,
-                )
-
-                debug_env = (update_steps < 2) & (step_idx < 3)
-                _debug_print(
-                    debug_env,
-                    "[ENV] upd={upd} step={step} | "
-                    "obs(min/max/mean)={omin:.3f}/{omax:.3f}/{omean:.3f} | "
-                    "avail_sum={asum:.1f} | "
-                    "logits(min/max)={lmin:.3f}/{lmax:.3f} | "
-                    "actions(min/max)={amin}/{amax} | "
-                    "rew(sum/mean)={rsum:.3f}/{rmean:.3f} | "
-                    "done_all={dsum} | won={wsum} | "
-                    "values(min/max/mean)={vmin:.3f}/{vmax:.3f}/{vmean:.3f} | "
-                    "ac_hstate_norm={hn:.3f} | cr_hstate_norm={crn:.3f}",
-                    upd=update_steps,
-                    step=step_idx,
-                    omin=jnp.min(obs_batch),
-                    omax=jnp.max(obs_batch),
-                    omean=jnp.mean(obs_batch),
-                    asum=jnp.sum(avail_actions),
-                    lmin=jnp.min(pi.logits),
-                    lmax=jnp.max(pi.logits),
-                    amin=jnp.min(action),
-                    amax=jnp.max(action),
-                    rsum=jnp.sum(reward_batch),
-                    rmean=jnp.mean(reward_batch),
-                    dsum=jnp.sum(done["__all__"].astype(jnp.int32)),
-                    wsum=jnp.sum(info["battle_won"].astype(jnp.int32)),
-                    vmin=jnp.min(env_value_to_actor(values)),
-                    vmax=jnp.max(env_value_to_actor(values)),
-                    vmean=jnp.mean(env_value_to_actor(values)),
-                    hn=jnp.linalg.norm(ac_hstate),
-                    crn=jnp.linalg.norm(cr_hstate),
-                )
-                # --- End Environment Step Debugging ---
-
                 transition = Transition(
                     env_done_batch,
                     last_env_done,
@@ -857,43 +762,6 @@ def make_train(config):
             var_adv = jnp.sum(jnp.square(advantages - mean_adv) * active_masks) / active_count
             norm_advantages = (advantages - mean_adv) / jnp.sqrt(var_adv + 1e-8)
 
-            # --- Trajectory / GAE Debugging ---
-            _check_finite(value_targets, "value_targets", update_steps)
-            _check_finite(q_targets, "q_targets", update_steps)
-            _check_finite(eq_targets, "eq_targets", update_steps)
-            _check_finite(advantages, "advantages", update_steps)
-            _check_finite(norm_advantages, "norm_advantages", update_steps)
-
-            debug_gae = update_steps < 2
-            _debug_print(
-                debug_gae,
-                "[GAE] upd={upd} | "
-                "val_targ(min/max/mean)={vtmin:.3f}/{vtmax:.3f}/{vtmean:.3f} | "
-                "q_targ(min/max/mean)={qtmin:.3f}/{qtmax:.3f}/{qtmean:.3f} | "
-                "eq_targ(min/max/mean)={etmin:.3f}/{etmax:.3f}/{etmean:.3f} | "
-                "adv(min/max/mean/std)={amin:.3f}/{amax:.3f}/{amean:.3f}/{astd:.3f} | "
-                "norm_adv(min/max)={namin:.3f}/{namax:.3f} | "
-                "active_count={ac}",
-                upd=update_steps,
-                vtmin=jnp.min(value_targets),
-                vtmax=jnp.max(value_targets),
-                vtmean=jnp.mean(value_targets),
-                qtmin=jnp.min(q_targets),
-                qtmax=jnp.max(q_targets),
-                qtmean=jnp.mean(q_targets),
-                etmin=jnp.min(eq_targets),
-                etmax=jnp.max(eq_targets),
-                etmean=jnp.mean(eq_targets),
-                amin=jnp.min(advantages),
-                amax=jnp.max(advantages),
-                amean=jnp.mean(advantages),
-                astd=jnp.std(advantages),
-                namin=jnp.min(norm_advantages),
-                namax=jnp.max(norm_advantages),
-                ac=jnp.sum(active_masks),
-            )
-            # --- End Trajectory / GAE Debugging ---
-
             # === Prepare minibatch data ===
             use_recurrent = config.get("use_recurrent_policy", False)
             data_chunk_length = config.get("DATA_CHUNK_LENGTH", config["NUM_STEPS"])
@@ -1055,30 +923,12 @@ def make_train(config):
                     )
                     actor_loss = policy_loss - config["ENT_COEF"] * entropy
 
-                    _debug_print(
-                        update_steps < 2,
-                        "[ACTOR] upd={upd} | loss={loss:.4f} | pl={pl:.4f} | ent={ent:.4f} | "
-                        "kl={kl:.6f} | clip={cf:.4f} | ratio(min/max/mean)={rmin:.4f}/{rmax:.4f}/{rmean:.4f}",
-                        upd=update_steps,
-                        loss=actor_loss,
-                        pl=policy_loss,
-                        ent=entropy,
-                        kl=approx_kl,
-                        cf=clip_frac,
-                        rmin=jnp.min(ratio),
-                        rmax=jnp.max(ratio),
-                        rmean=jnp.mean(ratio),
-                    )
-                    _check_finite(actor_loss, "actor_loss", update_steps)
-                    _check_finite(ratio, "actor_ratio", update_steps)
-
                     return actor_loss, (policy_loss, entropy, approx_kl, clip_frac, mb_active_count)
                 
                 (actor_loss, actor_aux), actor_grads = jax.value_and_grad(
                     _actor_loss_fn, has_aux=True
                 )(actor_train_state.params)
                 actor_grad_norm = optax.global_norm(actor_grads)
-                _check_finite(actor_grad_norm, "actor_grad_norm", update_steps)
                 actor_train_state = actor_train_state.apply_gradients(grads=actor_grads)
                 
                 actor_grad_var = 0.0
@@ -1222,24 +1072,12 @@ def make_train(config):
                         + config["transformer"]["eq_value_loss_coef"] * eq_value_loss
                     )
 
-                    _debug_print(
-                        update_steps < 2,
-                        "[CRITIC] upd={upd} | loss={loss:.4f} | v={vl:.4f} | q={ql:.4f} | eq={eql:.4f}",
-                        upd=update_steps,
-                        loss=critic_loss,
-                        vl=value_loss,
-                        ql=q_value_loss,
-                        eql=eq_value_loss,
-                    )
-                    _check_finite(critic_loss, "critic_loss", update_steps)
-
                     return critic_loss, (value_loss, q_value_loss, eq_value_loss, norm_dict)
                 
                 (critic_loss, critic_aux), critic_grads = jax.value_and_grad(
                     _critic_loss_fn, has_aux=True
                 )(critic_train_state.params, value_norm_dict)
                 critic_grad_norm = optax.global_norm(critic_grads)
-                _check_finite(critic_grad_norm, "critic_grad_norm", update_steps)
                 critic_train_state = critic_train_state.apply_gradients(grads=critic_grads)
                 
                 # Update value_norm_dict from critic loss output
@@ -1619,7 +1457,6 @@ if __name__ == "__main__":
 
     print(f"Starting MAPPO-T training on {config['MAP_NAME']}...")
     print(f"SMAX env max_steps={config['ENV_KWARGS'].get('max_steps', config['NUM_STEPS'])}")
-    print("Comprehensive debugging enabled (verbose for first 2 updates).")
     rng = jax.random.PRNGKey(config["SEED"])
     train_jit = jax.jit(make_train(config))
 
