@@ -42,6 +42,7 @@ from mappo_t.transformer import (
     Encoder,
     compute_joint_attention,
 )
+from mappo_t.config import validate_mappo_t_config
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,7 @@ def base_config():
     cfg["TOTAL_TIMESTEPS"] = cfg["NUM_STEPS"] * cfg["NUM_ENVS"] * 2
     cfg["PPO_EPOCH"] = 2
     cfg["CRITIC_EPOCH"] = 2
+    cfg["DATA_CHUNK_LENGTH"] = 4
     cfg["ACTOR_NUM_MINI_BATCH"] = 1
     cfg["CRITIC_NUM_MINI_BATCH"] = 1
     cfg["transformer"]["n_encode_layer"] = 1
@@ -132,9 +134,71 @@ def reference_baseline_weights(joint_attentions, sigma, vq_coef, vq_coma_coef, l
     return jnp.concatenate([self_weights, group_weights, joint_weights], axis=-1)
 
 
+def tree_flatten_with_paths(tree):
+    """Compatibility shim for JAX versions with singular/plural path API names."""
+    flatten_fn = getattr(jax.tree_util, "tree_flatten_with_path", None)
+    if flatten_fn is None:
+        flatten_fn = getattr(jax.tree_util, "tree_flatten_with_paths")
+    return flatten_fn(tree)[0]
+
+
+def key_path_to_name(path):
+    parts = []
+    for key in path:
+        if hasattr(key, "key"):
+            parts.append(str(key.key))
+        elif hasattr(key, "name"):
+            parts.append(str(key.name))
+        elif hasattr(key, "idx"):
+            parts.append(str(key.idx))
+        else:
+            parts.append(str(key))
+    return "/".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # 1. MACA source architecture: MAPPO-T actor is MLP policy, transformer critic
 # ---------------------------------------------------------------------------
+
+class TestPaperConfig:
+    def test_default_jax_config_uses_paper_recurrent_hparams(self):
+        cfg = get_default_mappo_t_config()
+        assert cfg["hidden_sizes"] == [64, 64, 64]
+        assert cfg["use_naive_recurrent_policy"] is False
+        assert cfg["use_recurrent_policy"] is True
+        assert cfg["recurrent_n"] == 1
+        assert cfg["DATA_CHUNK_LENGTH"] == 10
+        assert cfg["ACTOR_NUM_MINI_BATCH"] == 1
+        assert cfg["CRITIC_NUM_MINI_BATCH"] == 1
+        assert cfg["transformer"]["n_encode_layer"] == 1
+        assert cfg["transformer"]["n_head"] == 1
+        assert cfg["transformer"]["n_embd"] == 64
+        assert cfg["transformer"]["zs_dim"] == 256
+        assert cfg["transformer"]["active_fn"] == "gelu"
+        assert cfg["transformer"]["wght_decay"] == 0.01
+        assert cfg["transformer"]["betas"] == [0.9, 0.95]
+        assert cfg["transformer"]["weight_init"] == "tfixup"
+
+    def test_recurrent_config_validation_allows_real_minibatches(self):
+        cfg = get_default_mappo_t_config()
+        cfg["NUM_ENVS"] = 8
+        cfg["NUM_STEPS"] = 20
+        cfg["DATA_CHUNK_LENGTH"] = 10
+        cfg["ACTOR_NUM_MINI_BATCH"] = 4
+        cfg["CRITIC_NUM_MINI_BATCH"] = 4
+        validate_mappo_t_config(cfg, num_agents=3)
+
+    def test_recurrent_config_validation_rejects_bad_chunk_minibatches(self):
+        cfg = get_default_mappo_t_config()
+        cfg["NUM_ENVS"] = 5
+        cfg["NUM_STEPS"] = 20
+        cfg["DATA_CHUNK_LENGTH"] = 10
+        cfg["ACTOR_NUM_MINI_BATCH"] = 2
+        cfg["CRITIC_NUM_MINI_BATCH"] = 3
+
+        with pytest.raises(ValueError, match="Recurrent critic minibatch"):
+            validate_mappo_t_config(cfg, num_agents=3)
+
 
 class TestMacaSourceArchitecture:
     def test_maca_mappo_t_actor_chain_is_mlp_policy(self):
@@ -175,12 +239,13 @@ class TestActorArchitecture:
         hstate = ScannedRNN.initialize_carry(2, base_config["hidden_sizes"][-1])
         params = actor.init(rng, hstate, (obs, resets, avail))
 
-        params_flat = jax.tree_util.tree_flatten_with_paths(params)[0]
-        param_names = ["/".join(str(k.key) for k in path) for path, _ in params_flat]
+        params_flat = tree_flatten_with_paths(params)
+        param_names = [key_path_to_name(path) for path, _ in params_flat]
 
         # Must have MLP base layers
         assert any("base_0" in n for n in param_names), param_names
         assert any("base_1" in n for n in param_names), param_names
+        assert any("base_2" in n for n in param_names), param_names
         # Must have action_out
         assert any("action_out" in n for n in param_names), param_names
         # Must NOT have transformer blocks / attention
@@ -200,8 +265,8 @@ class TestActorArchitecture:
         params = actor.init(rng, hstate, (obs, resets, avail))
 
         dense_names = []
-        for path, _ in jax.tree_util.tree_flatten_with_paths(params)[0]:
-            keys = [str(k.key) for k in path]
+        for path, _ in tree_flatten_with_paths(params):
+            keys = key_path_to_name(path).split("/")
             if keys[-1] == "kernel":
                 dense_names.append("/".join(keys[:-1]))
 
@@ -801,6 +866,9 @@ class TestSmokeRun:
         cfg["TOTAL_TIMESTEPS"] = cfg["NUM_STEPS"] * cfg["NUM_ENVS"] * 1
         cfg["PPO_EPOCH"] = 1
         cfg["CRITIC_EPOCH"] = 1
+        cfg["DATA_CHUNK_LENGTH"] = 4
+        cfg["ACTOR_NUM_MINI_BATCH"] = 2
+        cfg["CRITIC_NUM_MINI_BATCH"] = 2
         cfg["transformer"]["n_encode_layer"] = 1
         cfg["transformer"]["n_decode_layer"] = 0
         cfg["transformer"]["n_embd"] = 16

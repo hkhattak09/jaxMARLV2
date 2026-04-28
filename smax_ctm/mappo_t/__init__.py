@@ -4,7 +4,7 @@ This package contains the JAX/Flax implementation of MAPPO-T,
 ported from the MACA (Multi-Agent Credit Assignment) framework.
 
 The key components are:
-- Transformer-based actor with multi-head self-attention
+- MLP/recurrent actor matching MACA's StochasticPolicyTrans path
 - Transformer-based critic with V, Q, and EQ value heads
 - Multi-agent credit assignment using attention weights
 """

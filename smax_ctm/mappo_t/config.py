@@ -1,7 +1,8 @@
 """MAPPO-T Configuration.
 
-This module contains the default configuration for MAPPO-T,
-ported from the MACA framework's YAML configs.
+The defaults follow the MAPPO-T/MACA paper hyperparameter tables.  The code
+still supports overriding these values for larger JAX runs, including using
+multiple recurrent mini-batches.
 """
 
 def get_default_mappo_t_config():
@@ -22,13 +23,13 @@ def get_default_mappo_t_config():
         "TOTAL_TIMESTEPS": int(1e7),
         
         # === Model Architecture ===
-        "hidden_sizes": [128, 128],
+        "hidden_sizes": [64, 64, 64],
         "activation_func": "relu",
         "initialization_method": "orthogonal_",
         "gain": 0.01,
         "recurrent_n": 1,
         "use_naive_recurrent_policy": False,
-        "use_recurrent_policy": False,
+        "use_recurrent_policy": True,
         "use_feature_normalization": True,
         
         # === Transformer Config ===
@@ -68,10 +69,10 @@ def get_default_mappo_t_config():
         "SCALE_CLIP_EPS": False,   # Scale clip epsilon by num_agents
         "PPO_EPOCH": 10,           # Actor PPO epochs
         "UPDATE_EPOCHS": 10,       # Backward-compatible alias for PPO_EPOCH
-        "ACTOR_NUM_MINI_BATCH": 1, # Actor minibatch count
+        "ACTOR_NUM_MINI_BATCH": 1, # Paper actor minibatch count; can be increased
         "NUM_MINIBATCHES": 1,      # Backward-compatible alias for ACTOR_NUM_MINI_BATCH
         "CRITIC_EPOCH": 10,        # Critic update epochs
-        "CRITIC_NUM_MINI_BATCH": 1,# Critic minibatch count
+        "CRITIC_NUM_MINI_BATCH": 1,# Paper critic minibatch count; can be increased
         "DATA_CHUNK_LENGTH": 10,    # For recurrent generator
         
         # === Value Normalization ===
@@ -151,9 +152,23 @@ def validate_mappo_t_config(config, num_agents):
     num_steps = config["NUM_STEPS"]
     num_envs = config["NUM_ENVS"]
     
+    use_naive_recurrent = config.get("use_naive_recurrent_policy", False)
+    use_recurrent = config.get("use_recurrent_policy", False)
+    if use_naive_recurrent:
+        raise NotImplementedError(
+            "use_naive_recurrent_policy=True is not implemented in this JAX MAPPO-T trainer. "
+            "Use the paper setting use_recurrent_policy=True instead."
+        )
+    if use_recurrent and config.get("recurrent_n", 1) != 1:
+        raise NotImplementedError(
+            "This JAX MAPPO-T trainer currently supports recurrent_n=1, matching the paper."
+        )
+
     # Actor minibatch validation: flatten over (time, env, agent)
     actor_batch_size = num_steps * num_envs * num_agents
     actor_num_mini_batch = config.get("ACTOR_NUM_MINI_BATCH", config.get("NUM_MINIBATCHES", 1))
+    if actor_num_mini_batch <= 0:
+        raise ValueError("ACTOR_NUM_MINI_BATCH must be positive.")
     if actor_batch_size % actor_num_mini_batch != 0:
         raise ValueError(
             f"Actor minibatch config invalid: NUM_STEPS({num_steps}) * "
@@ -164,23 +179,38 @@ def validate_mappo_t_config(config, num_agents):
     # Critic minibatch validation: flatten over (time, env) only, preserve agent axis
     critic_batch_size = num_steps * num_envs
     critic_num_mini_batch = config.get("CRITIC_NUM_MINI_BATCH", 1)
+    if critic_num_mini_batch <= 0:
+        raise ValueError("CRITIC_NUM_MINI_BATCH must be positive.")
     if critic_batch_size % critic_num_mini_batch != 0:
         raise ValueError(
             f"Critic minibatch config invalid: NUM_STEPS({num_steps}) * "
             f"NUM_ENVS({num_envs}) = {critic_batch_size} "
             f"must be divisible by CRITIC_NUM_MINI_BATCH({critic_num_mini_batch})"
         )
-    
-    # Check recurrent policy constraints
-    use_recurrent = (
-        config.get("use_recurrent_policy", False)
-        or config.get("use_naive_recurrent_policy", False)
-    )
+
     if use_recurrent:
-        raise NotImplementedError(
-            "Recurrent MAPPO-T minibatches require sequence/chunk handling and are "
-            "not implemented in this JAX trainer yet. Set use_recurrent_policy=False "
-            "and use_naive_recurrent_policy=False."
-        )
+        data_chunk_length = config.get("DATA_CHUNK_LENGTH", num_steps)
+        if data_chunk_length <= 0:
+            raise ValueError("DATA_CHUNK_LENGTH must be positive for recurrent MAPPO-T minibatches.")
+        if num_steps % data_chunk_length != 0:
+            raise ValueError(
+                f"NUM_STEPS({num_steps}) must be divisible by DATA_CHUNK_LENGTH({data_chunk_length}) "
+                "for recurrent MAPPO-T minibatches."
+            )
+        actor_chunks = num_envs * num_agents * (num_steps // data_chunk_length)
+        if actor_chunks % actor_num_mini_batch != 0:
+            raise ValueError(
+                f"Recurrent actor minibatch config invalid: NUM_ENVS({num_envs}) * "
+                f"num_agents({num_agents}) * NUM_STEPS/DATA_CHUNK_LENGTH"
+                f"({num_steps // data_chunk_length}) = {actor_chunks} must be divisible by "
+                f"ACTOR_NUM_MINI_BATCH({actor_num_mini_batch})"
+            )
+        critic_chunks = num_envs * (num_steps // data_chunk_length)
+        if critic_chunks % critic_num_mini_batch != 0:
+            raise ValueError(
+                f"Recurrent critic minibatch config invalid: NUM_ENVS({num_envs}) * "
+                f"NUM_STEPS/DATA_CHUNK_LENGTH({num_steps // data_chunk_length}) = "
+                f"{critic_chunks} must be divisible by CRITIC_NUM_MINI_BATCH({critic_num_mini_batch})"
+            )
     
     return config

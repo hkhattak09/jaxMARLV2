@@ -65,6 +65,8 @@ class Transition(NamedTuple):
     baseline_weights: jnp.ndarray
     attn_weights: jnp.ndarray
     bad_mask: jnp.ndarray
+    actor_hstate: jnp.ndarray
+    critic_hstate: jnp.ndarray
 
 
 class SMAXWorldStateWrapper(JaxMARLWrapper):
@@ -242,7 +244,7 @@ def make_train(config):
         # Guard unsupported features
         if config["transformer"].get("next_s_pred_loss_coef", 0.0) > 0.0:
             raise NotImplementedError(
-                "next_s_pred_loss_coef > 0 requires recurrent sequence minibatches, which are not yet implemented."
+                "next_s_pred_loss_coef > 0 is not implemented in this JAX MAPPO-T trainer."
             )
         if not config.get("share_param", True):
             raise NotImplementedError(
@@ -375,9 +377,12 @@ def make_train(config):
             eval_ac_hstate = ScannedRNN.initialize_carry(
                 eval_num_envs * env.num_agents, actor_hidden_dim
             )
+            eval_last_done = jnp.zeros(
+                (eval_num_envs * env.num_agents,), dtype=bool
+            )
 
             def _eval_env_step(carry, _):
-                actor_train_state, env_s, last_obs, ac_hstate, rng = carry
+                actor_train_state, env_s, last_obs, last_done, ac_hstate, rng = carry
                 rng, _ = jax.random.split(rng)
                 avail_actions = jax.vmap(env.get_avail_actions)(env_s.env_state)
                 avail_actions = jax.lax.stop_gradient(
@@ -386,7 +391,7 @@ def make_train(config):
                 obs_batch = batchify(last_obs, env.agents, eval_num_envs * env.num_agents)
                 ac_in = (
                     obs_batch[None, :],
-                    jnp.zeros((1, eval_num_envs * env.num_agents), dtype=bool),
+                    last_done[None, :],
                     avail_actions[None, :],
                 )
                 ac_hstate, pi = actor_network.apply(
@@ -405,11 +410,26 @@ def make_train(config):
                 reward_batch = batchify(
                     reward, env.agents, eval_num_envs * env.num_agents
                 ).squeeze()
-                return (actor_train_state, env_s, obsv, ac_hstate, rng), reward_batch
+                env_done_batch = jnp.tile(done["__all__"], env.num_agents)
+                return (
+                    actor_train_state,
+                    env_s,
+                    obsv,
+                    env_done_batch,
+                    ac_hstate,
+                    rng,
+                ), reward_batch
 
             _, eval_rewards = jax.lax.scan(
                 _eval_env_step,
-                (actor_ts, eval_env_state, eval_obsv, eval_ac_hstate, eval_rng),
+                (
+                    actor_ts,
+                    eval_env_state,
+                    eval_obsv,
+                    eval_last_done,
+                    eval_ac_hstate,
+                    eval_rng,
+                ),
                 None,
                 eval_steps,
             )
@@ -431,6 +451,8 @@ def make_train(config):
                 ) = runner_state
                 actor_train_state, critic_train_state = train_states
                 ac_hstate, cr_hstate = hstates
+                actor_hstate_in = ac_hstate
+                critic_hstate_in = cr_hstate
 
                 rng, action_rng = jax.random.split(rng)
                 avail_actions = jax.vmap(env.get_avail_actions)(env_state.env_state)
@@ -517,6 +539,8 @@ def make_train(config):
                     baseline_weights,
                     attn_weights,
                     bad_mask,
+                    actor_hstate_in,
+                    critic_hstate_in,
                 )
                 runner_state = (
                     train_states,
@@ -575,7 +599,7 @@ def make_train(config):
                     return value_norm_denormalize(value_norm_dict[norm_key], x[..., None]).squeeze(-1)
                 return x
 
-            # GAE helper — computes returns from denormalized raw-scale value
+            # GAE helper computes returns from denormalized raw-scale value
             # predictions when ValueNorm is enabled (matching MACA).
             # MACA computes GAE with raw values, stores raw returns, and only
             # normalizes targets inside the critic loss via ValueNorm.
@@ -619,7 +643,7 @@ def make_train(config):
                 done_env,
                 bad_mask_env,
                 last_values_for_gae,
-            )  # (T, NUM_ENVS) — env-level value returns
+            )  # (T, NUM_ENVS) - env-level value returns
             q_targets = _calculate_gae(
                 q_preds_for_gae,
                 reward_env,
@@ -643,7 +667,7 @@ def make_train(config):
             )  # (T, NUM_ENVS, num_agents)
 
             # Denormalize eq predictions for the baseline (matching MACA).
-            # VQ and VQ_COMA stay raw — ValueNorm is not used for vq pred.
+            # VQ and VQ_COMA stay raw; ValueNorm is not used for vq pred.
             eq_value_env_for_baseline = (
                 value_norm_denormalize(
                     value_norm_dict["eq"], traj_batch.eq_value_env[..., None]
@@ -667,62 +691,118 @@ def make_train(config):
             var_adv = jnp.sum(jnp.square(advantages - mean_adv) * active_masks) / active_count
             norm_advantages = (advantages - mean_adv) / jnp.sqrt(var_adv + 1e-8)
             
-            # === Prepare actor minibatch data ===
-            # Flatten: (T, NUM_ACTORS, ...) -> (T * NUM_ACTORS, ...)
-            actor_batch_size = config["NUM_STEPS"] * config["NUM_ACTORS"]
+            # === Prepare minibatch data ===
+            use_recurrent = config.get("use_recurrent_policy", False)
+            data_chunk_length = config.get("DATA_CHUNK_LENGTH", config["NUM_STEPS"])
+            chunks_per_rollout = config["NUM_STEPS"] // data_chunk_length
             actor_num_mini_batch = config["ACTOR_NUM_MINI_BATCH"]
-            actor_mini_batch_size = actor_batch_size // actor_num_mini_batch
-            
-            # Flatten actor tensors
-            actor_obs = traj_batch.obs.reshape(actor_batch_size, obs_dim)  # (T*NA, obs_dim)
-            actor_done = traj_batch.done.reshape(actor_batch_size)  # (T*NA,)
-            actor_avail = traj_batch.avail_actions.reshape(actor_batch_size, action_dim)  # (T*NA, action_dim)
-            actor_action = traj_batch.action.reshape(actor_batch_size)  # (T*NA,)
-            actor_log_prob = traj_batch.log_prob.reshape(actor_batch_size)  # (T*NA,)
-            actor_active_mask = traj_batch.active_mask.reshape(actor_batch_size).astype(jnp.float32)  # (T*NA,)
-            actor_norm_adv = norm_advantages.reshape(actor_batch_size)  # (T*NA,)
-            
-            # === Prepare critic minibatch data ===
-            # Flatten: (T, NUM_ENVS, ...) -> (T * NUM_ENVS, ...) but preserve agent axis
-            critic_batch_size = config["NUM_STEPS"] * config["NUM_ENVS"]
             critic_num_mini_batch = config["CRITIC_NUM_MINI_BATCH"]
-            critic_mini_batch_size = critic_batch_size // critic_num_mini_batch
-            
-            # Critic tensors: reshape to (T*NUM_ENVS, num_agents, ...)
-            critic_obs_all = traj_batch.obs_all.reshape(critic_batch_size, env.num_agents, obs_dim)  # (T*NE, agents, obs_dim)
-            critic_actions_all = traj_batch.actions_all.reshape(critic_batch_size, env.num_agents)  # (T*NE, agents)
-            critic_policy_probs_all = traj_batch.policy_probs_all.reshape(critic_batch_size, env.num_agents, action_dim)  # (T*NE, agents, action_dim)
-            critic_done = actor_to_env_agent_time(traj_batch.done).reshape(critic_batch_size, env.num_agents)  # (T*NE, agents)
-            
-            # Critic targets are already env-level (T, NUM_ENVS) from raw GAE.
-            # Flatten to (T*NUM_ENVS,) for minibatch indexing.
-            critic_value_targets = value_targets.reshape(critic_batch_size)
-            critic_q_targets = q_targets.reshape(critic_batch_size)
-            critic_eq_targets = eq_targets.reshape(critic_batch_size)
-            
-            # Old predictions for clipping: (T*NUM_ENVS,)
-            critic_value_old = traj_batch.value_env.reshape(critic_batch_size)
-            critic_q_old = traj_batch.q_value_env.reshape(critic_batch_size)
-            critic_eq_old = traj_batch.eq_value_env.reshape(critic_batch_size)
+
+            def _actor_chunks(x):
+                x = x.swapaxes(0, 1)  # (NUM_ACTORS, T, ...)
+                return x.reshape(
+                    (config["NUM_ACTORS"] * chunks_per_rollout, data_chunk_length)
+                    + x.shape[2:]
+                )
+
+            def _critic_chunks(x):
+                x = x.swapaxes(0, 1)  # (NUM_ENVS, T, ...)
+                return x.reshape(
+                    (config["NUM_ENVS"] * chunks_per_rollout, data_chunk_length)
+                    + x.shape[2:]
+                )
+
+            if use_recurrent:
+                actor_sample_count = config["NUM_ACTORS"] * chunks_per_rollout
+                critic_sample_count = config["NUM_ENVS"] * chunks_per_rollout
+                actor_mini_batch_size = actor_sample_count // actor_num_mini_batch
+                critic_mini_batch_size = critic_sample_count // critic_num_mini_batch
+
+                actor_obs = _actor_chunks(traj_batch.obs)
+                actor_done = _actor_chunks(traj_batch.done)
+                actor_avail = _actor_chunks(traj_batch.avail_actions)
+                actor_action = _actor_chunks(traj_batch.action)
+                actor_log_prob = _actor_chunks(traj_batch.log_prob)
+                actor_active_mask = _actor_chunks(
+                    traj_batch.active_mask.astype(jnp.float32)
+                )
+                actor_norm_adv = _actor_chunks(norm_advantages)
+                actor_init_hstate = _actor_chunks(traj_batch.actor_hstate)[:, 0]
+
+                critic_obs_all = _critic_chunks(traj_batch.obs_all)
+                critic_actions_all = _critic_chunks(traj_batch.actions_all)
+                critic_policy_probs_all = _critic_chunks(traj_batch.policy_probs_all)
+                critic_done = _critic_chunks(actor_to_env_agent_time(traj_batch.done))
+                critic_init_hstate = _critic_chunks(traj_batch.critic_hstate)[:, 0]
+                critic_value_targets = _critic_chunks(value_targets)
+                critic_q_targets = _critic_chunks(q_targets)
+                critic_eq_targets = _critic_chunks(eq_targets)
+                critic_value_old = _critic_chunks(traj_batch.value_env)
+                critic_q_old = _critic_chunks(traj_batch.q_value_env)
+                critic_eq_old = _critic_chunks(traj_batch.eq_value_env)
+            else:
+                actor_sample_count = config["NUM_STEPS"] * config["NUM_ACTORS"]
+                critic_sample_count = config["NUM_STEPS"] * config["NUM_ENVS"]
+                actor_mini_batch_size = actor_sample_count // actor_num_mini_batch
+                critic_mini_batch_size = critic_sample_count // critic_num_mini_batch
+
+                actor_obs = traj_batch.obs.reshape(actor_sample_count, obs_dim)
+                actor_done = traj_batch.done.reshape(actor_sample_count)
+                actor_avail = traj_batch.avail_actions.reshape(
+                    actor_sample_count, action_dim
+                )
+                actor_action = traj_batch.action.reshape(actor_sample_count)
+                actor_log_prob = traj_batch.log_prob.reshape(actor_sample_count)
+                actor_active_mask = traj_batch.active_mask.reshape(
+                    actor_sample_count
+                ).astype(jnp.float32)
+                actor_norm_adv = norm_advantages.reshape(actor_sample_count)
+
+                critic_obs_all = traj_batch.obs_all.reshape(
+                    critic_sample_count, env.num_agents, obs_dim
+                )
+                critic_actions_all = traj_batch.actions_all.reshape(
+                    critic_sample_count, env.num_agents
+                )
+                critic_policy_probs_all = traj_batch.policy_probs_all.reshape(
+                    critic_sample_count, env.num_agents, action_dim
+                )
+                critic_done = actor_to_env_agent_time(traj_batch.done).reshape(
+                    critic_sample_count, env.num_agents
+                )
+                critic_value_targets = value_targets.reshape(critic_sample_count)
+                critic_q_targets = q_targets.reshape(critic_sample_count)
+                critic_eq_targets = eq_targets.reshape(critic_sample_count)
+                critic_value_old = traj_batch.value_env.reshape(critic_sample_count)
+                critic_q_old = traj_batch.q_value_env.reshape(critic_sample_count)
+                critic_eq_old = traj_batch.eq_value_env.reshape(critic_sample_count)
             
             # === Minibatch update functions ===
             def _actor_minibatch_update(actor_state, minibatch_idx):
                 """Update actor on a single minibatch."""
                 actor_train_state = actor_state
-                
-                # Gather minibatch data using indices
-                mb_obs = jnp.take(actor_obs, minibatch_idx, axis=0)
-                mb_done = jnp.take(actor_done, minibatch_idx, axis=0)
-                mb_avail = jnp.take(actor_avail, minibatch_idx, axis=0)
-                mb_action = jnp.take(actor_action, minibatch_idx, axis=0)
-                mb_log_prob = jnp.take(actor_log_prob, minibatch_idx, axis=0)
-                mb_active = jnp.take(actor_active_mask, minibatch_idx, axis=0)
-                mb_adv = jnp.take(actor_norm_adv, minibatch_idx, axis=0)
-                
-                # Initial hidden state for minibatch (non-recurrent case)
-                ac_init_hstate_mb = ScannedRNN.initialize_carry(
-                    minibatch_idx.shape[0], actor_hidden_dim
-                )
+
+                if use_recurrent:
+                    # Gather whole sequence chunks: (chunks, L, ...) -> (L, chunks, ...).
+                    mb_obs = jnp.take(actor_obs, minibatch_idx, axis=0).swapaxes(0, 1)
+                    mb_done = jnp.take(actor_done, minibatch_idx, axis=0).swapaxes(0, 1)
+                    mb_avail = jnp.take(actor_avail, minibatch_idx, axis=0).swapaxes(0, 1)
+                    mb_action = jnp.take(actor_action, minibatch_idx, axis=0).swapaxes(0, 1)
+                    mb_log_prob = jnp.take(actor_log_prob, minibatch_idx, axis=0).swapaxes(0, 1)
+                    mb_active = jnp.take(actor_active_mask, minibatch_idx, axis=0).swapaxes(0, 1)
+                    mb_adv = jnp.take(actor_norm_adv, minibatch_idx, axis=0).swapaxes(0, 1)
+                    ac_init_hstate_mb = jnp.take(actor_init_hstate, minibatch_idx, axis=0)
+                else:
+                    mb_obs = jnp.take(actor_obs, minibatch_idx, axis=0)
+                    mb_done = jnp.take(actor_done, minibatch_idx, axis=0)
+                    mb_avail = jnp.take(actor_avail, minibatch_idx, axis=0)
+                    mb_action = jnp.take(actor_action, minibatch_idx, axis=0)
+                    mb_log_prob = jnp.take(actor_log_prob, minibatch_idx, axis=0)
+                    mb_active = jnp.take(actor_active_mask, minibatch_idx, axis=0)
+                    mb_adv = jnp.take(actor_norm_adv, minibatch_idx, axis=0)
+                    ac_init_hstate_mb = ScannedRNN.initialize_carry(
+                        minibatch_idx.shape[0], actor_hidden_dim
+                    )
                 
                 def _actor_loss_fn(actor_params):
                     _, pi = actor_network.apply(
@@ -749,20 +829,25 @@ def make_train(config):
                         return ratio_parts, logratio_parts
 
                     ratio, logratio = _aggregate_ratio_and_logratio(log_prob, mb_log_prob)
-                    loss_actor1 = ratio * mb_adv
+                    ratio = ratio.reshape(-1)
+                    logratio = logratio.reshape(-1)
+                    mb_adv_flat = mb_adv.reshape(-1)
+                    mb_active_flat = mb_active.reshape(-1)
+                    entropy = pi.entropy().reshape(-1)
+                    loss_actor1 = ratio * mb_adv_flat
                     loss_actor2 = (
                         jnp.clip(ratio, 1.0 - config["CLIP_PARAM"], 1.0 + config["CLIP_PARAM"])
-                        * mb_adv
+                        * mb_adv_flat
                     )
-                    mb_active_count = jnp.sum(mb_active) + 1e-8
+                    mb_active_count = jnp.sum(mb_active_flat) + 1e-8
                     policy_loss = (
-                        -jnp.sum(jnp.minimum(loss_actor1, loss_actor2) * mb_active)
+                        -jnp.sum(jnp.minimum(loss_actor1, loss_actor2) * mb_active_flat)
                         / mb_active_count
                     )
-                    entropy = jnp.sum(pi.entropy() * mb_active) / mb_active_count
-                    approx_kl = jnp.sum(((ratio - 1) - logratio) * mb_active) / mb_active_count
+                    entropy = jnp.sum(entropy * mb_active_flat) / mb_active_count
+                    approx_kl = jnp.sum(((ratio - 1) - logratio) * mb_active_flat) / mb_active_count
                     clip_frac = (
-                        jnp.sum((jnp.abs(ratio - 1) > config["CLIP_PARAM"]) * mb_active)
+                        jnp.sum((jnp.abs(ratio - 1) > config["CLIP_PARAM"]) * mb_active_flat)
                         / mb_active_count
                     )
                     actor_loss = policy_loss - config["ENT_COEF"] * entropy
@@ -794,25 +879,35 @@ def make_train(config):
             def _critic_minibatch_update(critic_state, minibatch_idx):
                 """Update critic on a single minibatch."""
                 critic_train_state, value_norm_dict = critic_state
-                
-                # Gather minibatch data preserving agent axis
-                mb_obs_all = jnp.take(critic_obs_all, minibatch_idx, axis=0)  # (mb, agents, obs_dim)
-                mb_actions_all = jnp.take(critic_actions_all, minibatch_idx, axis=0)  # (mb, agents)
-                mb_policy_probs_all = jnp.take(critic_policy_probs_all, minibatch_idx, axis=0)  # (mb, agents, action_dim)
-                mb_done = jnp.take(critic_done, minibatch_idx, axis=0)  # (mb, agents)
-                
-                # Targets and old predictions (no agent axis for these)
-                mb_value_targets = jnp.take(critic_value_targets, minibatch_idx, axis=0)
-                mb_q_targets = jnp.take(critic_q_targets, minibatch_idx, axis=0)
-                mb_eq_targets = jnp.take(critic_eq_targets, minibatch_idx, axis=0)
-                mb_value_old = jnp.take(critic_value_old, minibatch_idx, axis=0)
-                mb_q_old = jnp.take(critic_q_old, minibatch_idx, axis=0)
-                mb_eq_old = jnp.take(critic_eq_old, minibatch_idx, axis=0)
-                
-                # Initial hidden state for minibatch
-                cr_init_hstate_mb = jnp.zeros(
-                    (minibatch_idx.shape[0], env.num_agents, critic_hidden_dim), dtype=jnp.float32
-                )
+
+                if use_recurrent:
+                    mb_obs_all = jnp.take(critic_obs_all, minibatch_idx, axis=0).swapaxes(0, 1)
+                    mb_actions_all = jnp.take(critic_actions_all, minibatch_idx, axis=0).swapaxes(0, 1)
+                    mb_policy_probs_all = jnp.take(
+                        critic_policy_probs_all, minibatch_idx, axis=0
+                    ).swapaxes(0, 1)
+                    mb_done = jnp.take(critic_done, minibatch_idx, axis=0).swapaxes(0, 1)
+                    mb_value_targets = jnp.take(critic_value_targets, minibatch_idx, axis=0).swapaxes(0, 1)
+                    mb_q_targets = jnp.take(critic_q_targets, minibatch_idx, axis=0).swapaxes(0, 1)
+                    mb_eq_targets = jnp.take(critic_eq_targets, minibatch_idx, axis=0).swapaxes(0, 1)
+                    mb_value_old = jnp.take(critic_value_old, minibatch_idx, axis=0).swapaxes(0, 1)
+                    mb_q_old = jnp.take(critic_q_old, minibatch_idx, axis=0).swapaxes(0, 1)
+                    mb_eq_old = jnp.take(critic_eq_old, minibatch_idx, axis=0).swapaxes(0, 1)
+                    cr_init_hstate_mb = jnp.take(critic_init_hstate, minibatch_idx, axis=0)
+                else:
+                    mb_obs_all = jnp.take(critic_obs_all, minibatch_idx, axis=0)
+                    mb_actions_all = jnp.take(critic_actions_all, minibatch_idx, axis=0)
+                    mb_policy_probs_all = jnp.take(critic_policy_probs_all, minibatch_idx, axis=0)
+                    mb_done = jnp.take(critic_done, minibatch_idx, axis=0)
+                    mb_value_targets = jnp.take(critic_value_targets, minibatch_idx, axis=0)
+                    mb_q_targets = jnp.take(critic_q_targets, minibatch_idx, axis=0)
+                    mb_eq_targets = jnp.take(critic_eq_targets, minibatch_idx, axis=0)
+                    mb_value_old = jnp.take(critic_value_old, minibatch_idx, axis=0)
+                    mb_q_old = jnp.take(critic_q_old, minibatch_idx, axis=0)
+                    mb_eq_old = jnp.take(critic_eq_old, minibatch_idx, axis=0)
+                    cr_init_hstate_mb = jnp.zeros(
+                        (minibatch_idx.shape[0], env.num_agents, critic_hidden_dim), dtype=jnp.float32
+                    )
                 
                 def _critic_loss_fn(critic_params, norm_dict):
                     (
@@ -836,15 +931,21 @@ def make_train(config):
                         True,
                         True,
                     )
-                    value_pred = values.squeeze(-1)  # (mb,)
-                    q_pred = q_values.squeeze(-1)  # (mb,)
-                    eq_pred = eq_values.squeeze(-1)  # (mb,)
+                    value_pred = values.squeeze(-1).reshape(-1)
+                    q_pred = q_values.squeeze(-1).reshape(-1)
+                    eq_pred = eq_values.squeeze(-1).reshape(-1)
+                    mb_value_targets_flat = mb_value_targets.reshape(-1)
+                    mb_q_targets_flat = mb_q_targets.reshape(-1)
+                    mb_eq_targets_flat = mb_eq_targets.reshape(-1)
+                    mb_value_old_flat = mb_value_old.reshape(-1)
+                    mb_q_old_flat = mb_q_old.reshape(-1)
+                    mb_eq_old_flat = mb_eq_old.reshape(-1)
                     
                     # Update ValueNorm with raw targets before computing loss
                     if norm_dict is not None and use_valuenorm:
-                        mb_value_targets_vn = mb_value_targets[..., None]
-                        mb_q_targets_vn = mb_q_targets[..., None]
-                        mb_eq_targets_vn = mb_eq_targets[..., None]
+                        mb_value_targets_vn = mb_value_targets_flat[..., None]
+                        mb_q_targets_vn = mb_q_targets_flat[..., None]
+                        mb_eq_targets_vn = mb_eq_targets_flat[..., None]
                         new_v_norm = value_norm_update(norm_dict["v"], mb_value_targets_vn)
                         new_q_norm = value_norm_update(norm_dict["q"], mb_q_targets_vn)
                         new_eq_norm = value_norm_update(norm_dict["eq"], mb_eq_targets_vn)
@@ -863,9 +964,9 @@ def make_train(config):
                             norm_dict["eq"], mb_eq_targets_vn
                         ).squeeze(-1)
                     else:
-                        v_targets_norm = mb_value_targets
-                        q_targets_norm = mb_q_targets
-                        eq_targets_norm = mb_eq_targets
+                        v_targets_norm = mb_value_targets_flat
+                        q_targets_norm = mb_q_targets_flat
+                        eq_targets_norm = mb_eq_targets_flat
                     
                     def _element_loss(error):
                         if config.get("use_huber_loss", False):
@@ -890,9 +991,9 @@ def make_train(config):
                             return jnp.maximum(original_loss, clipped_loss).mean()
                         return original_loss.mean()
                     
-                    value_loss = _value_loss(value_pred, mb_value_old, v_targets_norm)
-                    q_value_loss = _value_loss(q_pred, mb_q_old, q_targets_norm)
-                    eq_value_loss = _value_loss(eq_pred, mb_eq_old, eq_targets_norm)
+                    value_loss = _value_loss(value_pred, mb_value_old_flat, v_targets_norm)
+                    q_value_loss = _value_loss(q_pred, mb_q_old_flat, q_targets_norm)
+                    eq_value_loss = _value_loss(eq_pred, mb_eq_old_flat, eq_targets_norm)
                     critic_loss = (
                         config["VALUE_LOSS_COEF"] * value_loss
                         + config["transformer"]["q_value_loss_coef"] * q_value_loss
@@ -923,7 +1024,7 @@ def make_train(config):
                 """Run one PPO epoch with minibatches."""
                 # Generate random permutation for this epoch
                 rng_perm, rng_epoch = jax.random.split(rng_epoch)
-                perm = jax.random.permutation(rng_perm, actor_batch_size)
+                perm = jax.random.permutation(rng_perm, actor_sample_count)
                 # Reshape to (num_mini_batches, mini_batch_size)
                 minibatch_idx = perm.reshape(actor_num_mini_batch, actor_mini_batch_size)
                 
@@ -944,7 +1045,7 @@ def make_train(config):
                 critic_train_state, value_norm_dict = critic_state
                 # Generate random permutation for this epoch
                 rng_perm, rng_epoch = jax.random.split(rng_epoch)
-                perm = jax.random.permutation(rng_perm, critic_batch_size)
+                perm = jax.random.permutation(rng_perm, critic_sample_count)
                 # Reshape to (num_mini_batches, mini_batch_size)
                 minibatch_idx = perm.reshape(critic_num_mini_batch, critic_mini_batch_size)
                 
