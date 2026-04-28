@@ -12,10 +12,20 @@ The key components are:
 from .config import get_default_mappo_t_config
 from .actor import ActorTrans, ScannedRNN
 from .critic import TransVCritic
+from .lorasa_actor import (
+    LoRADense,
+    LoRAExplicitGRUCell,
+    LoRAScannedRNN,
+    LoRASAActorTrans,
+)
 
 __all__ = [
     "get_default_mappo_t_config",
     "ActorTrans",
     "ScannedRNN",
     "TransVCritic",
+    "LoRADense",
+    "LoRAExplicitGRUCell",
+    "LoRAScannedRNN",
+    "LoRASAActorTrans",
 ]
