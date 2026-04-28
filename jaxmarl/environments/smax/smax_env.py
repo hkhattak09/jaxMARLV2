@@ -78,9 +78,12 @@ class Scenario:
     num_enemies: int
     smacv2_position_generation: bool
     smacv2_unit_type_generation: bool
-    unit_type_indices: chex.Array = jnp.array([], dtype=jnp.uint8)  # For weighted distributions
-    unit_type_weights: chex.Array = jnp.array([], dtype=jnp.float32)  # For weighted distributions
-    exception_unit_type_indices: chex.Array = jnp.array([], dtype=jnp.uint8)
+    unit_type_indices: chex.Array = dataclasses.field(
+        default_factory=lambda: jnp.array([], dtype=jnp.uint8))  # For weighted distributions
+    unit_type_weights: chex.Array = dataclasses.field(
+        default_factory=lambda: jnp.array([], dtype=jnp.float32))  # For weighted distributions
+    exception_unit_type_indices: chex.Array = dataclasses.field(
+        default_factory=lambda: jnp.array([], dtype=jnp.uint8))
     use_smacv2_unit_types: bool = False
 
 
