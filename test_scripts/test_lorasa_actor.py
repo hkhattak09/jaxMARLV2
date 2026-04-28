@@ -137,17 +137,28 @@ def test_adapter_routing_changes_output():
     """Test 2: Different adapter ids produce different logits when one adapter is nonzero."""
     actor_old, params_old, actor_new, params_new, hstate, obs, resets, avail = _init_actors()
 
-    # Manually set adapter 3's LoRA params to nonzero
+    # Manually set adapter 3's action-head LoRA params to a non-uniform pattern.
+    # A constant shift to every action logit is distribution-invariant, and
+    # uniform hidden-layer shifts can be removed by LayerNorm.
     flat = flatten_dict(params_new)
     for key in list(flat.keys()):
-        if "lora_a" in key:
+        if "action_out" in key and "lora_a" in key:
             arr = flat[key]
-            # Set adapter 3 to small nonzero
-            arr = arr.at[3].set(0.1)
+            feature_pattern = jnp.linspace(-1.0, 1.0, arr.shape[1], dtype=arr.dtype)
+            alt_pattern = jnp.where(
+                jnp.arange(arr.shape[1]) % 2 == 0,
+                jnp.asarray(0.5, dtype=arr.dtype),
+                jnp.asarray(-0.5, dtype=arr.dtype),
+            )
+            arr = arr.at[3, :, 0].set(feature_pattern)
+            arr = arr.at[3, :, 1].set(alt_pattern)
             flat[key] = arr
-        if "lora_b" in key:
+        if "action_out" in key and "lora_b" in key:
             arr = flat[key]
-            arr = arr.at[3].set(0.1)
+            pattern = jnp.linspace(-1.0, 1.0, _ACTION_DIM, dtype=arr.dtype)
+            alt_pattern = jnp.array([1.0, -0.5, 0.25, -1.0, 0.5], dtype=arr.dtype)
+            arr = arr.at[3, 0, :].set(pattern)
+            arr = arr.at[3, 1, :].set(alt_pattern)
             flat[key] = arr
     params_modified = unflatten_dict(flat)
 
