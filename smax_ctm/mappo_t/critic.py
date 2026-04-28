@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from typing import Any, Dict, Tuple
 
 import jax
@@ -38,6 +39,94 @@ class TransVCritic(nn.Module):
             action = jnp.squeeze(action, axis=-1)
         return jax.nn.one_hot(action.astype(jnp.int32), self.act_space.n)
 
+    def _encoder_step(
+        self,
+        encoder: Encoder,
+        carry: jnp.ndarray,
+        inputs: Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray],
+        output_attentions: bool,
+        deterministic: bool,
+    ):
+        obs_t, action_t, policy_t, reset_t = inputs
+        out = encoder(
+            obs_t,
+            action_t,
+            policy_t,
+            carry,
+            reset_t,
+            output_attentions,
+            deterministic,
+        )
+        return out[-1], out[:-1]
+
+    @functools.partial(
+        nn.scan,
+        variable_broadcast="params",
+        in_axes=0,
+        out_axes=0,
+        split_rngs={"params": False},
+    )
+    @nn.compact
+    def _scan_encoder_attn_det(self, carry, inputs):
+        encoder = Encoder(
+            args=self.config,
+            obs_space=self.obs_space,
+            act_space=self.act_space,
+            name="transformer_encoder",
+        )
+        return self._encoder_step(encoder, carry, inputs, True, True)
+
+    @functools.partial(
+        nn.scan,
+        variable_broadcast="params",
+        in_axes=0,
+        out_axes=0,
+        split_rngs={"params": False},
+    )
+    @nn.compact
+    def _scan_encoder_no_attn_det(self, carry, inputs):
+        encoder = Encoder(
+            args=self.config,
+            obs_space=self.obs_space,
+            act_space=self.act_space,
+            name="transformer_encoder",
+        )
+        return self._encoder_step(encoder, carry, inputs, False, True)
+
+    @functools.partial(
+        nn.scan,
+        variable_broadcast="params",
+        in_axes=0,
+        out_axes=0,
+        split_rngs={"params": False, "dropout": True},
+    )
+    @nn.compact
+    def _scan_encoder_attn_train(self, carry, inputs):
+        encoder = Encoder(
+            args=self.config,
+            obs_space=self.obs_space,
+            act_space=self.act_space,
+            name="transformer_encoder",
+        )
+        return self._encoder_step(encoder, carry, inputs, True, False)
+
+    @functools.partial(
+        nn.scan,
+        variable_broadcast="params",
+        in_axes=0,
+        out_axes=0,
+        split_rngs={"params": False, "dropout": True},
+    )
+    @nn.compact
+    def _scan_encoder_no_attn_train(self, carry, inputs):
+        encoder = Encoder(
+            args=self.config,
+            obs_space=self.obs_space,
+            act_space=self.act_space,
+            name="transformer_encoder",
+        )
+        return self._encoder_step(encoder, carry, inputs, False, False)
+
     @nn.compact
     def __call__(
         self,
@@ -49,32 +138,23 @@ class TransVCritic(nn.Module):
         output_attentions: bool = True,
         deterministic: bool = True,
     ) -> Tuple:
-        encoder = Encoder(
-            args=self.config,
-            obs_space=self.obs_space,
-            act_space=self.act_space,
-            name="transformer_encoder",
-        )
         action_onehot = self._one_hot_actions(action)
 
         if obs.ndim == 4:
-            def scan_body(carry, inputs):
-                obs_t, action_t, policy_t, reset_t = inputs
-                out = encoder(
-                    obs_t,
-                    action_t,
-                    policy_t,
-                    carry,
-                    reset_t,
-                    output_attentions,
-                    deterministic,
+            if output_attentions:
+                scan_fn = (
+                    self._scan_encoder_attn_det
+                    if deterministic
+                    else self._scan_encoder_attn_train
                 )
-                new_carry = out[-1]
-                outputs = out[:-1]
-                return new_carry, outputs
-
-            final_carry, outputs = jax.lax.scan(
-                scan_body, rnn_states, (obs, action_onehot, policy_prob, resets)
+            else:
+                scan_fn = (
+                    self._scan_encoder_no_attn_det
+                    if deterministic
+                    else self._scan_encoder_no_attn_train
+                )
+            final_carry, outputs = scan_fn(
+                rnn_states, (obs, action_onehot, policy_prob, resets)
             )
             (
                 values,
@@ -101,6 +181,12 @@ class TransVCritic(nn.Module):
                 final_carry,
             )
 
+        encoder = Encoder(
+            args=self.config,
+            obs_space=self.obs_space,
+            act_space=self.act_space,
+            name="transformer_encoder",
+        )
         return encoder(
             obs,
             action_onehot,
