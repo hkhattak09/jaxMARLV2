@@ -18,7 +18,7 @@ def get_default_mappo_t_config():
         # === Environment ===
         "ENV_NAME": "HeuristicEnemySMAX",
         "MAP_NAME": "protoss_10_vs_10",
-        "NUM_ENVS": 250,
+        "NUM_ENVS": 20,
         "NUM_STEPS": 200,
         "TOTAL_TIMESTEPS": int(3e7),
         "SAVE_INTERVAL": 1000000,   # Timesteps between checkpoint saves
@@ -70,10 +70,10 @@ def get_default_mappo_t_config():
         "SCALE_CLIP_EPS": False,   # Scale clip epsilon by num_agents
         "PPO_EPOCH": 10,           # Actor PPO epochs
         "UPDATE_EPOCHS": 10,       # Backward-compatible alias for PPO_EPOCH
-        "ACTOR_NUM_MINI_BATCH": 8, # Paper actor minibatch count; can be increased
-        "NUM_MINIBATCHES": 8,      # Backward-compatible alias for ACTOR_NUM_MINI_BATCH
+        "ACTOR_NUM_MINI_BATCH": 1, # Paper actor minibatch count; can be increased
+        "NUM_MINIBATCHES": 1,      # Backward-compatible alias for ACTOR_NUM_MINI_BATCH
         "CRITIC_EPOCH": 10,        # Critic update epochs
-        "CRITIC_NUM_MINI_BATCH": 8,# Paper critic minibatch count; can be increased
+        "CRITIC_NUM_MINI_BATCH": 1,# Paper critic minibatch count; can be increased
         "DATA_CHUNK_LENGTH": 10,    # For recurrent generator
         
         # === Value Normalization ===
