@@ -165,29 +165,12 @@ def validate_mappo_t_config(config, num_agents):
             "This JAX MAPPO-T trainer currently supports recurrent_n=1, matching the paper."
         )
 
-    # Actor minibatch validation: flatten over (time, env, agent)
-    actor_batch_size = num_steps * num_envs * num_agents
     actor_num_mini_batch = config.get("ACTOR_NUM_MINI_BATCH", config.get("NUM_MINIBATCHES", 1))
     if actor_num_mini_batch <= 0:
         raise ValueError("ACTOR_NUM_MINI_BATCH must be positive.")
-    if actor_batch_size % actor_num_mini_batch != 0:
-        raise ValueError(
-            f"Actor minibatch config invalid: NUM_STEPS({num_steps}) * "
-            f"NUM_ENVS({num_envs}) * num_agents({num_agents}) = {actor_batch_size} "
-            f"must be divisible by ACTOR_NUM_MINI_BATCH({actor_num_mini_batch})"
-        )
-    
-    # Critic minibatch validation: flatten over (time, env) only, preserve agent axis
-    critic_batch_size = num_steps * num_envs
     critic_num_mini_batch = config.get("CRITIC_NUM_MINI_BATCH", 1)
     if critic_num_mini_batch <= 0:
         raise ValueError("CRITIC_NUM_MINI_BATCH must be positive.")
-    if critic_batch_size % critic_num_mini_batch != 0:
-        raise ValueError(
-            f"Critic minibatch config invalid: NUM_STEPS({num_steps}) * "
-            f"NUM_ENVS({num_envs}) = {critic_batch_size} "
-            f"must be divisible by CRITIC_NUM_MINI_BATCH({critic_num_mini_batch})"
-        )
 
     if use_recurrent:
         data_chunk_length = config.get("DATA_CHUNK_LENGTH", num_steps)
@@ -212,6 +195,24 @@ def validate_mappo_t_config(config, num_agents):
                 f"Recurrent critic minibatch config invalid: NUM_ENVS({num_envs}) * "
                 f"NUM_STEPS/DATA_CHUNK_LENGTH({num_steps // data_chunk_length}) = "
                 f"{critic_chunks} must be divisible by CRITIC_NUM_MINI_BATCH({critic_num_mini_batch})"
+            )
+    else:
+        # Actor minibatch validation: flatten over (time, env, agent)
+        actor_batch_size = num_steps * num_envs * num_agents
+        if actor_batch_size % actor_num_mini_batch != 0:
+            raise ValueError(
+                f"Actor minibatch config invalid: NUM_STEPS({num_steps}) * "
+                f"NUM_ENVS({num_envs}) * num_agents({num_agents}) = {actor_batch_size} "
+                f"must be divisible by ACTOR_NUM_MINI_BATCH({actor_num_mini_batch})"
+            )
+        
+        # Critic minibatch validation: flatten over (time, env) only, preserve agent axis
+        critic_batch_size = num_steps * num_envs
+        if critic_batch_size % critic_num_mini_batch != 0:
+            raise ValueError(
+                f"Critic minibatch config invalid: NUM_STEPS({num_steps}) * "
+                f"NUM_ENVS({num_envs}) = {critic_batch_size} "
+                f"must be divisible by CRITIC_NUM_MINI_BATCH({critic_num_mini_batch})"
             )
     
     return config
