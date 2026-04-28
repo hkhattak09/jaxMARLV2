@@ -154,6 +154,9 @@ class SMAXWorldStateWrapper(JaxMARLWrapper):
 def make_train(config):
     """Create a JIT-able MAPPO-T training function."""
 
+    config["ENV_KWARGS"] = dict(config.get("ENV_KWARGS", {}))
+    config["ENV_KWARGS"].setdefault("max_steps", config["NUM_STEPS"])
+
     scenario = map_name_to_scenario(config["MAP_NAME"])
     env = HeuristicEnemySMAX(scenario=scenario, **config["ENV_KWARGS"])
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
@@ -462,6 +465,7 @@ def make_train(config):
             writer = csv.writer(f)
             writer.writerow([
                 "step", "update", "return", "win_rate", "win_rate_std",
+                "ep_len", "timeout_rate",
                 "value_loss", "entropy", "clip_frac", "approx_kl",
                 "actor_grad_norm", "critic_grad_norm",
             ])
@@ -1162,6 +1166,11 @@ def make_train(config):
             ep_count = jnp.sum(mask) + 1e-8
             returns = jnp.sum(metric["returned_episode_returns"][:, :, 0] * mask) / ep_count
             win_rate = jnp.sum(metric["returned_won_episode"][:, :, 0] * mask) / ep_count
+            ep_len = jnp.sum(metric["returned_episode_lengths"][:, :, 0] * mask) / ep_count
+            timeout_rate = (
+                jnp.sum(metric["bad_transition"][:, :, 0].astype(jnp.float32) * mask)
+                / ep_count
+            )
             env_ep_count = jnp.sum(mask, axis=0)
             env_wins = jnp.sum(metric["returned_won_episode"][:, :, 0] * mask, axis=0)
             env_win_rates = env_wins / (env_ep_count + 1e-8)
@@ -1169,12 +1178,13 @@ def make_train(config):
 
             step_count = update_steps * config["NUM_ENVS"] * config["NUM_STEPS"]
 
-            def _print_and_csv(r, w, ws, s, u, vl, ent, cf, akl, agn, cgn):
+            def _print_and_csv(r, w, ws, el, tr, s, u, vl, ent, cf, akl, agn, cgn):
                 s_int = int(s)
                 if s_int > 0 and s_int % print_interval == 0:
                     msg = (
                         f"Step {s:8d} | Update {u:5d} | Return: {r:10.2f} | "
-                        f"Win: {w:5.2f}+-{ws:5.2f} | VLoss: {vl:8.4f} | "
+                        f"Win: {w:5.2f}+-{ws:5.2f} | Len: {el:5.1f} | "
+                        f"TO: {tr:5.2f} | VLoss: {vl:8.4f} | "
                         f"Ent: {ent:6.4f} | Clip: {cf:5.3f} | KL: {akl:6.5f} | "
                         f"GradN(A/C): {agn:6.3f}/{cgn:6.3f}"
                     )
@@ -1183,13 +1193,15 @@ def make_train(config):
                         writer = csv.writer(f_csv)
                         writer.writerow([
                             s_int, int(u), float(r), float(w), float(ws),
+                            float(el), float(tr),
                             float(vl), float(ent), float(cf), float(akl),
                             float(agn), float(cgn),
                         ])
 
             jax.experimental.io_callback(
                 _print_and_csv, None,
-                returns, win_rate, win_rate_std, step_count, update_steps,
+                returns, win_rate, win_rate_std, ep_len, timeout_rate,
+                step_count, update_steps,
                 loss_info["value_loss"], loss_info["entropy"],
                 loss_info["clip_frac"], loss_info["approx_kl"],
                 loss_info["actor_grad_norm"], loss_info["critic_grad_norm"],
@@ -1292,6 +1304,7 @@ def _override_config_from_cli(config):
     parser.add_argument("--total_timesteps", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--save_interval", type=int, default=None)
+    parser.add_argument("--max_steps", type=int, default=None)
 
     # Learning rates & scheduling
     parser.add_argument("--lr", type=float, default=None)
@@ -1341,6 +1354,8 @@ def _override_config_from_cli(config):
         config["SEED"] = args.seed
     if args.save_interval is not None:
         config["SAVE_INTERVAL"] = args.save_interval
+    if args.max_steps is not None:
+        config.setdefault("ENV_KWARGS", {})["max_steps"] = args.max_steps
     if args.lr is not None:
         config["LR"] = args.lr
     if args.critic_lr is not None:
@@ -1400,6 +1415,7 @@ if __name__ == "__main__":
     config = _override_config_from_cli(config)
 
     print(f"Starting MAPPO-T training on {config['MAP_NAME']}...")
+    print(f"SMAX env max_steps={config['ENV_KWARGS'].get('max_steps', config['NUM_STEPS'])}")
     rng = jax.random.PRNGKey(config["SEED"])
     train_jit = jax.jit(make_train(config))
 

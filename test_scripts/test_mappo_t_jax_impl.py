@@ -168,6 +168,7 @@ class TestPaperConfig:
         assert cfg["use_recurrent_policy"] is True
         assert cfg["recurrent_n"] == 1
         assert cfg["DATA_CHUNK_LENGTH"] == 10
+        assert cfg["ENV_KWARGS"]["max_steps"] == 200
         assert cfg["ACTOR_NUM_MINI_BATCH"] == 1
         assert cfg["CRITIC_NUM_MINI_BATCH"] == 1
         assert cfg["transformer"]["n_encode_layer"] == 1

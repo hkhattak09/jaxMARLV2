@@ -109,6 +109,9 @@ def get_default_mappo_t_config():
             "see_enemy_actions": True,
             "walls_cause_death": True,
             "attack_mode": "closest",
+            # Match MACA's SMACv2 paper profile, where episode_length=200 is
+            # also the battle horizon. JaxMARL SMAX defaults to 100.
+            "max_steps": 200,
         },
         
         # === Seed ===
