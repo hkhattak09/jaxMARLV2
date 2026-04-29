@@ -4,6 +4,7 @@ rmaddpg/
 old_implementation/
 other_dirs/
 MACA/
+HyperscaleES
 .claude/
 
 *.swp
