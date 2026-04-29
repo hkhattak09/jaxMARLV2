@@ -130,6 +130,40 @@ class LoRADense(nn.Module):
         return base + delta
 
 
+class FrozenDense(nn.Module):
+    """Dense layer with frozen backbone and no LoRA adapters.
+
+    Used in ablation modes where LoRA should not be applied to specific
+    layers.  The kernel and bias are frozen via ``stop_gradient``, matching
+    ``LoRADense``'s backbone behavior but without the LoRA residual.
+    """
+
+    features: int
+    use_bias: bool = True
+    kernel_init: Any = orthogonal(np.sqrt(2.0))
+    bias_init: Any = constant(0.0)
+
+    @nn.compact
+    def __call__(self, x: jnp.ndarray, adapter_ids: jnp.ndarray = None) -> jnp.ndarray:
+        input_dim = x.shape[-1]
+
+        kernel = self.param(
+            "kernel",
+            self.kernel_init,
+            (input_dim, self.features),
+        )
+        if self.use_bias:
+            bias = self.param("bias", self.bias_init, (self.features,))
+        else:
+            bias = None
+
+        base = x @ jax.lax.stop_gradient(kernel)
+        if bias is not None:
+            base = base + jax.lax.stop_gradient(bias)
+
+        return base
+
+
 class LoRAExplicitGRUCell(nn.Module):
     """Explicit GRU cell with LoRA adapters on input-to-hidden and hidden-to-hidden kernels.
 
@@ -142,12 +176,21 @@ class LoRAExplicitGRUCell(nn.Module):
         rnn/gru_cell/recurrent_candidate
 
     Biases and normalization parameters remain frozen and are not adapted with LoRA.
+
+    Ablation modes:
+        "full"               – LoRA on all gates (default).
+        "no_recurrent_lora"   – LoRA on input gates only; recurrent gates use
+                               ``FrozenDense`` (frozen backbone, no adapters).
+        "no_gru_lora"         – All GRU gates use ``FrozenDense``; no LoRA in GRU.
+        "mlp_only_lora"       – Same as "no_gru_lora" for this cell (the cell
+                               itself does not control MLP / action_out layers).
     """
 
     features: int
     num_adapter_slots: int
     rank: int
     init_scale: float = 0.01
+    ablation_mode: str = "full"
 
     @nn.compact
     def __call__(
@@ -181,25 +224,63 @@ class LoRAExplicitGRUCell(nn.Module):
                 f"carry batch dim {carry.shape[0]} != adapter_ids batch dim {adapter_ids.shape[0]}"
             )
 
-        dense_in = functools.partial(
-            LoRADense,
-            self.features,
-            num_adapter_slots=self.num_adapter_slots,
-            rank=self.rank,
-            init_scale=self.init_scale,
-            use_bias=True,
-            kernel_init=orthogonal(np.sqrt(2.0)),
-            bias_init=constant(0.0),
-        )
-        dense_hidden = functools.partial(
-            LoRADense,
-            self.features,
-            num_adapter_slots=self.num_adapter_slots,
-            rank=self.rank,
-            init_scale=self.init_scale,
-            use_bias=False,
-            kernel_init=orthogonal(1.0),
-        )
+        valid_modes = ("full", "no_recurrent_lora", "no_gru_lora", "mlp_only_lora")
+        if self.ablation_mode not in valid_modes:
+            raise ValueError(
+                f"ablation_mode must be one of {valid_modes}, got '{self.ablation_mode}'"
+            )
+
+        if self.ablation_mode == "full":
+            dense_in = functools.partial(
+                LoRADense,
+                self.features,
+                num_adapter_slots=self.num_adapter_slots,
+                rank=self.rank,
+                init_scale=self.init_scale,
+                use_bias=True,
+                kernel_init=orthogonal(np.sqrt(2.0)),
+                bias_init=constant(0.0),
+            )
+            dense_hidden = functools.partial(
+                LoRADense,
+                self.features,
+                num_adapter_slots=self.num_adapter_slots,
+                rank=self.rank,
+                init_scale=self.init_scale,
+                use_bias=False,
+                kernel_init=orthogonal(1.0),
+            )
+        elif self.ablation_mode == "no_recurrent_lora":
+            dense_in = functools.partial(
+                LoRADense,
+                self.features,
+                num_adapter_slots=self.num_adapter_slots,
+                rank=self.rank,
+                init_scale=self.init_scale,
+                use_bias=True,
+                kernel_init=orthogonal(np.sqrt(2.0)),
+                bias_init=constant(0.0),
+            )
+            dense_hidden = functools.partial(
+                FrozenDense,
+                self.features,
+                use_bias=False,
+                kernel_init=orthogonal(1.0),
+            )
+        elif self.ablation_mode in ("no_gru_lora", "mlp_only_lora"):
+            dense_in = functools.partial(
+                FrozenDense,
+                self.features,
+                use_bias=True,
+                kernel_init=orthogonal(np.sqrt(2.0)),
+                bias_init=constant(0.0),
+            )
+            dense_hidden = functools.partial(
+                FrozenDense,
+                self.features,
+                use_bias=False,
+                kernel_init=orthogonal(1.0),
+            )
 
         reset = nn.sigmoid(
             dense_in(name="input_reset")(inputs, adapter_ids)
@@ -227,6 +308,7 @@ class LoRAScannedRNN(nn.Module):
     num_adapter_slots: int
     rank: int
     init_scale: float = 0.01
+    ablation_mode: str = "full"
 
     @functools.partial(
         nn.scan,
@@ -271,6 +353,7 @@ class LoRAScannedRNN(nn.Module):
             num_adapter_slots=self.num_adapter_slots,
             rank=self.rank,
             init_scale=self.init_scale,
+            ablation_mode=self.ablation_mode,
             name="gru_cell",
         )(rnn_state, ins, adapter_ids)
         y = FrozenLayerNorm(epsilon=1e-5, name="rnn_norm")(y)
@@ -286,6 +369,14 @@ class LoRASAActorTrans(nn.Module):
 
     Mirrors ``ActorTrans`` but accepts ``adapter_ids`` in the forward signature
     and uses LoRA-capable Dense and GRU layers.
+
+    Ablation modes control which components receive LoRA adapters:
+        "full"               – LoRA on MLP + GRU (all gates) + action_out (default).
+        "no_recurrent_lora"   – LoRA on MLP + GRU input gates + action_out;
+                               GRU recurrent gates are frozen only (no adapters).
+        "no_gru_lora"         – LoRA on MLP + action_out; entire GRU is frozen.
+        "mlp_only_lora"       – LoRA on MLP (base_0/base_1/base_2) only; both
+                               GRU and action_out are frozen.
     """
 
     action_dim: int
@@ -293,6 +384,7 @@ class LoRASAActorTrans(nn.Module):
     num_adapter_slots: int
     rank: int
     init_scale: float = 0.01
+    ablation_mode: str = "full"
 
     @nn.compact
     def __call__(
@@ -318,6 +410,12 @@ class LoRASAActorTrans(nn.Module):
         hidden_sizes = cfg["hidden_sizes"]
         activation_name = cfg.get("activation_func", cfg["transformer"]["active_fn"])
         active_fn = get_active_func(activation_name)
+
+        valid_modes = ("full", "no_recurrent_lora", "no_gru_lora", "mlp_only_lora")
+        if self.ablation_mode not in valid_modes:
+            raise ValueError(
+                f"ablation_mode must be one of {valid_modes}, got '{self.ablation_mode}'"
+            )
 
         # Validate adapter_ids shape against obs leading dims
         expected_adapter_shape = obs.shape[:-1]
@@ -351,18 +449,27 @@ class LoRASAActorTrans(nn.Module):
                 num_adapter_slots=self.num_adapter_slots,
                 rank=self.rank,
                 init_scale=self.init_scale,
+                ablation_mode=self.ablation_mode,
                 name="rnn",
             )(rnn_states, (embedding, resets, adapter_ids))
 
-        logits = LoRADense(
-            features=self.action_dim,
-            num_adapter_slots=self.num_adapter_slots,
-            rank=self.rank,
-            init_scale=self.init_scale,
-            kernel_init=orthogonal(cfg.get("gain", 0.01)),
-            bias_init=constant(0.0),
-            name="action_out",
-        )(embedding, adapter_ids)
+        if self.ablation_mode == "mlp_only_lora":
+            logits = FrozenDense(
+                features=self.action_dim,
+                kernel_init=orthogonal(cfg.get("gain", 0.01)),
+                bias_init=constant(0.0),
+                name="action_out",
+            )(embedding, adapter_ids)
+        else:
+            logits = LoRADense(
+                features=self.action_dim,
+                num_adapter_slots=self.num_adapter_slots,
+                rank=self.rank,
+                init_scale=self.init_scale,
+                kernel_init=orthogonal(cfg.get("gain", 0.01)),
+                bias_init=constant(0.0),
+                name="action_out",
+            )(embedding, adapter_ids)
 
         if available_actions is not None:
             if available_actions.ndim == logits.ndim - 1:

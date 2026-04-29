@@ -341,6 +341,7 @@ def make_train(config):
             num_adapter_slots=config["LORASA_NUM_ADAPTER_SLOTS"],
             rank=config["LORASA_RANK"],
             init_scale=config["LORASA_INIT_SCALE"],
+            ablation_mode=config.get("LORASA_ABLATION", "full"),
         )
         critic_network = TransVCritic(
             config=config,
@@ -597,7 +598,11 @@ def make_train(config):
         print_interval = max(1, save_interval // 20)
 
         run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
-        saved_models_dir = os.path.join(_REPO_ROOT, "saved_models")
+        ablation_mode = config.get("LORASA_ABLATION", "full")
+        if ablation_mode == "full":
+            saved_models_dir = os.path.join(_REPO_ROOT, "saved_models")
+        else:
+            saved_models_dir = os.path.join(_REPO_ROOT, ablation_mode)
         os.makedirs(saved_models_dir, exist_ok=True)
         run_dir = os.path.join(saved_models_dir, run_timestamp)
         os.makedirs(run_dir, exist_ok=True)
@@ -1520,6 +1525,7 @@ def make_train(config):
                         "rank": config["LORASA_RANK"],
                         "num_adapter_slots": config["LORASA_NUM_ADAPTER_SLOTS"],
                         "routing": "unit_type_id",
+                        "ablation_mode": config.get("LORASA_ABLATION", "full"),
                     },
                     "metrics": {
                         "return": float(r),
@@ -1548,7 +1554,12 @@ def make_train(config):
                 plt.xlabel("Timesteps")
                 plt.ylabel("Win Rate")
                 plt.xlim(0, progress_step_offset + config["TOTAL_TIMESTEPS"])
-                plt.title(f"MAPPO-T LoRASA on {config['MAP_NAME']}")
+                ablation_label = (
+                    f" (ablation: {config.get('LORASA_ABLATION', 'full')})"
+                    if config.get("LORASA_ABLATION", "full") != "full"
+                    else ""
+                )
+                plt.title(f"MAPPO-T LoRASA{ablation_label} on {config['MAP_NAME']}")
                 plt.legend()
                 plt.grid(True, alpha=0.3)
                 plt.tight_layout()
@@ -1639,6 +1650,7 @@ def make_train(config):
                     "rank": config["LORASA_RANK"],
                     "num_adapter_slots": config["LORASA_NUM_ADAPTER_SLOTS"],
                     "routing": "unit_type_id",
+                    "ablation_mode": config.get("LORASA_ABLATION", "full"),
                 },
             }
             with open(ckpt_path, "wb") as fckpt:
@@ -1720,6 +1732,13 @@ def _override_config_from_cli(config):
     parser.add_argument("--pretrained_progress_path", type=str, default=None)
     parser.add_argument("--lorasa_rank", type=int, default=None)
     parser.add_argument("--lorasa_init_scale", type=float, default=None)
+    parser.add_argument(
+        "--ablation",
+        type=str,
+        default=None,
+        choices=["full", "no_recurrent_lora", "no_gru_lora", "mlp_only_lora"],
+        help="LoRASA ablation mode: full, no_recurrent_lora, no_gru_lora, or mlp_only_lora",
+    )
 
     args = parser.parse_args()
 
@@ -1806,6 +1825,8 @@ def _override_config_from_cli(config):
         config["LORASA_RANK"] = args.lorasa_rank
     if args.lorasa_init_scale is not None:
         config["LORASA_INIT_SCALE"] = args.lorasa_init_scale
+    if args.ablation is not None:
+        config["LORASA_ABLATION"] = args.ablation
 
     return config
 
@@ -1896,6 +1917,9 @@ if __name__ == "__main__":
     config.setdefault("LORASA_RANK", 8)
     config.setdefault("LORASA_INIT_SCALE", 0.01)
 
+    ablation_mode = config.get("LORASA_ABLATION", "full")
+    if ablation_mode != "full":
+        print(f"ABLATION MODE: {ablation_mode}")
     print(f"Starting MAPPO-T LoRASA fine-tuning on {config['MAP_NAME']}...")
     print(f"SMAX env max_steps={config['ENV_KWARGS'].get('max_steps', config['NUM_STEPS'])}")
 

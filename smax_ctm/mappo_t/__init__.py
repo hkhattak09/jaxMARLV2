@@ -13,6 +13,7 @@ from .config import get_default_mappo_t_config
 from .actor import ActorTrans, ScannedRNN
 from .critic import TransVCritic
 from .lorasa_actor import (
+    FrozenDense,
     LoRADense,
     LoRAExplicitGRUCell,
     LoRAScannedRNN,
@@ -24,6 +25,7 @@ __all__ = [
     "ActorTrans",
     "ScannedRNN",
     "TransVCritic",
+    "FrozenDense",
     "LoRADense",
     "LoRAExplicitGRUCell",
     "LoRAScannedRNN",

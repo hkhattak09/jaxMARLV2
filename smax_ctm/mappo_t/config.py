@@ -126,6 +126,14 @@ def get_default_mappo_t_config():
         
         # === Seed ===
         "SEED": 42,
+        
+        # === LoRASA Ablation ===
+        # Controls which components receive LoRA adapters:
+        #   "full"               – MLP + GRU (all gates) + action_out
+        #   "no_recurrent_lora"  – MLP + GRU input gates + action_out (frozen recurrent)
+        #   "no_gru_lora"        – MLP + action_out only (frozen GRU)
+        #   "mlp_only_lora"      – MLP only (base_0/base_1/base_2, frozen GRU + action_out)
+        "LORASA_ABLATION": "full",
     }
 
 
