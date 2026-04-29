@@ -3,6 +3,7 @@ memory/
 rmaddpg/
 old_implementation/
 other_dirs/
+MACA/
 .claude/
 
 *.swp
