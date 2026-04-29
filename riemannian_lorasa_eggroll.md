@@ -782,7 +782,8 @@ Initial implementation files:
 
 ```text
 smax_ctm/lorasa_eggroll.py              # Riemannian ES math and checkpoint helpers
-smax_ctm/train_lorasa_eggroll.py        # ES loop / CLI
+smax_ctm/train_lorasa_eggroll.py        # sequential correctness oracle / CLI
+smax_ctm/train_lorasa_eggroll_pop.py    # single-GPU population-axis trainer
 smax_ctm/eval_smax.py                   # Reuse environment and deterministic rollout logic
 ```
 
@@ -807,7 +808,8 @@ Prototype stages:
    For the first working version, materialize candidate adapter factors into
    actor_params and reuse the deterministic evaluator. This is slower than the
    final hyperscale path, but it isolates geometry, checkpoint compatibility,
-   and SMAX fitness plumbing.
+   and SMAX fitness plumbing. This sequential script is not used in the
+   production training hot path; it remains a reference/debug oracle.
 
 5. Aggregation
    Convert raw candidate scores to centered-rank or baseline-adjusted weights,
@@ -818,11 +820,18 @@ Prototype stages:
    Log train-bundle fitness, held-out deterministic win rate, update norms,
    active-slot singular values, sigma/eta, and unchanged unused-slot checks.
 
-7. Throughput pass
-   Once the algorithm moves the policy in the right direction, add the
-   EGGROLL-style population axis: vmap candidate rollout over thread_id,
-   optionally shard over devices, and avoid full actor-param copies by injecting
-   candidate adapter factors or perturbation coordinates in the actor forward.
+7. Single-GPU throughput pass
+   Add the EGGROLL-style population axis with vmap candidate rollout over
+   thread_id. Use thread_id // 2 for direction id and thread_id % 2 for the
+   antithetic sign. Do not use shard_map for the current one-GPU target. The
+   user-facing rollout scale is episodes_per_candidate; num_envs_per_candidate
+   only controls how many of those episodes run in parallel.
+
+8. Population-axis parameter handling
+   Broadcast frozen actor leaves and put the population axis only on selected
+   LoRA leaves. Candidate adapter factors are built in chunks, evaluated in a
+   vmapped rollout, and then discarded. The Riemannian update still aggregates
+   regenerated tangent directions and retracts the persistent rank-4 adapters.
 ```
 
 First smoke tests:

@@ -544,6 +544,7 @@ def apply_weighted_tangent_update(
     block_patterns: Sequence[str] = NO_RECURRENT_BLOCK_PATTERNS,
     relative_scale: bool = True,
     average_directions: bool = True,
+    direction_normalizer: Optional[int] = None,
     singular_floor: float = 0.0,
 ) -> Tuple[Dict[str, Any], List[SlotUpdateMetrics]]:
     """Apply an ES-weighted tangent update and retract active adapters."""
@@ -599,7 +600,10 @@ def apply_weighted_tangent_update(
                     step_norm_accum += float(np.linalg.norm(step, "fro"))
 
                 if average_directions:
-                    aggregate /= direction_count
+                    normalizer = direction_count if direction_normalizer is None else int(
+                        direction_normalizer
+                    )
+                    aggregate /= max(1, normalizer)
 
                 updated_delta = delta + float(eta) * aggregate
                 new_a, new_b, s_new = retract_to_balanced_lora(
