@@ -180,12 +180,18 @@ def _summarize_update_metrics(metrics) -> Dict[str, Any]:
             "mean_delta_fro_norm": 0.0,
             "mean_step_fro_norm": 0.0,
             "max_step_fro_norm": 0.0,
+            "mean_applied_update_fro_norm": 0.0,
+            "max_applied_update_fro_norm": 0.0,
             "mean_singular_shift": 0.0,
             "max_singular_shift": 0.0,
         }
 
     delta_norms = np.asarray([m.delta_fro_norm for m in metrics], dtype=np.float64)
     step_norms = np.asarray([m.step_fro_norm for m in metrics], dtype=np.float64)
+    applied_norms = np.asarray(
+        [m.applied_update_fro_norm for m in metrics],
+        dtype=np.float64,
+    )
     singular_shifts = np.asarray(
         [
             float(
@@ -203,6 +209,8 @@ def _summarize_update_metrics(metrics) -> Dict[str, Any]:
         "mean_delta_fro_norm": float(delta_norms.mean()),
         "mean_step_fro_norm": float(step_norms.mean()),
         "max_step_fro_norm": float(step_norms.max()),
+        "mean_applied_update_fro_norm": float(applied_norms.mean()),
+        "max_applied_update_fro_norm": float(applied_norms.max()),
         "mean_singular_shift": float(singular_shifts.mean()),
         "max_singular_shift": float(singular_shifts.max()),
     }
@@ -397,8 +405,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         update_summary = _summarize_update_metrics(update_metrics)
         print(
             "update summary: "
-            f"mean_step={update_summary['mean_step_fro_norm']:.6f} "
-            f"max_step={update_summary['max_step_fro_norm']:.6f} "
+            f"applied_mean={update_summary['mean_applied_update_fro_norm']:.6f} "
+            f"applied_max={update_summary['max_applied_update_fro_norm']:.6f} "
+            f"raw_step_sum_mean={update_summary['mean_step_fro_norm']:.6f} "
             f"mean_singular_shift={update_summary['mean_singular_shift']:.6f}"
         )
 

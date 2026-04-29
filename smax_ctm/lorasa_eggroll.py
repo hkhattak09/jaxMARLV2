@@ -78,6 +78,7 @@ class SlotUpdateMetrics:
     step_fro_norm: float
     singular_values: Tuple[float, ...]
     retracted_singular_values: Tuple[float, ...]
+    applied_update_fro_norm: float = 0.0
 
 
 def load_checkpoint(path: str | Path) -> Dict[str, Any]:
@@ -524,6 +525,9 @@ def make_candidate_actor_params(
                     step_fro_norm=float(np.linalg.norm(step, "fro")),
                     singular_values=tuple(float(x) for x in s),
                     retracted_singular_values=tuple(float(x) for x in s_new),
+                    applied_update_fro_norm=float(
+                        abs(float(sigma)) * np.linalg.norm(step, "fro")
+                    ),
                 )
             )
 
@@ -581,6 +585,7 @@ def apply_weighted_tangent_update(
             aggregate = np.zeros_like(delta, dtype=np.float64)
             tangent_norm_accum = 0.0
             step_norm_accum = 0.0
+            applied_update_norm = 0.0
 
             if float(eta) == 0.0 or not clean_weights:
                 s_new = s_old
@@ -605,7 +610,9 @@ def apply_weighted_tangent_update(
                     )
                     aggregate /= max(1, normalizer)
 
-                updated_delta = delta + float(eta) * aggregate
+                applied_update = float(eta) * aggregate
+                applied_update_norm = float(np.linalg.norm(applied_update, "fro"))
+                updated_delta = delta + applied_update
                 new_a, new_b, s_new = retract_to_balanced_lora(
                     updated_delta,
                     target_rank=target_rank,
@@ -628,6 +635,7 @@ def apply_weighted_tangent_update(
                     step_fro_norm=step_norm_accum,
                     singular_values=tuple(float(x) for x in s_old),
                     retracted_singular_values=tuple(float(x) for x in s_new),
+                    applied_update_fro_norm=applied_update_norm,
                 )
             )
 

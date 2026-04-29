@@ -124,7 +124,7 @@ Immediate next experiment: single-GPU population-axis Riemannian LoRASA-EGGROLL
   - Decision: stop using the sequential trainer as an optimizer. It remains an
     off-hot-path correctness oracle/debug reference only.
 
-- [ ] Build single-GPU population-axis trainer.
+- [x] Build single-GPU population-axis trainer.
   - Added `smax_ctm/train_lorasa_eggroll_pop.py`.
   - No `shard_map`; this targets one GPU.
   - User-facing rollout scale is `episodes_per_candidate`, not `num_loops`.
@@ -149,10 +149,28 @@ Immediate next experiment: single-GPU population-axis Riemannian LoRASA-EGGROLL
   - First no-op population smoke exposed a JAX `vmap` API issue:
     single-argument pytree `in_axes` must be wrapped as `(population_in_axes,)`.
     Patched `smax_ctm/train_lorasa_eggroll_pop.py`.
+  - No-op population smoke passed after the patch:
+    `lorasa_eggroll_pop_runs/lorasa_eggroll_pop_20260429_225721/checkpoint_final.pkl`.
+    One vmapped chunk evaluated 4 candidates; all candidate win rates were
+    `1.0000`, all direction weights were zero, update summary reported zero
+    step/singular shift, and the checkpoint saved cleanly.
+  - Added an explicit `applied_update_fro_norm` diagnostic so future update
+    summaries separate the actual eta-scaled adapter movement from the raw
+    accumulated direction norm.
   - Small nonzero population smoke command:
     `python smax_ctm/train_lorasa_eggroll_pop.py --checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --num_epochs 1 --num_directions 4 --population_batch_size 4 --num_envs_per_candidate 8 --episodes_per_candidate 16 --heldout_num_envs 8 --heldout_episodes 16 --sigma 0.05 --eta 0.0015 --print_candidates`
-  - If the nonzero run reports nonzero direction weights, validate with:
+  - Small nonzero population smoke passed:
+    `lorasa_eggroll_pop_runs/lorasa_eggroll_pop_20260429_230051/checkpoint_final.pkl`.
+    It evaluated 8 candidates in 2 chunks, reused the compiled evaluator on
+    the second chunk, produced nonzero direction weights, applied one adapter
+    update, ran held-out eval, and saved cleanly.
+  - Validate the nonzero population update with:
     `python smax_ctm/lorasa_eggroll.py --reference_checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --checkpoint lorasa_eggroll_pop_runs/<run_id>/checkpoint_final.pkl --require_active_change --validation_json diagnostics/lorasa_eggroll_pop_update_validation.json`
+
+- [ ] Run first population-axis protoss_10_vs_10 pilot.
+  - Use the original Schedule A compressed checkpoint as the source.
+  - Start with enough candidates/episodes to reduce tie saturation but keep the
+    first pilot short enough for Colab iteration.
 
 ## Rank Compression Schedules
 
