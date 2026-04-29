@@ -10,7 +10,8 @@ and remove or rewrite tasks that become obsolete.
 Main phase-2 candidate: no-recurrent LoRASA
 Active adapter slots on protoss_10_vs_10: 2, 3, 6
 Main phase-3 direction: Riemannian LoRASA-EGGROLL
-Immediate next experiment: post-hoc rank compression of no-recurrent LoRASA
+Current ES adapter target: Schedule A compressed no-recurrent LoRASA, rank 4 everywhere
+Immediate next experiment: prototype adapter-only Riemannian ES on protoss_10_vs_10
 ```
 
 ## Completed
@@ -23,35 +24,65 @@ Immediate next experiment: post-hoc rank compression of no-recurrent LoRASA
 - [x] Run no-recurrent-GRU-LoRA ablation.
 - [x] Run diagnostics on no-recurrent LoRASA checkpoint.
 - [x] Promote no-recurrent LoRASA to the current main phase-2 candidate.
+- [x] Implement post-hoc LoRASA adapter compression tool.
+- [x] Evaluate compressed checkpoint variants A/B/C.
+- [x] Choose Schedule A as the working compressed adapter state.
+- [x] Inspect local official EGGROLL implementation in `HyperscaleES/`.
+  - Useful patterns: Noiser abstraction, low-rank matmul injection, antithetic
+    `thread_id // 2` direction keys, vmap/shard_map population axis,
+    shape-bucketed update compilation, process_allgather fitness collection,
+    timing/logging/checkpoint structure.
+  - Do not copy the official unconstrained ambient update rule as the main
+    LoRASA method.
 
 ## Immediate Next Tasks
 
-- [x] Implement post-hoc LoRASA adapter compression tool.
-  - Input: no-recurrent LoRASA checkpoint.
-  - Output: compressed checkpoint variants for rank schedules A-C.
-  - Must preserve checkpoint structure and metadata.
-  - Must not retrain.
-  - Verified with `py_compile`, `--self_test`, and a fake-checkpoint dry run.
+- [x] Write a concrete implementation plan for the Riemannian LoRASA-EGGROLL prototype.
+  - Start from Schedule A compressed no-recurrent LoRASA.
+  - Active slots only: `2, 3, 6`.
+  - Rank 4 for all active blocks.
+  - Tangent projection.
+  - SVD retraction.
+  - Norm-scaled sigma.
 
-- [ ] Evaluate compressed checkpoint variants.
-  - Compare against original no-recurrent LoRASA checkpoint.
-  - Use the same evaluation protocol and seeds where possible.
-  - Record win rate, return, episode length, and any timeout/death metrics available.
+- [ ] Implement Riemannian LoRASA-EGGROLL prototype.
+  - [x] Add adapter-tree helpers for discovering active `lora_a` / `lora_b` leaves.
+    - Added `smax_ctm/lorasa_eggroll.py`.
+  - [x] Add Riemannian fixed-rank helpers: balanced factorization, tangent
+    projection, truncated-SVD retraction, perturbation regeneration.
+  - [ ] Run Colab smoke test for helper module.
+  - [ ] Add an ES evaluator/trainer entry point based on `smax_ctm/eval_smax.py`.
+  - [ ] Keep backbone and critic frozen; optimize actor adapters only.
+  - [ ] Use deterministic actions for ES evaluation.
 
-- [ ] Update `riemannian_lorasa_eggroll.md` with compression results.
-  - Which schedule preserves performance?
-  - Which rank schedule should phase-3 ES use?
-  - Did compression reveal hidden rank dependence?
+- [ ] Run a smoke test on a tiny population and a small number of SMAX envs.
+  - Validate checkpoint load/save.
+  - Validate active slots `2, 3, 6` change and unused slots remain unchanged.
+  - Validate antithetic candidates use identical perturbation directions with
+    opposite signs.
+  - Validate rank-4 adapters remain rank 4 after retraction.
+
+- [ ] Run first protoss_10_vs_10 ES experiment.
+  - Report train-bundle fitness, held-out deterministic win rate, update norms,
+    sigma/eta, active slot norms, and singular values.
 
 ## Rank Compression Schedules
 
-- [ ] Schedule A: all active blocks rank 4.
-- [ ] Schedule B: base layers rank 4, GRU input gates rank 2, action_out rank 4.
-- [ ] Schedule C: base layers rank 4, input_candidate rank 4, input_reset/input_update rank 2, action_out rank 4.
+- [x] Schedule A: all active blocks rank 4.
+  - Result: mean win rate 0.9440, std 0.2300, sem 0.0073, episodes 1000.
+  - Decision: chosen as working ES target.
+
+- [x] Schedule B: base layers rank 4, GRU input gates rank 2, action_out rank 4.
+  - Result: mean win rate 0.9320, std 0.2519, sem 0.0080, episodes 1000.
+
+- [x] Schedule C: base layers rank 4, input_candidate rank 4, input_reset/input_update rank 2, action_out rank 4.
+  - Result: mean win rate 0.9390, std 0.2395, sem 0.0076, episodes 1000.
 
 ## Phase-3 ES Design Tasks
 
-- [ ] Decide final active-rank schedule from compression results.
+- [x] Decide final active-rank schedule from compression results.
+  - Use Schedule A: all active no-recurrent LoRA blocks rank 4.
+
 - [ ] Decide active-slot mask source.
   - Hard-code slots `2, 3, 6` only for first experiment if needed.
   - Later: derive active slots from rollout/eval metadata.
@@ -67,18 +98,10 @@ Immediate next experiment: post-hoc rank compression of no-recurrent LoRASA
   - Held-out evaluation seeds.
   - Optional per-seed baseline.
 
-- [ ] Inspect official EGGROLL implementation for systems patterns.
-  - Population-axis layout.
-  - Low-rank perturbation generation.
-  - Antithetic pairing.
-  - Batched forward-pass mechanics.
-  - RNG discipline.
-  - Aggregation and logging.
-  - Do not copy the ambient unconstrained update rule as the main method.
-
 - [ ] Implement Riemannian LoRASA-EGGROLL prototype.
-  - Start with no-recurrent LoRASA.
+  - Start with Schedule A compressed no-recurrent LoRASA.
   - Active slots only.
+  - Rank 4 all active blocks.
   - Tangent projection.
   - SVD retraction.
   - Norm-scaled sigma.
@@ -97,13 +120,18 @@ Immediate next experiment: post-hoc rank compression of no-recurrent LoRASA
 Compression result notes:
 
 ```text
-TBD
+Schedule A: 0.9440 mean win rate over 1000 episodes.
+Schedule B: 0.9320 mean win rate over 1000 episodes.
+Schedule C: 0.9390 mean win rate over 1000 episodes.
+
+Schedule A is selected because it is simplest and performed best. Mixed rank-2
+GRU input schedules are not worth the added complexity right now.
 ```
 
 Final chosen ES rank schedule:
 
 ```text
-TBD
+No-recurrent LoRASA, active slots 2/3/6, rank 4 for every active LoRA block.
 ```
 
 Known risks:

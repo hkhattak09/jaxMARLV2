@@ -150,11 +150,10 @@ fitness = win_rate
 Pure win rate may be too binary early in phase 3, so the shaped-return tie
 breaker is important for ranking candidates.
 
-## Next Experiment: Post-Hoc Rank Compression
+## Post-Hoc Rank Compression Result
 
-Before implementing ES, test whether the trained no-recurrent LoRASA checkpoint
-actually needs rank 8. This should be done by SVD-compressing the effective
-adapter matrices:
+We tested whether the trained no-recurrent LoRASA checkpoint actually needs
+rank 8 by SVD-compressing the effective adapter matrices:
 
 ```text
 Delta = A B
@@ -163,9 +162,8 @@ A_r = U_r S_r^{1/2}
 B_r = S_r^{1/2} V_r^T
 ```
 
-The point is to evaluate compressed checkpoints without retraining. This
-separates "spectral mass looks low-rank" from "the policy can actually survive
-with lower-rank adapters."
+This separated "spectral mass looks low-rank" from "the policy can actually
+survive with lower-rank adapters."
 
 Compression schedules to evaluate:
 
@@ -185,12 +183,37 @@ Schedule C:
     action_out rank 4
 ```
 
-The main result we need:
+Evaluation on `protoss_10_vs_10` with 1000 episodes:
 
 ```text
-If rank-4 or mixed rank-2/4 compression keeps performance, phase-3 ES should
-operate on a product of variable-rank fixed-rank manifolds rather than using
-rank 8 everywhere.
+schedule_A: mean win rate 0.9440, std 0.2300, sem 0.0073
+schedule_B: mean win rate 0.9320, std 0.2519, sem 0.0080
+schedule_C: mean win rate 0.9390, std 0.2395, sem 0.0076
+```
+
+Decision:
+
+```text
+Use Schedule A as the working compressed adapter state:
+    all active no-recurrent LoRA blocks rank 4
+```
+
+Rationale:
+
+```text
+Schedule A is simplest and performed best among A/B/C.
+It is small enough for the next phase.
+The extra complexity of mixed rank-2 GRU input gates is not currently worth it.
+```
+
+Important caveat:
+
+```text
+This does not mean future ES must never use rank 8 capacity. The compression
+test shows that the current trained policy survives rank-4 compression well.
+For the first ES implementation, Schedule A is the clean working target. If ES
+fails to improve or appears capacity-limited, rank-expanded residual ES or
+rank-8 adapters remain valid follow-up ablations.
 ```
 
 ## What EGGROLL Gives Us
@@ -330,6 +353,26 @@ For each ES update:
 Given current role/layer adapters Delta_j = A_j B_j
 where j indexes all adapted actor matrices across roles and layers.
 ```
+
+For the first prototype, `j` ranges over the no-recurrent active LoRA blocks:
+
+```text
+base_0
+base_1
+base_2
+rnn/gru_cell/input_reset
+rnn/gru_cell/input_update
+rnn/gru_cell/input_candidate
+action_out
+```
+
+and only active slots:
+
+```text
+2, 3, 6
+```
+
+Use rank 4 for all active blocks in the first prototype, matching Schedule A.
 
 1. Compute or maintain SVD coordinates:
 
@@ -616,41 +659,196 @@ Do not spend too much implementation time on all ablations before confirming
 that the main method has signal. The ablation list is here to preserve the
 experimental story.
 
-## Repo Scan Deferred Until Implementation
+## Official EGGROLL Repo Scan
 
-Do not inspect or port the official EGGROLL repository yet as part of this
-method-design stage. When implementation begins, scan the official code for:
+The local official implementation is in:
 
 ```text
-population-axis layout
-low-rank perturbation generation
-antithetic pairing
-RNG discipline
-batched forward-pass mechanics
-aggregation/update code
-memory tricks
-benchmarking/profiling structure
+HyperscaleES/
 ```
 
-Use it for systems design and throughput patterns. Do not blindly copy the
-ambient update rule, because the LoRASA method needs tangent projection and
-rank-r retraction.
+It is gitignored in this project, so it must be searched directly rather than
+through tracked-file assumptions.
 
-## Open Design Questions
-
-These should be resolved after the spectral diagnostic and before full ES
-implementation:
+Important files:
 
 ```text
-1. How much performance is lost by post-hoc rank compression?
-2. What per-block active-rank schedule should phase 3 use?
-3. Should sigma be global, per-layer, or scaled by adapter norm?
-4. Should perturbations be independent per role/layer or partially shared?
-5. How many common seeds are needed per ES update?
-6. How often should held-out evaluation run?
-7. Do we need singular-value flooring during retraction?
-8. Is the small 2r x 2r retraction practical here, or is full SVD acceptable for current layer sizes?
-9. Should no-recurrent LoRASA be confirmed across more seeds/maps before becoming the default?
+HyperscaleES/src/hyperscalees/noiser/eggroll.py
+HyperscaleES/src/hyperscalees/noiser/eggroll_baseline_subtraction.py
+HyperscaleES/src/hyperscalees/noiser/open_es.py
+HyperscaleES/src/hyperscalees/models/common.py
+HyperscaleES/llm_experiments/general_do_evolution.py
+HyperscaleES/llm_experiments/general_do_evolution_multi_gpu.py
+HyperscaleES/llm_experiments/utils.py
+HyperscaleES/tests/end_to_end_test.py
+```
+
+The scan confirms that EGGROLL's useful contribution for this project is
+mainly a systems pattern:
+
+```text
+Noiser abstraction:
+    Models call do_mm / do_Tmm / get_noisy_standard instead of manually
+    constructing noisy parameter trees.
+
+Low-rank matmul injection:
+    For matrix parameters, the forward path computes the base matmul plus
+    x @ B @ A.T or x @ A @ B.T. This avoids materializing dense noisy
+    matrices during candidate evaluation.
+
+Antithetic RNG discipline:
+    thread_id // 2 selects a perturbation direction.
+    thread_id % 2 selects the +sigma / -sigma sign.
+    Keys are derived by fold_in(fold_in(base_key, epoch), true_thread_idx).
+    noise_reuse can deliberately reuse perturbations across epochs/windows.
+
+Population axis:
+    Candidate policies are represented by (epoch, thread_id) iterinfo.
+    The experiment harness vmaps generate_thread across the population axis.
+
+Sharding:
+    Multi-device runs use a one-dimensional data mesh, NamedSharding, and
+    shard_map over the population axis. Parameters are replicated with P();
+    candidates, prompts, generations, and local fitness are sharded with
+    P('data').
+
+Fitness shaping:
+    The basic EggRoll noiser standardizes raw scores globally or within
+    prompt groups. The baseline-subtraction variant reserves the first two
+    group entries as zero-noise baselines, subtracts them, zeros their update
+    weights, and averages per-direction standardized scores.
+
+Aggregation:
+    The official update regenerates the same perturbations from keys and
+    computes a weighted mean update. For low-rank matrix perturbations this
+    uses an einsum over population and rank dimensions.
+
+Compilation/memory:
+    The LLM scripts lower and compile generate and update functions once,
+    print memory_analysis(), enable persistent XLA caching, and donate params
+    and noiser state to update calls.
+
+Update batching:
+    eggroll.py has an optional shape-bucketed batched update path that groups
+    leaves by (shape, update_type) before vmapping the update. This is useful
+    for large pytrees because it reduces XLA compile stress.
+
+Logging/checkpointing:
+    The experiments track fitness summaries, update magnitudes, timing
+    breakdowns, sampled generations, optional wandb logs, and pickle
+    checkpoints.
+```
+
+Important mismatch:
+
+```text
+The official "lora" path means a low-rank perturbation applied to a dense
+weight, not persistent LoRA adapter factors. Its aggregate update is still an
+ambient dense-weight update. We should use these throughput patterns, not copy
+the unconstrained update geometry as the main LoRASA method.
+```
+
+Useful implementation translation for LoRASA:
+
+```text
+Keep the Noiser idea, but specialize it to adapter blocks and active slots.
+Represent one population member by deterministic iterinfo and regenerated
+per-adapter perturbation keys.
+Inject candidate adapters into the actor forward path without constructing
+N copies of the full actor checkpoint.
+Use antithetic pairs and common SMAX seeds for each ES update.
+Regenerate perturbations for aggregation rather than storing them.
+Aggregate tangent vectors, not ambient dense updates.
+Retract adapters back to rank 4 and write balanced lora_a / lora_b factors.
+```
+
+Do not import or port HyperscaleES code into this project. The local repo is
+GPL-licensed and, more importantly, its geometry is not the method here.
+
+## Concrete Prototype Plan
+
+Start with a correctness-first prototype, then optimize the population axis.
+
+Target checkpoint:
+
+```text
+Schedule A compressed no-recurrent LoRASA
+active slots: 2, 3, 6
+rank: 4 for every active adapter block
+map: protoss_10_vs_10
+```
+
+Initial implementation files:
+
+```text
+smax_ctm/lorasa_eggroll.py              # Riemannian ES math and checkpoint helpers
+smax_ctm/train_lorasa_eggroll.py        # ES loop / CLI
+smax_ctm/eval_smax.py                   # Reuse environment and deterministic rollout logic
+```
+
+Prototype stages:
+
+```text
+1. Adapter registry
+   Flatten actor_params, discover all leaves ending in lora_a / lora_b, and
+   select only the no-recurrent active blocks and slots 2/3/6.
+
+2. Fixed-rank math
+   For each selected slot, compute Delta = A @ B, thin SVD, tangent projection,
+   low-rank ambient perturbation generation, SVD retraction, and balanced
+   factor writeback.
+
+3. Deterministic candidate construction
+   Use fold_in(fold_in(base_key, epoch), direction_id) keys for every adapter
+   block and antithetic sign. Regenerate directions during aggregation rather
+   than storing the whole population.
+
+4. Correctness-first ES loop
+   For the first working version, materialize candidate adapter factors into
+   actor_params and reuse the deterministic evaluator. This is slower than the
+   final hyperscale path, but it isolates geometry, checkpoint compatibility,
+   and SMAX fitness plumbing.
+
+5. Aggregation
+   Convert raw candidate scores to centered-rank or baseline-adjusted weights,
+   regenerate the matching tangent directions, average in tangent space, and
+   retract the current adapters by eta * u_bar.
+
+6. Logging/checkpointing
+   Log train-bundle fitness, held-out deterministic win rate, update norms,
+   active-slot singular values, sigma/eta, and unchanged unused-slot checks.
+
+7. Throughput pass
+   Once the algorithm moves the policy in the right direction, add the
+   EGGROLL-style population axis: vmap candidate rollout over thread_id,
+   optionally shard over devices, and avoid full actor-param copies by injecting
+   candidate adapter factors or perturbation coordinates in the actor forward.
+```
+
+First smoke tests:
+
+```text
+zero eta leaves checkpoint unchanged
+unused slots remain bitwise unchanged
+antithetic pair uses the same direction with opposite sign
+every updated active adapter remains rank 4 after retraction
+compressed checkpoint still evaluates before ES updates
+```
+
+## Remaining Design Questions
+
+The spectral diagnostic, compression test, and official repo scan resolved the
+initial target. Remaining questions are prototype/ablation choices:
+
+```text
+1. Should sigma be global, per-layer, or scaled by adapter norm?
+2. Should perturbations be independent per role/layer or partially shared?
+3. How many common seeds are needed per ES update?
+4. How often should held-out evaluation run?
+5. Do we need singular-value flooring during retraction?
+6. Is the small 2r x 2r retraction practical here, or is full SVD acceptable for current layer sizes?
+7. Should no-recurrent LoRASA be confirmed across more seeds/maps before becoming the default?
+8. After correctness is confirmed, how aggressively should we optimize the population-axis implementation?
 ```
 
 ## Working Research Claim
