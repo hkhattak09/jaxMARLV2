@@ -126,8 +126,12 @@ def _convert_jax_to_numpy(tree: Any) -> Any:
             return np.asarray(tree)
     if isinstance(tree, dict):
         return {k: _convert_jax_to_numpy(v) for k, v in tree.items()}
-    if isinstance(tree, (list, tuple)):
+    if isinstance(tree, list):
+        return [_convert_jax_to_numpy(item) for item in tree]
+    if isinstance(tree, tuple):
         converted = [_convert_jax_to_numpy(item) for item in tree]
+        if hasattr(tree, "_fields"):
+            return type(tree)(*converted)
         return type(tree)(converted)
     return tree
 
