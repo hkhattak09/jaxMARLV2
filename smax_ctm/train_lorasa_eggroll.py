@@ -339,6 +339,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             raw_scores,
             use_centered_ranks=not args.raw_score_weights,
         )
+        if direction_weights:
+            weights_text = ", ".join(
+                f"{direction_id}:{weight:+.6f}"
+                for direction_id, weight in sorted(direction_weights.items())
+            )
+            print(f"direction weights: {weights_text}")
         actor_params, update_metrics = re.apply_weighted_tangent_update(
             actor_params,
             direction_weights=direction_weights,

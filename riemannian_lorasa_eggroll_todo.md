@@ -57,6 +57,17 @@ Immediate next experiment: prototype adapter-only Riemannian ES on protoss_10_vs
   - [x] Use deterministic actions for ES evaluation.
     - Reuses the deterministic `argmax` evaluator in `smax_ctm/eval_smax.py`.
   - [ ] Run Colab smoke test for the ES trainer.
+    - No-op trainer smoke passed on Colab:
+      `sigma=0.0`, `eta=0.0`, `num_directions=1`, `num_envs=4`, `num_loops=1`.
+      Plus/minus candidates both scored `wr=1.0000`; run saved
+      `lorasa_eggroll_runs/lorasa_eggroll_20260429_210542/checkpoint_final.pkl`.
+      Post-update eval scored `wr=0.7500` on a separate seed with only 4
+      episodes, so treat it as a variance check rather than no-op equality.
+    - First nonzero trainer smoke also ran without crashing:
+      `lorasa_eggroll_runs/lorasa_eggroll_20260429_211008/checkpoint_final.pkl`.
+      Plus/minus both scored `wr=1.0000`, revealing that centered-rank ties
+      must average ranks; patched `centered_ranks` so equal antithetic scores
+      produce zero direction weight.
 
 - [ ] Run a smoke test on a tiny population and a small number of SMAX envs.
   - Validate checkpoint load/save.
@@ -66,6 +77,11 @@ Immediate next experiment: prototype adapter-only Riemannian ES on protoss_10_vs
   - Validate rank-4 adapters remain rank 4 after retraction.
   - Suggested first ES smoke command:
     `python smax_ctm/train_lorasa_eggroll.py --checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --num_epochs 1 --num_directions 1 --num_envs 4 --num_loops 1 --sigma 0.0 --eta 0.0`
+  - First no-op ES smoke passed in Colab.
+  - First nonzero ES smoke passed mechanically, but should be rerun after the
+    tie-aware centered-rank patch.
+  - Next smoke command:
+    `python smax_ctm/train_lorasa_eggroll.py --checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --num_epochs 1 --num_directions 1 --num_envs 4 --num_loops 1 --sigma 0.01 --eta 0.01`
 
 - [ ] Run first protoss_10_vs_10 ES experiment.
   - Report train-bundle fitness, held-out deterministic win rate, update norms,

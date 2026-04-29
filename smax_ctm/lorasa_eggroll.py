@@ -256,7 +256,11 @@ def stable_uint32_seed(*parts: Any) -> int:
 
 
 def centered_ranks(scores: Sequence[float]) -> np.ndarray:
-    """Convert scores to centered rank utilities in roughly [-0.5, 0.5]."""
+    """Convert scores to centered rank utilities in roughly [-0.5, 0.5].
+
+    Tied scores receive the average rank for their tie group so antithetic
+    candidates with equal fitness produce zero directional pressure.
+    """
 
     x = np.asarray(scores, dtype=np.float64)
     if x.ndim != 1:
@@ -268,7 +272,17 @@ def centered_ranks(scores: Sequence[float]) -> np.ndarray:
 
     order = np.argsort(x, kind="mergesort")
     ranks = np.empty_like(order, dtype=np.float64)
-    ranks[order] = np.arange(x.size, dtype=np.float64)
+    sorted_x = x[order]
+
+    start = 0
+    while start < x.size:
+        end = start + 1
+        while end < x.size and sorted_x[end] == sorted_x[start]:
+            end += 1
+        avg_rank = 0.5 * (start + end - 1)
+        ranks[order[start:end]] = avg_rank
+        start = end
+
     return ranks / (x.size - 1) - 0.5
 
 
@@ -822,6 +836,9 @@ def self_test() -> None:
     weights = antithetic_direction_weights([1.0, 0.0, -2.0, 3.0])
     if set(weights) != {0, 1}:
         raise AssertionError(f"unexpected antithetic weight keys: {weights}")
+    tied_weights = antithetic_direction_weights([1.0, 1.0])
+    if tied_weights != {0: 0.0}:
+        raise AssertionError(f"ties should produce zero direction weight: {tied_weights}")
 
 
 def _parse_slots(raw: str) -> Tuple[int, ...]:
