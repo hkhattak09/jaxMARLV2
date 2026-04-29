@@ -51,9 +51,12 @@ Immediate next experiment: prototype adapter-only Riemannian ES on protoss_10_vs
   - [x] Add Riemannian fixed-rank helpers: balanced factorization, tangent
     projection, truncated-SVD retraction, perturbation regeneration.
   - [ ] Run Colab smoke test for helper module.
-  - [ ] Add an ES evaluator/trainer entry point based on `smax_ctm/eval_smax.py`.
-  - [ ] Keep backbone and critic frozen; optimize actor adapters only.
-  - [ ] Use deterministic actions for ES evaluation.
+  - [x] Add an ES evaluator/trainer entry point based on `smax_ctm/eval_smax.py`.
+    - Added `smax_ctm/train_lorasa_eggroll.py` as a correctness-first sequential ES loop.
+  - [x] Keep backbone and critic frozen; optimize actor adapters only.
+  - [x] Use deterministic actions for ES evaluation.
+    - Reuses the deterministic `argmax` evaluator in `smax_ctm/eval_smax.py`.
+  - [ ] Run Colab smoke test for the ES trainer.
 
 - [ ] Run a smoke test on a tiny population and a small number of SMAX envs.
   - Validate checkpoint load/save.
@@ -61,6 +64,8 @@ Immediate next experiment: prototype adapter-only Riemannian ES on protoss_10_vs
   - Validate antithetic candidates use identical perturbation directions with
     opposite signs.
   - Validate rank-4 adapters remain rank 4 after retraction.
+  - Suggested first ES smoke command:
+    `python smax_ctm/train_lorasa_eggroll.py --checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --num_epochs 1 --num_directions 1 --num_envs 4 --num_loops 1 --sigma 0.0 --eta 0.0`
 
 - [ ] Run first protoss_10_vs_10 ES experiment.
   - Report train-bundle fitness, held-out deterministic win rate, update norms,
