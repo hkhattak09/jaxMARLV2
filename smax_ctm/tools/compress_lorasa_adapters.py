@@ -30,6 +30,20 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 
+_THIS_FILE = os.path.abspath(__file__)
+_TOOL_DIR = os.path.dirname(_THIS_FILE)
+_CANDIDATE_ROOTS = (
+    os.path.abspath(os.path.join(_TOOL_DIR, "..", "..")),
+    os.path.abspath(os.path.join(_TOOL_DIR, "..")),
+    os.getcwd(),
+)
+for _root in _CANDIDATE_ROOTS:
+    _smax_ctm_dir = os.path.join(_root, "smax_ctm")
+    for _path in (_root, _smax_ctm_dir):
+        if os.path.isdir(_path) and _path not in sys.path:
+            sys.path.insert(0, _path)
+
+
 try:
     from flax.traverse_util import flatten_dict, unflatten_dict
 
