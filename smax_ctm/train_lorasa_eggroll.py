@@ -171,6 +171,43 @@ def _metrics_to_json(metrics) -> List[Dict[str, Any]]:
     return [asdict(metric) for metric in metrics]
 
 
+def _summarize_update_metrics(metrics) -> Dict[str, Any]:
+    """Return compact JSON-friendly update diagnostics for one ES epoch."""
+
+    if not metrics:
+        return {
+            "num_metrics": 0,
+            "mean_delta_fro_norm": 0.0,
+            "mean_step_fro_norm": 0.0,
+            "max_step_fro_norm": 0.0,
+            "mean_singular_shift": 0.0,
+            "max_singular_shift": 0.0,
+        }
+
+    delta_norms = np.asarray([m.delta_fro_norm for m in metrics], dtype=np.float64)
+    step_norms = np.asarray([m.step_fro_norm for m in metrics], dtype=np.float64)
+    singular_shifts = np.asarray(
+        [
+            float(
+                np.linalg.norm(
+                    np.asarray(m.retracted_singular_values, dtype=np.float64)
+                    - np.asarray(m.singular_values, dtype=np.float64)
+                )
+            )
+            for m in metrics
+        ],
+        dtype=np.float64,
+    )
+    return {
+        "num_metrics": int(len(metrics)),
+        "mean_delta_fro_norm": float(delta_norms.mean()),
+        "mean_step_fro_norm": float(step_norms.mean()),
+        "max_step_fro_norm": float(step_norms.max()),
+        "mean_singular_shift": float(singular_shifts.mean()),
+        "max_singular_shift": float(singular_shifts.max()),
+    }
+
+
 def _write_jsonl(path: Path, row: Mapping[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as f:
@@ -357,6 +394,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             relative_scale=not args.no_relative_scale,
             singular_floor=args.singular_floor,
         )
+        update_summary = _summarize_update_metrics(update_metrics)
+        print(
+            "update summary: "
+            f"mean_step={update_summary['mean_step_fro_norm']:.6f} "
+            f"max_step={update_summary['max_step_fro_norm']:.6f} "
+            f"mean_singular_shift={update_summary['mean_singular_shift']:.6f}"
+        )
 
         post_update_eval = None
         if args.eval_every > 0 and ((epoch + 1) % args.eval_every == 0):
@@ -374,6 +418,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "candidate_records": candidate_records,
             "post_update_eval": post_update_eval,
             "num_update_metrics": len(update_metrics),
+            "update_summary": update_summary,
         }
         _write_jsonl(
             history_jsonl,

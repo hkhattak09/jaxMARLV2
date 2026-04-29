@@ -56,7 +56,7 @@ Immediate next experiment: prototype adapter-only Riemannian ES on protoss_10_vs
   - [x] Keep backbone and critic frozen; optimize actor adapters only.
   - [x] Use deterministic actions for ES evaluation.
     - Reuses the deterministic `argmax` evaluator in `smax_ctm/eval_smax.py`.
-  - [ ] Run Colab smoke test for the ES trainer.
+  - [x] Run Colab smoke test for the ES trainer.
     - No-op trainer smoke passed on Colab:
       `sigma=0.0`, `eta=0.0`, `num_directions=1`, `num_envs=4`, `num_loops=1`.
       Plus/minus candidates both scored `wr=1.0000`; run saved
@@ -78,7 +78,7 @@ Immediate next experiment: prototype adapter-only Riemannian ES on protoss_10_vs
       3:+0.428571`; post-update held-out smoke score was `wr=0.9688` over
       32 episodes.
 
-- [ ] Run a smoke test on a tiny population and a small number of SMAX envs.
+- [x] Run a smoke test on a tiny population and a small number of SMAX envs.
   - Validate checkpoint load/save.
   - Validate active slots `2, 3, 6` change and unused slots remain unchanged.
   - Validate antithetic candidates use identical perturbation directions with
@@ -94,12 +94,19 @@ Immediate next experiment: prototype adapter-only Riemannian ES on protoss_10_vs
     `python smax_ctm/train_lorasa_eggroll.py --checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --num_epochs 1 --num_directions 4 --num_envs 16 --num_loops 2 --sigma 0.05 --eta 0.005`
   - Multi-direction smoke produced nonzero update pressure.
   - Added before/after validation mode to `smax_ctm/lorasa_eggroll.py`.
-  - Next validation command:
+  - Validation command:
     `python smax_ctm/lorasa_eggroll.py --reference_checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --checkpoint lorasa_eggroll_runs/lorasa_eggroll_20260429_211709/checkpoint_final.pkl --require_active_change --validation_json diagnostics/lorasa_eggroll_update_validation.json`
+  - Validation passed: `num_violations=0`, `active_slot_pairs_changed=21`,
+    `active_slot_pairs_unchanged=0`, `changed_non_active_leaves=0`,
+    `active_rank_violations=0`.
 
 - [ ] Run first protoss_10_vs_10 ES experiment.
   - Report train-bundle fitness, held-out deterministic win rate, update norms,
     sigma/eta, active slot norms, and singular values.
+  - Suggested first pilot command:
+    `python smax_ctm/train_lorasa_eggroll.py --checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --num_epochs 5 --num_directions 8 --num_envs 32 --num_loops 4 --sigma 0.05 --eta 0.003 --eval_every 1 --save_every 1`
+  - Use the original Schedule A compressed checkpoint as the source, not any
+    smoke-test output checkpoint.
 
 ## Rank Compression Schedules
 
