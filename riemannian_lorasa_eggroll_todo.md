@@ -68,6 +68,15 @@ Immediate next experiment: prototype adapter-only Riemannian ES on protoss_10_vs
       Plus/minus both scored `wr=1.0000`, revealing that centered-rank ties
       must average ranks; patched `centered_ranks` so equal antithetic scores
       produce zero direction weight.
+    - Tie-aware nonzero trainer smoke passed:
+      `lorasa_eggroll_runs/lorasa_eggroll_20260429_211428/checkpoint_final.pkl`.
+      Plus/minus both scored `wr=1.0000` and collapsed to
+      `direction weights: 0:+0.000000`.
+    - First non-tied multi-direction smoke passed:
+      `lorasa_eggroll_runs/lorasa_eggroll_20260429_211709/checkpoint_final.pkl`.
+      Direction weights were `0:+0.000000, 1:+0.428571, 2:-1.000000,
+      3:+0.428571`; post-update held-out smoke score was `wr=0.9688` over
+      32 episodes.
 
 - [ ] Run a smoke test on a tiny population and a small number of SMAX envs.
   - Validate checkpoint load/save.
@@ -78,10 +87,15 @@ Immediate next experiment: prototype adapter-only Riemannian ES on protoss_10_vs
   - Suggested first ES smoke command:
     `python smax_ctm/train_lorasa_eggroll.py --checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --num_epochs 1 --num_directions 1 --num_envs 4 --num_loops 1 --sigma 0.0 --eta 0.0`
   - First no-op ES smoke passed in Colab.
-  - First nonzero ES smoke passed mechanically, but should be rerun after the
-    tie-aware centered-rank patch.
-  - Next smoke command:
-    `python smax_ctm/train_lorasa_eggroll.py --checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --num_epochs 1 --num_directions 1 --num_envs 4 --num_loops 1 --sigma 0.01 --eta 0.01`
+  - Tie-aware nonzero ES smoke passed; tied scores now produce zero update
+    pressure as expected.
+  - Next smoke command should use more directions/episodes to get at least one
+    non-tied antithetic pair:
+    `python smax_ctm/train_lorasa_eggroll.py --checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --num_epochs 1 --num_directions 4 --num_envs 16 --num_loops 2 --sigma 0.05 --eta 0.005`
+  - Multi-direction smoke produced nonzero update pressure.
+  - Added before/after validation mode to `smax_ctm/lorasa_eggroll.py`.
+  - Next validation command:
+    `python smax_ctm/lorasa_eggroll.py --reference_checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --checkpoint lorasa_eggroll_runs/lorasa_eggroll_20260429_211709/checkpoint_final.pkl --require_active_change --validation_json diagnostics/lorasa_eggroll_update_validation.json`
 
 - [ ] Run first protoss_10_vs_10 ES experiment.
   - Report train-bundle fitness, held-out deterministic win rate, update norms,

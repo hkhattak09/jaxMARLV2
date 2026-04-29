@@ -680,6 +680,140 @@ def summarize_actor_adapters(
     }
 
 
+def _leaf_arrays_equal(left: Any, right: Any) -> bool:
+    return np.array_equal(np.asarray(left), np.asarray(right))
+
+
+def _numerical_rank(s: np.ndarray, rel_tol: float = 1e-6) -> int:
+    if s.size == 0 or s[0] <= 0:
+        return 0
+    return int(np.sum(s > (rel_tol * s[0])))
+
+
+def validate_actor_update_against_reference(
+    reference_actor_params: Any,
+    updated_actor_params: Any,
+    active_slots: Sequence[int] = DEFAULT_ACTIVE_SLOTS,
+    target_rank: int = DEFAULT_TARGET_RANK,
+    block_patterns: Sequence[str] = NO_RECURRENT_BLOCK_PATTERNS,
+    require_active_change: bool = False,
+    rank_rel_tol: float = 1e-6,
+) -> Dict[str, Any]:
+    """Validate that only selected active LoRA slots changed after an update."""
+
+    active_set = set(int(slot) for slot in active_slots)
+    ref_flat = flatten_tree(reference_actor_params)
+    upd_flat = flatten_tree(updated_actor_params)
+    violations: List[str] = []
+
+    ref_keys = set(ref_flat)
+    upd_keys = set(upd_flat)
+    for key in sorted(ref_keys - upd_keys):
+        violations.append(f"missing updated leaf: {path_to_str(key)}")
+    for key in sorted(upd_keys - ref_keys):
+        violations.append(f"extra updated leaf: {path_to_str(key)}")
+
+    ref_blocks_by_path = {block.path: block for block in discover_lora_blocks(reference_actor_params)}
+    upd_blocks_by_path = {block.path: block for block in discover_lora_blocks(updated_actor_params)}
+    if set(ref_blocks_by_path) != set(upd_blocks_by_path):
+        violations.append(
+            "LoRA block path mismatch: "
+            f"reference={sorted(ref_blocks_by_path)} updated={sorted(upd_blocks_by_path)}"
+        )
+
+    selected_paths = {
+        block.path for block in select_lora_blocks(ref_blocks_by_path.values(), block_patterns)
+    }
+    lora_leaf_to_block: Dict[Tuple[str, ...], Tuple[LoRABlock, str]] = {}
+    for block in ref_blocks_by_path.values():
+        lora_leaf_to_block[block.lora_a_key] = (block, "lora_a")
+        lora_leaf_to_block[block.lora_b_key] = (block, "lora_b")
+
+    unchanged_non_active_leaves = 0
+    changed_non_active_leaves = 0
+    active_slot_pairs_changed = 0
+    active_slot_pairs_unchanged = 0
+    active_rank_violations = 0
+
+    for key in sorted(ref_keys & upd_keys):
+        ref_value = ref_flat[key]
+        upd_value = upd_flat[key]
+        lora_info = lora_leaf_to_block.get(key)
+        if lora_info is None:
+            if _leaf_arrays_equal(ref_value, upd_value):
+                unchanged_non_active_leaves += 1
+            else:
+                changed_non_active_leaves += 1
+                violations.append(f"non-LoRA actor leaf changed: {path_to_str(key)}")
+            continue
+
+        block, leaf_name = lora_info
+        ref_arr = np.asarray(ref_value)
+        upd_arr = np.asarray(upd_value)
+        if ref_arr.shape != upd_arr.shape:
+            violations.append(
+                f"{leaf_name} shape changed at {block.path}: {ref_arr.shape} -> {upd_arr.shape}"
+            )
+            continue
+
+        for slot in range(block.num_slots):
+            is_allowed_active = block.path in selected_paths and slot in active_set
+            slot_equal = np.array_equal(ref_arr[slot], upd_arr[slot])
+            if is_allowed_active:
+                continue
+            if slot_equal:
+                unchanged_non_active_leaves += 1
+            else:
+                changed_non_active_leaves += 1
+                violations.append(f"frozen {leaf_name} slot {slot} changed at {block.path}")
+
+    for block in select_lora_blocks(ref_blocks_by_path.values(), block_patterns):
+        upd_block = upd_blocks_by_path.get(block.path)
+        if upd_block is None:
+            continue
+        ref_a = np.asarray(ref_flat[block.lora_a_key])
+        ref_b = np.asarray(ref_flat[block.lora_b_key])
+        upd_a = np.asarray(upd_flat[upd_block.lora_a_key])
+        upd_b = np.asarray(upd_flat[upd_block.lora_b_key])
+        for slot in sorted(active_set):
+            if slot < 0 or slot >= block.num_slots:
+                violations.append(f"active slot {slot} out of range for {block.path}")
+                continue
+
+            a_equal = np.array_equal(ref_a[slot], upd_a[slot])
+            b_equal = np.array_equal(ref_b[slot], upd_b[slot])
+            if a_equal and b_equal:
+                active_slot_pairs_unchanged += 1
+                if require_active_change:
+                    violations.append(f"active slot {slot} did not change at {block.path}")
+            else:
+                active_slot_pairs_changed += 1
+
+            delta = upd_a[slot].astype(np.float64) @ upd_b[slot].astype(np.float64)
+            singular_values = np.linalg.svd(delta, compute_uv=False)
+            rank = _numerical_rank(singular_values, rel_tol=rank_rel_tol)
+            if rank != target_rank:
+                active_rank_violations += 1
+                violations.append(
+                    f"active slot {slot} rank {rank} != {target_rank} at {block.path}"
+                )
+
+    return {
+        "passed": not violations,
+        "num_violations": len(violations),
+        "violations": violations,
+        "active_slots": sorted(active_set),
+        "selected_block_paths": sorted(selected_paths),
+        "active_slot_pairs_changed": active_slot_pairs_changed,
+        "active_slot_pairs_unchanged": active_slot_pairs_unchanged,
+        "changed_non_active_leaves": changed_non_active_leaves,
+        "unchanged_non_active_leaves": unchanged_non_active_leaves,
+        "active_rank_violations": active_rank_violations,
+        "target_rank": int(target_rank),
+        "require_active_change": bool(require_active_change),
+    }
+
+
 def _fake_actor_params(seed: int = 123) -> Dict[str, Any]:
     rng = np.random.default_rng(seed)
     num_slots = 9
@@ -828,6 +962,16 @@ def self_test() -> None:
     _assert_tree_lora_slots_equal(actor_params, plus_params, inactive_slots)
     _assert_tree_lora_slots_equal(actor_params, minus_params, inactive_slots)
 
+    plus_validation = validate_actor_update_against_reference(
+        actor_params,
+        plus_params,
+        active_slots=active_slots,
+        target_rank=DEFAULT_TARGET_RANK,
+        require_active_change=True,
+    )
+    if not plus_validation["passed"]:
+        raise AssertionError(f"plus candidate validation failed: {plus_validation}")
+
     ranks = _delta_ranks_for_selected(plus_params, active_slots, DEFAULT_TARGET_RANK)
     for path, slot, rank in ranks:
         if rank > DEFAULT_TARGET_RANK:
@@ -857,7 +1001,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     )
     parser.add_argument("--self_test", action="store_true", help="Run internal self-test")
     parser.add_argument("--checkpoint", default=None, help="Checkpoint to inspect")
+    parser.add_argument(
+        "--reference_checkpoint",
+        default=None,
+        help="Optional source checkpoint for before/after update validation",
+    )
     parser.add_argument("--summary_json", default=None, help="Optional path for adapter summary JSON")
+    parser.add_argument(
+        "--validation_json",
+        default=None,
+        help="Optional path for before/after validation JSON",
+    )
     parser.add_argument(
         "--active_slots",
         default="2,3,6",
@@ -865,6 +1019,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help="Comma-separated active adapter slots",
     )
     parser.add_argument("--target_rank", type=int, default=DEFAULT_TARGET_RANK)
+    parser.add_argument(
+        "--require_active_change",
+        action="store_true",
+        help="Fail validation if any selected active adapter slot is unchanged",
+    )
+    parser.add_argument("--rank_rel_tol", type=float, default=1e-6)
 
     args = parser.parse_args(argv)
 
@@ -877,6 +1037,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         parser.error("--checkpoint is required unless --self_test is used")
 
     ckpt = load_checkpoint(args.checkpoint)
+    if args.reference_checkpoint is not None:
+        ref_ckpt = load_checkpoint(args.reference_checkpoint)
+        validation = validate_actor_update_against_reference(
+            extract_actor_params(ref_ckpt),
+            extract_actor_params(ckpt),
+            active_slots=args.active_slots,
+            target_rank=args.target_rank,
+            require_active_change=args.require_active_change,
+            rank_rel_tol=args.rank_rel_tol,
+        )
+        text = json.dumps(validation, indent=2)
+        print(text)
+        if args.validation_json:
+            out_path = Path(args.validation_json)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_text(text + "\n")
+        return 0 if validation["passed"] else 1
+
     summary = summarize_actor_adapters(
         extract_actor_params(ckpt),
         active_slots=args.active_slots,
