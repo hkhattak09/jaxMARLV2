@@ -695,7 +695,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     def _batched_eval(rng, batched_actor_params):
         return jax.vmap(
             lambda one_params: train_eval_fn(rng, one_params),
-            in_axes=population_in_axes,
+            in_axes=(population_in_axes,),
         )(batched_actor_params)
 
     batched_eval = jax.jit(_batched_eval)

@@ -146,6 +146,9 @@ Immediate next experiment: single-GPU population-axis Riemannian LoRASA-EGGROLL
     `python smax_ctm/train_lorasa_eggroll_pop.py --checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --num_epochs 1 --num_directions 2 --population_batch_size 4 --num_envs_per_candidate 4 --episodes_per_candidate 4 --heldout_num_envs 4 --heldout_episodes 4 --sigma 0.0 --eta 0.0 --fitness_mode win_rate --print_candidates`
   - Expected no-op signal: one chunk with 4 candidates, candidate rows print,
     update summary has zero singular shift, checkpoint saves, no crash.
+  - First no-op population smoke exposed a JAX `vmap` API issue:
+    single-argument pytree `in_axes` must be wrapped as `(population_in_axes,)`.
+    Patched `smax_ctm/train_lorasa_eggroll_pop.py`.
   - Small nonzero population smoke command:
     `python smax_ctm/train_lorasa_eggroll_pop.py --checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --num_epochs 1 --num_directions 4 --population_batch_size 4 --num_envs_per_candidate 8 --episodes_per_candidate 16 --heldout_num_envs 8 --heldout_episodes 16 --sigma 0.05 --eta 0.0015 --print_candidates`
   - If the nonzero run reports nonzero direction weights, validate with:
