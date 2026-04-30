@@ -258,7 +258,7 @@ def make_train(config):
                 v_values_actor = v_values.squeeze(0).reshape(config["NUM_ACTORS"])
 
                 q_taken = jnp.take_along_axis(
-                    q_values_actor, action[:, None], axis=-1
+                    q_values_actor, action.squeeze()[:, None], axis=-1
                 ).squeeze(-1)
 
                 # STEP ENV
