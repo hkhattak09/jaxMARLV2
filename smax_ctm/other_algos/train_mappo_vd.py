@@ -152,6 +152,8 @@ class Transition(NamedTuple):
     info: jnp.ndarray
     avail_actions: jnp.ndarray
     policy_probs: jnp.ndarray
+    actor_hstate: jnp.ndarray
+    critic_hstate: jnp.ndarray
 
 
 def batchify(x: dict, agent_list, num_actors):
@@ -172,12 +174,14 @@ def make_train(config):
     config["MINIBATCH_SIZE"] = config["NUM_ACTORS"] * config["NUM_STEPS"] // config["NUM_MINIBATCHES"]
     config["CLIP_EPS"] = config["CLIP_PARAM"] / env.num_agents if config["SCALE_CLIP_EPS"] else config["CLIP_PARAM"]
 
-    # MAPPO-VD requires complete environment groups for the mixer.
-    # Minibatching over actors would break the agent-env grouping inside VDCriticRNN.
-    if config["NUM_MINIBATCHES"] != 1:
+    config["ACTOR_NUM_MINI_BATCH"] = config.get("ACTOR_NUM_MINI_BATCH", config.get("NUM_MINIBATCHES", 1))
+    config["CRITIC_NUM_MINI_BATCH"] = config.get("CRITIC_NUM_MINI_BATCH", 1)
+
+    use_recurrent_policy = config.get("use_recurrent_policy", True)
+    if not use_recurrent_policy and config["NUM_MINIBATCHES"] != 1:
         raise NotImplementedError(
             "MAPPO-VD currently requires NUM_MINIBATCHES=1 (and CRITIC_NUM_MINI_BATCH=1) "
-            "because the QMIX/VDN mixer needs complete environment groups."
+            "when use_recurrent_policy=False, because the QMIX/VDN mixer needs complete environment groups."
         )
 
     env = SMAXWorldStateWrapper(env, config["OBS_WITH_AGENT_ID"])
@@ -285,6 +289,9 @@ def make_train(config):
                 obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
                 ac_in = (obs_batch[np.newaxis, :], last_done[np.newaxis, :], avail_actions)
 
+                ac_hstate_in = hstates[0]
+                cr_hstate_in = hstates[1]
+
                 ac_hstate, pi = actor_network.apply(train_states[0].params, hstates[0], ac_in)
                 action = pi.sample(seed=_rng)
                 log_prob = pi.log_prob(action)
@@ -335,6 +342,8 @@ def make_train(config):
                     info,
                     avail_actions,
                     policy_probs.squeeze(),
+                    ac_hstate_in,
+                    cr_hstate_in,
                 )
                 runner_state = (train_states, env_state, obsv, done_batch, (ac_hstate, cr_hstate), value_norm_state, rng)
                 return runner_state, transition
@@ -403,53 +412,175 @@ def make_train(config):
             if use_valuenorm and value_norm_state is not None:
                 value_norm_state = value_norm_update(value_norm_state, targets[..., None])
 
-            def _update_epoch(update_state, unused):
-                def _update_minbatch(train_states, batch_info):
-                    actor_train_state, critic_train_state = train_states
-                    ac_init_hstate, cr_init_hstate, traj_batch, advantages, targets = batch_info
+            use_recurrent = config.get("use_recurrent_policy", True)
+            data_chunk_length = config.get("DATA_CHUNK_LENGTH", config["NUM_STEPS"])
+            chunks_per_rollout = config["NUM_STEPS"] // data_chunk_length
+            actor_num_mini_batch = config["ACTOR_NUM_MINI_BATCH"]
+            critic_num_mini_batch = config["CRITIC_NUM_MINI_BATCH"]
 
-                    def _actor_loss_fn(actor_params, init_hstate, traj_batch, gae):
+            def _actor_chunks(x):
+                x = x.swapaxes(0, 1)
+                return x.reshape((config["NUM_ACTORS"] * chunks_per_rollout, data_chunk_length) + x.shape[2:])
+
+            def _critic_chunks(x):
+                x = x.swapaxes(0, 1)
+                return x.reshape((config["NUM_ACTORS"] * chunks_per_rollout, data_chunk_length) + x.shape[2:])
+
+            norm_advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+            if use_recurrent:
+                actor_sample_count = config["NUM_ACTORS"] * chunks_per_rollout
+                critic_sample_count = config["NUM_ACTORS"] * chunks_per_rollout
+                actor_mini_batch_size = actor_sample_count // actor_num_mini_batch
+                critic_mini_batch_size = critic_sample_count // critic_num_mini_batch
+
+                actor_obs = _actor_chunks(traj_batch.obs)
+                actor_done = _actor_chunks(traj_batch.done)
+                actor_avail = _actor_chunks(traj_batch.avail_actions)
+                actor_action = _actor_chunks(traj_batch.action)
+                actor_log_prob = _actor_chunks(traj_batch.log_prob)
+                actor_norm_adv = _actor_chunks(norm_advantages)
+                actor_init_hstate = _actor_chunks(traj_batch.actor_hstate)[:, 0]
+
+                critic_obs = _critic_chunks(traj_batch.obs)
+                critic_world_state = _critic_chunks(traj_batch.world_state)
+                critic_done = _critic_chunks(traj_batch.done)
+                critic_action = _critic_chunks(traj_batch.action)
+                critic_policy_probs = _critic_chunks(traj_batch.policy_probs)
+                critic_targets = _critic_chunks(targets)
+                critic_value_old = _critic_chunks(traj_batch.value)
+                critic_init_hstate = _critic_chunks(traj_batch.critic_hstate)[:, 0]
+
+            def _actor_update_epoch(update_state, unused):
+                def _actor_update_minbatch(train_states, batch_info):
+                    actor_train_state, critic_train_state = train_states
+
+                    if use_recurrent:
+                        mb_obs, mb_done, mb_avail, mb_action, mb_log_prob, mb_adv, ac_init_hstate_mb = batch_info
+                    else:
+                        ac_init_hstate, cr_init_hstate, traj_batch_mb, advantages_mb, targets_mb = batch_info
+
+                    def _actor_loss_fn(actor_params, init_hstate, traj_obs, traj_done, traj_avail, traj_action, traj_log_prob, gae):
                         _, pi = actor_network.apply(
-                            actor_params,
-                            init_hstate.squeeze(),
-                            (traj_batch.obs, traj_batch.done, traj_batch.avail_actions),
+                            actor_params, init_hstate, (traj_obs, traj_done, traj_avail)
                         )
-                        log_prob = pi.log_prob(traj_batch.action)
-                        logratio = log_prob - traj_batch.log_prob
-                        ratio = jnp.exp(logratio)
-                        gae = (gae - gae.mean()) / (gae.std() + 1e-8)
-                        loss_actor1 = ratio * gae
-                        loss_actor2 = jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"]) * gae
-                        loss_actor = -jnp.minimum(loss_actor1, loss_actor2).mean()
-                        entropy = pi.entropy().mean()
+                        log_prob = pi.log_prob(traj_action)
+                        if use_recurrent:
+                            logratio = (log_prob - traj_log_prob).reshape(-1)
+                            ratio = jnp.exp(logratio)
+                            gae_flat = gae.reshape(-1)
+                            loss_actor1 = ratio * gae_flat
+                            loss_actor2 = jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"]) * gae_flat
+                            loss_actor = -jnp.minimum(loss_actor1, loss_actor2).mean()
+                            entropy = pi.entropy().reshape(-1).mean()
+                        else:
+                            logratio = log_prob - traj_log_prob
+                            ratio = jnp.exp(logratio)
+                            gae_norm = (gae - gae.mean()) / (gae.std() + 1e-8)
+                            loss_actor1 = ratio * gae_norm
+                            loss_actor2 = jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"]) * gae_norm
+                            loss_actor = -jnp.minimum(loss_actor1, loss_actor2).mean()
+                            entropy = pi.entropy().mean()
 
                         approx_kl = ((ratio - 1) - logratio).mean()
                         clip_frac = jnp.mean(jnp.abs(ratio - 1) > config["CLIP_EPS"])
                         actor_loss = loss_actor - config["ENT_COEF"] * entropy
                         return actor_loss, (loss_actor, entropy, ratio, approx_kl, clip_frac)
 
-                    def _critic_loss_fn(critic_params, init_hstate, traj_batch, targets):
-                        cr_in = (
-                            traj_batch.obs,
-                            traj_batch.world_state,
-                            traj_batch.done,
-                            traj_batch.action,
-                            traj_batch.policy_probs,
+                    if use_recurrent:
+                        actor_grad_fn = jax.value_and_grad(_actor_loss_fn, has_aux=True)
+                        actor_loss, actor_grads = actor_grad_fn(actor_train_state.params, ac_init_hstate_mb, mb_obs, mb_done, mb_avail, mb_action, mb_log_prob, mb_adv)
+                    else:
+                        actor_grad_fn = jax.value_and_grad(_actor_loss_fn, has_aux=True)
+                        actor_loss, actor_grads = actor_grad_fn(actor_train_state.params, ac_init_hstate, traj_batch_mb.obs, traj_batch_mb.done, traj_batch_mb.avail_actions, traj_batch_mb.action, traj_batch_mb.log_prob, advantages_mb)
+
+                    actor_grad_norm = optax.global_norm(actor_grads)
+
+                    actor_train_state = actor_train_state.apply_gradients(grads=actor_grads)
+
+                    actor_loss_info = {
+                        "actor_loss": actor_loss[0],
+                        "entropy": actor_loss[1][1],
+                        "approx_kl": actor_loss[1][3],
+                        "clip_frac": actor_loss[1][4],
+                        "actor_grad_norm": actor_grad_norm,
+                    }
+                    return (actor_train_state, critic_train_state), actor_loss_info
+
+                train_states, init_hstates, traj_batch, advantages, targets, rng = update_state
+                rng, _rng = jax.random.split(rng)
+
+                if use_recurrent:
+                    perm = jax.random.permutation(_rng, actor_sample_count)
+                    def _shuffle_reshape(x):
+                        x = jnp.take(x, perm, axis=0)
+                        return x.reshape(actor_num_mini_batch, actor_mini_batch_size, *x.shape[1:])
+
+                    shuffled_obs = _shuffle_reshape(actor_obs)
+                    shuffled_done = _shuffle_reshape(actor_done)
+                    shuffled_avail = _shuffle_reshape(actor_avail)
+                    shuffled_action = _shuffle_reshape(actor_action)
+                    shuffled_log_prob = _shuffle_reshape(actor_log_prob)
+                    shuffled_norm_adv = _shuffle_reshape(actor_norm_adv)
+                    shuffled_init_hstate = jnp.take(actor_init_hstate, perm, axis=0)
+                    shuffled_init_hstate = shuffled_init_hstate.reshape(actor_num_mini_batch, actor_mini_batch_size, *shuffled_init_hstate.shape[1:])
+
+                    def scan_actor_minibatch(train_states, i):
+                        mb_data = (
+                            shuffled_obs[i].swapaxes(0, 1),
+                            shuffled_done[i].swapaxes(0, 1),
+                            shuffled_avail[i].swapaxes(0, 1),
+                            shuffled_action[i].swapaxes(0, 1),
+                            shuffled_log_prob[i].swapaxes(0, 1),
+                            shuffled_norm_adv[i].swapaxes(0, 1),
+                            shuffled_init_hstate[i],
                         )
+                        train_states, info = _actor_update_minbatch(train_states, mb_data)
+                        return train_states, info
+
+                    train_states, actor_loss_info = jax.lax.scan(scan_actor_minibatch, train_states, jnp.arange(actor_num_mini_batch))
+                else:
+                    init_hstates_reshaped = jax.tree.map(lambda x: jnp.reshape(x, (1, config["NUM_ACTORS"], -1)), init_hstates)
+                    batch = (init_hstates_reshaped[0], init_hstates_reshaped[1], traj_batch, advantages.squeeze(), targets.squeeze())
+                    permutation = jax.random.permutation(_rng, config["NUM_ACTORS"])
+                    shuffled_batch = jax.tree.map(lambda x: jnp.take(x, permutation, axis=1), batch)
+                    minibatches = jax.tree.map(
+                        lambda x: jnp.swapaxes(
+                            jnp.reshape(x, [x.shape[0], config["NUM_MINIBATCHES"], -1] + list(x.shape[2:])),
+                            1, 0
+                        ),
+                        shuffled_batch,
+                    )
+                    train_states, actor_loss_info = jax.lax.scan(_actor_update_minbatch, train_states, minibatches)
+                    init_hstates = jax.tree.map(lambda x: x.squeeze(), init_hstates_reshaped)
+
+                update_state = (train_states, init_hstates, traj_batch, advantages, targets, rng)
+                return update_state, actor_loss_info
+
+            def _critic_update_epoch(update_state, unused):
+                def _critic_update_minbatch(train_states, batch_info):
+                    actor_train_state, critic_train_state = train_states
+
+                    if use_recurrent:
+                        mb_obs, mb_world_state, mb_done, mb_action, mb_policy_probs, mb_targets, mb_value_old, cr_init_hstate_mb = batch_info
+                    else:
+                        ac_init_hstate, cr_init_hstate, traj_batch_mb, advantages_mb, targets_mb = batch_info
+
+                    def _critic_loss_fn(critic_params, init_hstate, cr_in_obs, cr_in_world_state, cr_in_done, cr_in_action, cr_in_policy_probs, targets, value_old):
+                        cr_in = (cr_in_obs, cr_in_world_state, cr_in_done, cr_in_action, cr_in_policy_probs)
                         _, (joint_q_value, _, _) = critic_network.apply(
-                            critic_params, init_hstate.squeeze(), cr_in
+                            critic_params, init_hstate, cr_in
                         )
                         joint_q_value = joint_q_value.squeeze()
 
-                        # Normalize targets if using ValueNorm
                         if use_valuenorm and value_norm_state is not None:
                             targets_norm = value_norm_normalize(value_norm_state, targets[..., None]).squeeze(-1)
                         else:
                             targets_norm = targets
 
                         if config.get("use_clipped_value_loss", True):
-                            value_pred_clipped = traj_batch.value + (
-                                joint_q_value - traj_batch.value
+                            value_pred_clipped = value_old + (
+                                joint_q_value - value_old
                             ).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
                             if config.get("use_huber_loss", False):
                                 delta = config.get("huber_delta", 10.0)
@@ -475,65 +606,102 @@ def make_train(config):
                         critic_loss = config["VALUE_LOSS_COEF"] * value_loss
                         return critic_loss, (value_loss,)
 
-                    actor_grad_fn = jax.value_and_grad(_actor_loss_fn, has_aux=True)
-                    actor_loss, actor_grads = actor_grad_fn(
-                        actor_train_state.params, ac_init_hstate, traj_batch, advantages
-                    )
-                    critic_grad_fn = jax.value_and_grad(_critic_loss_fn, has_aux=True)
-                    critic_loss, critic_grads = critic_grad_fn(
-                        critic_train_state.params, cr_init_hstate, traj_batch, targets
-                    )
+                    if use_recurrent:
+                        critic_grad_fn = jax.value_and_grad(_critic_loss_fn, has_aux=True)
+                        critic_loss, critic_grads = critic_grad_fn(
+                            critic_train_state.params, cr_init_hstate_mb,
+                            mb_obs, mb_world_state, mb_done, mb_action, mb_policy_probs,
+                            mb_targets, mb_value_old
+                        )
+                    else:
+                        critic_grad_fn = jax.value_and_grad(_critic_loss_fn, has_aux=True)
+                        critic_loss, critic_grads = critic_grad_fn(
+                            critic_train_state.params, cr_init_hstate.squeeze(),
+                            traj_batch_mb.obs, traj_batch_mb.world_state, traj_batch_mb.done,
+                            traj_batch_mb.action, traj_batch_mb.policy_probs,
+                            targets_mb, traj_batch_mb.value
+                        )
 
-                    actor_grad_norm = optax.global_norm(actor_grads)
                     critic_grad_norm = optax.global_norm(critic_grads)
 
-                    actor_train_state = actor_train_state.apply_gradients(grads=actor_grads)
                     critic_train_state = critic_train_state.apply_gradients(grads=critic_grads)
 
-                    total_loss = actor_loss[0] + critic_loss[0]
-                    loss_info = {
-                        "total_loss": total_loss,
-                        "actor_loss": actor_loss[0],
+                    critic_loss_info = {
                         "value_loss": critic_loss[1][0],
-                        "entropy": actor_loss[1][1],
-                        "approx_kl": actor_loss[1][3],
-                        "clip_frac": actor_loss[1][4],
-                        "actor_grad_norm": actor_grad_norm,
                         "critic_grad_norm": critic_grad_norm,
                     }
-                    return (actor_train_state, critic_train_state), loss_info
+                    return (actor_train_state, critic_train_state), critic_loss_info
 
                 train_states, init_hstates, traj_batch, advantages, targets, rng = update_state
                 rng, _rng = jax.random.split(rng)
-                init_hstates = jax.tree.map(
-                    lambda x: jnp.reshape(x, (1, config["NUM_ACTORS"], -1)), init_hstates
-                )
 
-                batch = (init_hstates[0], init_hstates[1], traj_batch, advantages.squeeze(), targets.squeeze())
-                permutation = jax.random.permutation(_rng, config["NUM_ACTORS"])
-                shuffled_batch = jax.tree.map(lambda x: jnp.take(x, permutation, axis=1), batch)
-                minibatches = jax.tree.map(
-                    lambda x: jnp.swapaxes(
-                        jnp.reshape(x, [x.shape[0], config["NUM_MINIBATCHES"], -1] + list(x.shape[2:])),
-                        1, 0
-                    ),
-                    shuffled_batch,
-                )
+                if use_recurrent:
+                    perm = jax.random.permutation(_rng, critic_sample_count)
+                    def _shuffle_reshape(x):
+                        x = jnp.take(x, perm, axis=0)
+                        return x.reshape(critic_num_mini_batch, critic_mini_batch_size, *x.shape[1:])
 
-                train_states, loss_info = jax.lax.scan(_update_minbatch, train_states, minibatches)
-                update_state = (
-                    train_states,
-                    jax.tree.map(lambda x: x.squeeze(), init_hstates),
-                    traj_batch,
-                    advantages,
-                    targets,
-                    rng,
-                )
-                return update_state, loss_info
+                    shuffled_obs = _shuffle_reshape(critic_obs)
+                    shuffled_world_state = _shuffle_reshape(critic_world_state)
+                    shuffled_done = _shuffle_reshape(critic_done)
+                    shuffled_action = _shuffle_reshape(critic_action)
+                    shuffled_policy_probs = _shuffle_reshape(critic_policy_probs)
+                    shuffled_targets = _shuffle_reshape(critic_targets)
+                    shuffled_value_old = _shuffle_reshape(critic_value_old)
+                    shuffled_init_hstate = jnp.take(critic_init_hstate, perm, axis=0)
+                    shuffled_init_hstate = shuffled_init_hstate.reshape(critic_num_mini_batch, critic_mini_batch_size, *shuffled_init_hstate.shape[1:])
+
+                    def scan_critic_minibatch(train_states, i):
+                        mb_data = (
+                            shuffled_obs[i].swapaxes(0, 1),
+                            shuffled_world_state[i].swapaxes(0, 1),
+                            shuffled_done[i].swapaxes(0, 1),
+                            shuffled_action[i].swapaxes(0, 1),
+                            shuffled_policy_probs[i].swapaxes(0, 1),
+                            shuffled_targets[i].swapaxes(0, 1),
+                            shuffled_value_old[i].swapaxes(0, 1),
+                            shuffled_init_hstate[i],
+                        )
+                        train_states, info = _critic_update_minbatch(train_states, mb_data)
+                        return train_states, info
+
+                    train_states, critic_loss_info = jax.lax.scan(scan_critic_minibatch, train_states, jnp.arange(critic_num_mini_batch))
+                else:
+                    init_hstates = jax.tree.map(
+                        lambda x: jnp.reshape(x, (1, config["NUM_ACTORS"], -1)), init_hstates
+                    )
+                    batch = (init_hstates[0], init_hstates[1], traj_batch, advantages.squeeze(), targets.squeeze())
+                    permutation = jax.random.permutation(_rng, config["NUM_ACTORS"])
+                    shuffled_batch = jax.tree.map(lambda x: jnp.take(x, permutation, axis=1), batch)
+                    minibatches = jax.tree.map(
+                        lambda x: jnp.swapaxes(
+                            jnp.reshape(x, [x.shape[0], config["NUM_MINIBATCHES"], -1] + list(x.shape[2:])),
+                            1, 0
+                        ),
+                        shuffled_batch,
+                    )
+
+                    train_states, critic_loss_info = jax.lax.scan(_critic_update_minbatch, train_states, minibatches)
+                    init_hstates = jax.tree.map(lambda x: x.squeeze(), init_hstates)
+
+                update_state = (train_states, init_hstates, traj_batch, advantages, targets, rng)
+                return update_state, critic_loss_info
 
             update_state = (train_states, initial_hstates, traj_batch, advantages, targets, rng)
-            update_state, loss_info = jax.lax.scan(_update_epoch, update_state, None, config["UPDATE_EPOCHS"])
-            loss_info = jax.tree.map(lambda x: x.mean(), loss_info)
+            update_state, actor_loss_info = jax.lax.scan(_actor_update_epoch, update_state, None, config["UPDATE_EPOCHS"])
+            update_state, critic_loss_info = jax.lax.scan(_critic_update_epoch, update_state, None, config["CRITIC_EPOCH"])
+            actor_loss_info = jax.tree.map(lambda x: x.mean(), actor_loss_info)
+            critic_loss_info = jax.tree.map(lambda x: x.mean(), critic_loss_info)
+            loss_info = {
+                "total_loss": actor_loss_info["actor_loss"] + critic_loss_info["value_loss"],
+                "actor_loss": actor_loss_info["actor_loss"],
+                "value_loss": critic_loss_info["value_loss"],
+                "entropy": actor_loss_info["entropy"],
+                "approx_kl": actor_loss_info["approx_kl"],
+                "clip_frac": actor_loss_info["clip_frac"],
+                "actor_grad_norm": actor_loss_info["actor_grad_norm"],
+                "critic_grad_norm": critic_loss_info["critic_grad_norm"],
+            }
 
             train_states = update_state[0]
             metric = traj_batch.info

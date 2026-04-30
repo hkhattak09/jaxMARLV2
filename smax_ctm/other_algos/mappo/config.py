@@ -17,12 +17,13 @@ def get_default_mappo_config():
         # === Environment ===
         "ENV_NAME": "HeuristicEnemySMAX",
         "MAP_NAME": "protoss_10_vs_10",
-        "NUM_ENVS": 128,
-        "NUM_STEPS": 128,
+        "NUM_ENVS": 20,
+        "NUM_STEPS": 200,
         "TOTAL_TIMESTEPS": int(4e7),
+        "SAVE_INTERVAL": 1000000,
 
         # === Model Architecture ===
-        "hidden_sizes": [128, 128],
+        "hidden_sizes": [64, 64, 64],
         "activation_func": "relu",
         "initialization_method": "orthogonal_",
         "gain": 0.01,
@@ -30,15 +31,16 @@ def get_default_mappo_config():
         "use_naive_recurrent_policy": False,
         "use_recurrent_policy": True,
         "use_feature_normalization": True,
+        "DATA_CHUNK_LENGTH": 10,
 
         # === Training ===
         "lr": 0.0005,
         "critic_lr": 0.0005,
         "ANNEAL_LR": False,
         "use_linear_lr_decay": False,
-        "ppo_epoch": 5,
-        "critic_epoch": 5,
-        "clip_param": 0.2,
+        "ppo_epoch": 10,
+        "critic_epoch": 10,
+        "clip_param": 0.1,
         "SCALE_CLIP_EPS": False,
         "scale_clip_eps": False,
         "actor_num_mini_batch": 1,
@@ -69,6 +71,7 @@ def get_default_mappo_config():
 
         # === Observation ===
         "OBS_WITH_AGENT_ID": True,
+        "LOCAL_OBS_WITH_AGENT_ID": True,
         "obs_with_agent_id": True,
 
         # === Environment kwargs ===

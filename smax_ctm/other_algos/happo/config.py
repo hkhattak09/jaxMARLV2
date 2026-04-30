@@ -17,13 +17,13 @@ def get_default_happo_config():
         # === Environment ===
         "ENV_NAME": "HeuristicEnemySMAX",
         "MAP_NAME": "protoss_10_vs_10",
-        "NUM_ENVS": 128,
-        "NUM_STEPS": 128,
+        "NUM_ENVS": 20,
+        "NUM_STEPS": 200,
         "TOTAL_TIMESTEPS": int(4e7),
         "SAVE_INTERVAL": 1000000,
 
         # === Model Architecture ===
-        "hidden_sizes": [128, 128],
+        "hidden_sizes": [64, 64, 64],
         "FC_DIM_SIZE": 128,
         "GRU_HIDDEN_DIM": 128,
         "activation_func": "relu",
@@ -33,18 +33,19 @@ def get_default_happo_config():
         "recurrent_n": 1,
         "use_naive_recurrent_policy": False,
         "use_recurrent_policy": True,
+        "DATA_CHUNK_LENGTH": 10,
 
         # === Training ===
         "LR": 0.0005,
         "CRITIC_LR": 0.0005,
         "ANNEAL_LR": False,
-        "CLIP_PARAM": 0.2,
+        "CLIP_PARAM": 0.1,
         "SCALE_CLIP_EPS": False,
-        "PPO_EPOCH": 5,
-        "UPDATE_EPOCHS": 5,
+        "PPO_EPOCH": 10,
+        "UPDATE_EPOCHS": 10,
         "ACTOR_NUM_MINI_BATCH": 1,
         "NUM_MINIBATCHES": 1,
-        "CRITIC_EPOCH": 5,
+        "CRITIC_EPOCH": 10,
         "CRITIC_NUM_MINI_BATCH": 1,
 
         # === Loss Coefficients ===
@@ -75,6 +76,7 @@ def get_default_happo_config():
 
         # === Observation ===
         "OBS_WITH_AGENT_ID": True,
+        "LOCAL_OBS_WITH_AGENT_ID": True,
         "ENV_KWARGS": {
             "see_enemy_actions": True,
             "walls_cause_death": True,

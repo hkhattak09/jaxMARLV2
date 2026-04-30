@@ -87,6 +87,8 @@ class Transition(NamedTuple):
     world_state: jnp.ndarray
     info: jnp.ndarray
     avail_actions: jnp.ndarray
+    actor_hstate: jnp.ndarray
+    critic_hstate: jnp.ndarray
 
 
 def batchify(x: dict, agent_list, num_actors):
@@ -187,7 +189,9 @@ def make_train(config):
                 avail_actions = jax.lax.stop_gradient(batchify(avail_actions, env.agents, config["NUM_ACTORS"]))
                 obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
                 ac_in = (obs_batch[np.newaxis, :], last_done[np.newaxis, :], avail_actions)
-                
+
+                ac_hstate_in = hstates[0]
+                cr_hstate_in = hstates[1]
                 ac_hstate, pi = actor_network.apply(train_states[0].params, hstates[0], ac_in)
                 action = pi.sample(seed=_rng)
                 log_prob = pi.log_prob(action)
@@ -199,7 +203,7 @@ def make_train(config):
                 world_state = last_obs["world_state"].swapaxes(0,1)  
                 world_state = world_state.reshape((config["NUM_ACTORS"],-1))
                 cr_in = (world_state[None, :], last_done[np.newaxis, :])
-                cr_hstate, value = critic_network.apply(train_states[1].params, hstates[1], cr_in)
+                cr_hstate, value = critic_network.apply(train_states[1].params, cr_hstate_in, cr_in)
 
                 # STEP ENV
                 rng, _rng = jax.random.split(rng)
@@ -219,6 +223,8 @@ def make_train(config):
                     world_state,
                     info,
                     avail_actions,
+                    ac_hstate_in,
+                    cr_hstate_in,
                 )
                 runner_state = (train_states, env_state, obsv, done_batch, (ac_hstate, cr_hstate), rng)
                 return runner_state, transition
@@ -253,9 +259,30 @@ def make_train(config):
 
             advantages, targets = _calculate_gae(traj_batch, last_val)
 
+            use_recurrent = config.get("use_recurrent_policy", True)
+            data_chunk_length = config.get("DATA_CHUNK_LENGTH", config["NUM_STEPS"])
+            chunks_per_rollout = config["NUM_STEPS"] // data_chunk_length
+
             # --- HAPPO Sequential Actor Update ---
             actor_train_state, critic_train_state = train_states
             num_agents = env.num_agents
+
+            if use_recurrent:
+                def _per_agent_actor_chunks(x):
+                    x = x.swapaxes(0, 1)
+                    return x.reshape((config["NUM_ENVS"] * chunks_per_rollout, data_chunk_length) + x.shape[2:])
+
+                def _critic_chunks(x):
+                    x = x.swapaxes(0, 1)
+                    return x.reshape((config["NUM_ACTORS"] * chunks_per_rollout, data_chunk_length) + x.shape[2:])
+
+                critic_world_state_c = _critic_chunks(traj_batch.world_state)
+                critic_done_c = _critic_chunks(traj_batch.done)
+                critic_targets_c = _critic_chunks(targets)
+                critic_value_old_c = _critic_chunks(traj_batch.value)
+                critic_init_hstate_c = _critic_chunks(traj_batch.critic_hstate)[:, 0]
+
+                actor_hstate_all = traj_batch.actor_hstate.reshape(config["NUM_STEPS"], config["NUM_ENVS"], num_agents, config["GRU_HIDDEN_DIM"])
 
             # Compute old log probs for all agents using the behaviour (old) policy
             _, pi_old = actor_network.apply(
@@ -302,31 +329,67 @@ def make_train(config):
                 adv_i = advantages_r[:, :, agent_id]
                 hstate_i = ac_init_hstate_r[:, agent_id, :]
 
+                if use_recurrent:
+                    obs_i_c = _per_agent_actor_chunks(obs_i)
+                    dones_i_c = _per_agent_actor_chunks(dones_i)
+                    avail_i_c = _per_agent_actor_chunks(avail_i)
+                    actions_i_c = _per_agent_actor_chunks(actions_i)
+                    old_log_prob_i_c = _per_agent_actor_chunks(old_log_prob_i)
+                    adv_i_norm = (adv_i - adv_i.mean()) / (adv_i.std() + 1e-8)
+                    adv_i_c = _per_agent_actor_chunks(adv_i_norm)
+                    factor_c = _per_agent_actor_chunks(factor)
+                    actor_hstate_i = actor_hstate_all[:, :, agent_id, :]
+                    hstate_i_c = _per_agent_actor_chunks(actor_hstate_i)[:, 0]
+
                 # Run PPO epochs for this agent
                 for _ in range(config["PPO_EPOCH"]):
-                    def _actor_loss_fn(actor_params, init_hstate, obs, dones, avail, actions, old_lp, adv, fac):
-                        _, pi = actor_network.apply(actor_params, init_hstate, (obs, dones, avail))
-                        log_prob = pi.log_prob(actions)
-                        logratio = log_prob - old_lp
-                        ratio = jnp.exp(logratio)
+                    if use_recurrent:
+                        def _actor_loss_fn(actor_params, init_hstate, obs, dones, avail, actions, old_lp, adv, fac):
+                            _, pi = actor_network.apply(actor_params, init_hstate, (obs, dones, avail))
+                            log_prob = pi.log_prob(actions)
+                            logratio = (log_prob - old_lp).reshape(-1)
+                            ratio = jnp.exp(logratio)
+                            weighted_adv = (fac * adv).reshape(-1)
+                            loss_actor1 = ratio * weighted_adv
+                            loss_actor2 = jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"]) * weighted_adv
+                            loss_actor = -jnp.minimum(loss_actor1, loss_actor2).mean()
+                            entropy = pi.entropy().reshape(-1).mean()
+                            approx_kl = ((ratio - 1) - logratio).mean()
+                            clip_frac = jnp.mean(jnp.abs(ratio - 1) > config["CLIP_EPS"])
+                            actor_loss = loss_actor - config["ENT_COEF"] * entropy
+                            return actor_loss, (loss_actor, entropy, approx_kl, clip_frac, ratio)
 
-                        adv_norm = (adv - adv.mean()) / (adv.std() + 1e-8)
-                        weighted_adv = fac * adv_norm
+                        actor_grad_fn = jax.value_and_grad(_actor_loss_fn, has_aux=True)
+                        (loss, aux), grads = actor_grad_fn(
+                            actor_train_state.params, hstate_i_c,
+                            obs_i_c.swapaxes(0, 1), dones_i_c.swapaxes(0, 1), avail_i_c.swapaxes(0, 1),
+                            actions_i_c.swapaxes(0, 1), old_log_prob_i_c.swapaxes(0, 1),
+                            adv_i_c, factor_c,
+                        )
+                    else:
+                        def _actor_loss_fn(actor_params, init_hstate, obs, dones, avail, actions, old_lp, adv, fac):
+                            _, pi = actor_network.apply(actor_params, init_hstate, (obs, dones, avail))
+                            log_prob = pi.log_prob(actions)
+                            logratio = log_prob - old_lp
+                            ratio = jnp.exp(logratio)
 
-                        loss_actor1 = ratio * weighted_adv
-                        loss_actor2 = jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"]) * weighted_adv
-                        loss_actor = -jnp.minimum(loss_actor1, loss_actor2).mean()
-                        entropy = pi.entropy().mean()
+                            adv_norm = (adv - adv.mean()) / (adv.std() + 1e-8)
+                            weighted_adv = fac * adv_norm
 
-                        approx_kl = ((ratio - 1) - logratio).mean()
-                        clip_frac = jnp.mean(jnp.abs(ratio - 1) > config["CLIP_EPS"])
-                        actor_loss = loss_actor - config["ENT_COEF"] * entropy
-                        return actor_loss, (loss_actor, entropy, approx_kl, clip_frac, ratio)
+                            loss_actor1 = ratio * weighted_adv
+                            loss_actor2 = jnp.clip(ratio, 1.0 - config["CLIP_EPS"], 1.0 + config["CLIP_EPS"]) * weighted_adv
+                            loss_actor = -jnp.minimum(loss_actor1, loss_actor2).mean()
+                            entropy = pi.entropy().mean()
 
-                    actor_grad_fn = jax.value_and_grad(_actor_loss_fn, has_aux=True)
-                    (loss, aux), grads = actor_grad_fn(
-                        actor_train_state.params, hstate_i, obs_i, dones_i, avail_i, actions_i, old_log_prob_i, adv_i, factor
-                    )
+                            approx_kl = ((ratio - 1) - logratio).mean()
+                            clip_frac = jnp.mean(jnp.abs(ratio - 1) > config["CLIP_EPS"])
+                            actor_loss = loss_actor - config["ENT_COEF"] * entropy
+                            return actor_loss, (loss_actor, entropy, approx_kl, clip_frac, ratio)
+
+                        actor_grad_fn = jax.value_and_grad(_actor_loss_fn, has_aux=True)
+                        (loss, aux), grads = actor_grad_fn(
+                            actor_train_state.params, hstate_i, obs_i, dones_i, avail_i, actions_i, old_log_prob_i, adv_i, factor
+                        )
                     actor_train_state = actor_train_state.apply_gradients(grads=grads)
 
                 # Compute new log prob after finishing all epochs for this agent
@@ -358,33 +421,62 @@ def make_train(config):
             critic_grad_norm_sum = 0.0
 
             for _ in range(config["CRITIC_EPOCH"]):
-                def _critic_loss_fn(critic_params, init_hstate, traj_batch, targets):
-                    _, value = critic_network.apply(critic_params, init_hstate, (traj_batch.world_state, traj_batch.done))
+                if use_recurrent:
+                    def _critic_loss_fn(critic_params, init_hstate, world_state, done, targets, value_old):
+                        _, value = critic_network.apply(critic_params, init_hstate, (world_state, done))
+                        value_pred_clipped = value_old + (value - value_old).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
+                        if config.get("use_huber_loss", False):
+                            delta = config.get("huber_delta", 10.0)
+                            error = value - targets
+                            error_clipped = value_pred_clipped - targets
+                            def huber_fn(e):
+                                abs_e = jnp.abs(e)
+                                return jnp.where(abs_e <= delta, 0.5 * jnp.square(abs_e), delta * (abs_e - 0.5 * delta))
+                            value_losses = huber_fn(error)
+                            value_losses_clipped = huber_fn(error_clipped)
+                            value_loss = jnp.maximum(value_losses, value_losses_clipped).mean()
+                        else:
+                            value_losses = jnp.square(value - targets)
+                            value_losses_clipped = jnp.square(value_pred_clipped - targets)
+                            value_loss = 0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()
 
-                    if config.get("use_huber_loss", False):
-                        delta = config.get("huber_delta", 10.0)
-                        value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
-                        error = value - targets
-                        error_clipped = value_pred_clipped - targets
-                        def huber_fn(e):
-                            abs_e = jnp.abs(e)
-                            return jnp.where(abs_e <= delta, 0.5 * jnp.square(abs_e), delta * (abs_e - 0.5 * delta))
-                        value_losses = huber_fn(error)
-                        value_losses_clipped = huber_fn(error_clipped)
-                        value_loss = jnp.maximum(value_losses, value_losses_clipped).mean()
-                    else:
-                        value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
-                        value_losses = jnp.square(value - targets)
-                        value_losses_clipped = jnp.square(value_pred_clipped - targets)
-                        value_loss = 0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()
+                        critic_loss = config["VALUE_LOSS_COEF"] * value_loss
+                        return critic_loss, (value_loss,)
 
-                    critic_loss = config["VALUE_LOSS_COEF"] * value_loss
-                    return critic_loss, (value_loss,)
+                    critic_grad_fn = jax.value_and_grad(_critic_loss_fn, has_aux=True)
+                    (critic_loss, c_aux), critic_grads = critic_grad_fn(
+                        critic_train_state.params, critic_init_hstate_c,
+                        critic_world_state_c.swapaxes(0, 1), critic_done_c.swapaxes(0, 1),
+                        critic_targets_c.swapaxes(0, 1), critic_value_old_c.swapaxes(0, 1),
+                    )
+                else:
+                    def _critic_loss_fn(critic_params, init_hstate, traj_batch, targets):
+                        _, value = critic_network.apply(critic_params, init_hstate, (traj_batch.world_state, traj_batch.done))
 
-                critic_grad_fn = jax.value_and_grad(_critic_loss_fn, has_aux=True)
-                (critic_loss, c_aux), critic_grads = critic_grad_fn(
-                    critic_train_state.params, cr_init_hstate_flat, traj_batch, targets
-                )
+                        if config.get("use_huber_loss", False):
+                            delta = config.get("huber_delta", 10.0)
+                            value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
+                            error = value - targets
+                            error_clipped = value_pred_clipped - targets
+                            def huber_fn(e):
+                                abs_e = jnp.abs(e)
+                                return jnp.where(abs_e <= delta, 0.5 * jnp.square(abs_e), delta * (abs_e - 0.5 * delta))
+                            value_losses = huber_fn(error)
+                            value_losses_clipped = huber_fn(error_clipped)
+                            value_loss = jnp.maximum(value_losses, value_losses_clipped).mean()
+                        else:
+                            value_pred_clipped = traj_batch.value + (value - traj_batch.value).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
+                            value_losses = jnp.square(value - targets)
+                            value_losses_clipped = jnp.square(value_pred_clipped - targets)
+                            value_loss = 0.5 * jnp.maximum(value_losses, value_losses_clipped).mean()
+
+                        critic_loss = config["VALUE_LOSS_COEF"] * value_loss
+                        return critic_loss, (value_loss,)
+
+                    critic_grad_fn = jax.value_and_grad(_critic_loss_fn, has_aux=True)
+                    (critic_loss, c_aux), critic_grads = critic_grad_fn(
+                        critic_train_state.params, cr_init_hstate_flat, traj_batch, targets
+                    )
                 critic_train_state = critic_train_state.apply_gradients(grads=critic_grads)
                 critic_loss_sum += c_aux[0]
                 critic_grad_norm_sum += optax.global_norm(critic_grads)
@@ -493,6 +585,7 @@ def _override_config_from_cli(config):
     parser.add_argument("--value_loss_coef", type=float, default=None)
     parser.add_argument("--use_recurrent_policy", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--use_valuenorm", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--data_chunk_length", type=int, default=None)
     args = parser.parse_args()
 
     if args.map_name is not None:
@@ -541,6 +634,8 @@ def _override_config_from_cli(config):
         config["use_recurrent_policy"] = args.use_recurrent_policy
     if args.use_valuenorm is not None:
         config["use_valuenorm"] = args.use_valuenorm
+    if args.data_chunk_length is not None:
+        config["DATA_CHUNK_LENGTH"] = args.data_chunk_length
     return config
 
 
