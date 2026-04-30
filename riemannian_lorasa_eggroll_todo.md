@@ -215,6 +215,9 @@ Immediate next experiment: single-GPU population-axis Riemannian LoRASA-EGGROLL
     the A100-scale probe showed it was straggler/while-loop limited and did not
     improve steady-state eval time. The trainer was restored to the
     pre-early-stop GPU-chunking version (`225ee1b`).
+  - `smax_ctm/train_lorasa_eggroll_pop.py` now defaults
+    `XLA_PYTHON_CLIENT_MEM_FRACTION` to `0.95` before importing JAX, unless the
+    caller already set that environment variable.
   - CPU path remains available as the older correctness/reference builder:
     `--candidate_build cpu`.
 

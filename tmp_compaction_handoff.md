@@ -1,229 +1,164 @@
 # Temporary Compaction Handoff
 
-This file is a restart note for the next chat. It can be deleted after the next
-assistant has read it.
+Current repo: `/Users/hassan/repos/new_marl_llm_implementation`.
+User runs runtime tests in Colab; do not run local runtime tests. Static checks are okay.
 
-## User Preference
+## Current Branch / GitHub State
 
-- Do not run local runtime tests. The user runs Colab commands and pastes
-  output back.
-- It is okay to inspect files, run static checks, and read diffs locally.
-- Do not include `XLA_PYTHON_CLIENT_PREALLOCATE=false` in run commands unless
-  the user explicitly switches to memory-debug mode.
+- `main` was pushed to GitHub after reverting early-stop eval:
+  - `f206e31 Revert early-stop population eval`
+  - Keeps `225ee1b chunking on gpu` device candidate builder.
+  - Removes `80de204 eval stops early when episodes end` behavior from trainer.
+- After that push, a new local uncommitted edit was made:
+  - `smax_ctm/train_lorasa_eggroll_pop.py` now sets
+    `os.environ.setdefault("XLA_PYTHON_CLIENT_MEM_FRACTION", "0.95")`
+    before importing JAX.
+  - `riemannian_lorasa_eggroll_todo.md` notes this.
+- Need to run static checks, commit, and push this memory-fraction default unless user changes their mind.
 
-## Current Direction
+## Important User Preferences
 
-The sequential trainer has completed its job as a correctness oracle:
+- Colab commands must include repo-prefixed script paths, e.g.
+  `python jaxMARLV2/smax_ctm/train_lorasa_eggroll_pop.py ...`
+- Checkpoint path in Colab is currently:
+  `/content/jaxMARLV2/r4_no_recurrent.pkl`
+- Diagnostics paths should be prefixed with `jaxMARLV2/diagnostics/...`.
+- User wants to maximize A100 utilization; willing to probe capacity.
+- User does not want vague small pilots now; focus on scale and throughput.
 
+## Project State
+
+- Task: Riemannian LoRASA-EGGROLL population-axis ES for SMAX `protoss_10_vs_10`.
+- Active LoRASA slots: `2,3,6`.
+- Active blocks:
+  - `params/action_out`
+  - `params/base_0`
+  - `params/base_1`
+  - `params/base_2`
+  - `params/rnn/gru_cell/input_candidate`
+  - `params/rnn/gru_cell/input_reset`
+  - `params/rnn/gru_cell/input_update`
+- Target active rank: `4`.
+- Sequential trainer `smax_ctm/train_lorasa_eggroll.py` remains an off-hot-path correctness oracle only.
+- Population trainer: `smax_ctm/train_lorasa_eggroll_pop.py`.
+
+## Validated Trainer Features
+
+1. CPU sequential correctness path passed earlier.
+2. Population-axis trainer works on one GPU.
+3. Device/JAX candidate builder added and validated:
+   - `--candidate_build device` default.
+   - Builds per-chunk candidate LoRA factors with JAX batched SVD/retraction.
+   - Uses same JAX noise backend for update, keeping candidate scores and update directions consistent.
+   - CPU fallback remains: `--candidate_build cpu`.
+4. Device builder smoke:
+   - Run dir `lorasa_eggroll_pop_runs/lorasa_eggroll_pop_20260430_103646`
+   - Chunk 1 compile: `build=25.74s eval=27.42s`
+   - Chunk 2 steady: `build=0.14s eval=0.21s`
+5. Device builder structural validation passed:
+   - `passed=true`, `num_violations=0`
+   - `active_slot_pairs_changed=21`
+   - `changed_non_active_leaves=0`
+   - `active_rank_violations=0`
+
+## Early-Stop Eval Experiment
+
+- Early-stop eval was tried and pushed as `80de204`, then reverted by `f206e31`.
+- Reason: on A100 scale, early stop became straggler/while-loop limited and did not improve eval time.
+- Do not use early-stop flags; they no longer exist in the restored trainer.
+
+## A100 Capacity Observations
+
+Old CPU candidate build big run:
 ```text
-smax_ctm/train_lorasa_eggroll.py
+num_directions=2048, candidates=4096, population_batch_size=256,
+num_envs_per_candidate=128, episodes_per_candidate=256
+train episodes/epoch=1,048,576
+CPU build steady ~=15-18s/chunk
+eval steady ~=10.7s/chunk
+epoch ~=455s
+JAX allocated ~30.1GB of 40GB due to default ~75% memory fraction
 ```
 
-It proved geometry/checkpoint plumbing but is not the real optimizer. It should
-not be used in the training hot path.
+Device builder tiny smoke showed build bottleneck is gone.
+Need large A100 device-builder probe next.
 
-The active next path is a single-GPU population-axis trainer:
+## Immediate Next Static Work
 
-```text
-smax_ctm/train_lorasa_eggroll_pop.py
-```
-
-No `shard_map`, no `process_allgather`, no distributed assumptions. Use
-HyperscaleES ideas only where appropriate:
-
-```text
-thread_id // 2 -> direction id
-thread_id % 2 -> antithetic sign
-vmap over population chunks
-deterministic regenerated perturbations
-```
-
-Do not copy HyperscaleES geometry: our method is fixed-rank LoRASA manifold ES
-with tangent projection + SVD retraction.
-
-## Implemented Since Last Compact
-
-1. Added `smax_ctm/train_lorasa_eggroll_pop.py`
-   - User-facing rollout scale:
-     `episodes_per_candidate`, not `num_loops`.
-   - One epoch means:
-     population eval -> antithetic weights -> one Riemannian adapter update.
-   - Population axis lives only on selected LoRA leaves:
-     selected `lora_a` / `lora_b` leaves have `in_axes=0`; frozen leaves are
-     broadcast with `in_axes=None`.
-   - Candidate LoRA factors are built per population chunk and discarded after
-     evaluation.
-   - Defaults:
-     `num_directions=64`, `population_batch_size=8`,
-     `num_envs_per_candidate=16`, `episodes_per_candidate=64`,
-     `sigma=0.05`, `eta=0.0015`,
-     `fitness_mode=win_rate_return_tiebreak`.
-   - Evaluator returns wins, episode returns, episode lengths, and recorded
-     fractions.
-   - Supports `--print_candidates`.
-
-2. Updated `smax_ctm/lorasa_eggroll.py`
-   - `apply_weighted_tangent_update(...)` now accepts optional
-     `direction_normalizer`.
-   - Population trainer passes `direction_normalizer=args.num_directions` so
-     update scale is stable even when many direction weights are zero/tied.
-
-3. Updated docs:
-   - `riemannian_lorasa_eggroll.md`
-   - `riemannian_lorasa_eggroll_todo.md`
-
-## Colab Result Right Before Compact
-
-User ran the no-op population smoke:
-
+Run:
 ```bash
-python smax_ctm/train_lorasa_eggroll_pop.py \
-  --checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl \
-  --num_epochs 1 \
-  --num_directions 2 \
-  --population_batch_size 4 \
-  --num_envs_per_candidate 4 \
-  --episodes_per_candidate 4 \
-  --heldout_num_envs 4 \
-  --heldout_episodes 4 \
-  --sigma 0.0 \
-  --eta 0.0 \
-  --fitness_mode win_rate \
-  --print_candidates
+python -m py_compile smax_ctm/train_lorasa_eggroll_pop.py
+git diff --check
+git status --short --branch --untracked-files=all
 ```
-
-It failed at first with:
-
-```text
-TypeError: vmap in_axes must be an int, None, or a tuple ...
-```
-
-Cause:
-
-```python
-in_axes=population_in_axes
-```
-
-was passed directly for a one-positional-argument vmapped function.
-
-Patch applied:
-
-```python
-in_axes=(population_in_axes,)
-```
-
-File:
-
-```text
-smax_ctm/train_lorasa_eggroll_pop.py
-```
-
-Static `git diff --check` passed after the patch.
-
-## Immediate Next Command
-
-Ask the user to rerun the no-op population smoke without any XLA env prefix:
-
+Then commit and push the memory-fraction default:
 ```bash
-python smax_ctm/train_lorasa_eggroll_pop.py \
-  --checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl \
-  --num_epochs 1 \
-  --num_directions 2 \
-  --population_batch_size 4 \
-  --num_envs_per_candidate 4 \
-  --episodes_per_candidate 4 \
-  --heldout_num_envs 4 \
-  --heldout_episodes 4 \
-  --sigma 0.0 \
-  --eta 0.0 \
-  --fitness_mode win_rate \
-  --print_candidates
+git add smax_ctm/train_lorasa_eggroll_pop.py riemannian_lorasa_eggroll_todo.md
+git commit -m "Raise JAX memory fraction for population trainer"
+git push origin main
 ```
+Need escalation for git add/commit/push if sandbox blocks index/network.
 
-Expected signal:
+## Next Colab Capacity Probes
 
-```text
-one chunk with 4 candidates
-candidate rows print
-direction weights can be zero or tie-derived
-update summary has zero singular shift because eta=0
-heldout line prints
-checkpoint saves
-no crash
-```
-
-If that passes, next command is the small nonzero population smoke:
-
+First confirm device builder with fixed horizon and 0.95 memory fraction default:
 ```bash
-python smax_ctm/train_lorasa_eggroll_pop.py \
-  --checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl \
+python jaxMARLV2/smax_ctm/train_lorasa_eggroll_pop.py \
+  --checkpoint /content/jaxMARLV2/r4_no_recurrent.pkl \
   --num_epochs 1 \
-  --num_directions 4 \
-  --population_batch_size 4 \
-  --num_envs_per_candidate 8 \
-  --episodes_per_candidate 16 \
-  --heldout_num_envs 8 \
-  --heldout_episodes 16 \
+  --num_directions 2048 \
+  --population_batch_size 256 \
+  --num_envs_per_candidate 128 \
+  --episodes_per_candidate 256 \
+  --heldout_num_envs 256 \
+  --heldout_episodes 2048 \
   --sigma 0.05 \
-  --eta 0.0015 \
-  --print_candidates
+  --eta 0.0005 \
+  --eval_every 1 \
+  --save_every 1 \
+  --candidate_build device
 ```
 
-If nonzero direction weights are reported, validate:
-
+Then push concurrency:
 ```bash
-python smax_ctm/lorasa_eggroll.py \
-  --reference_checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl \
-  --checkpoint lorasa_eggroll_pop_runs/<run_id>/checkpoint_final.pkl \
-  --require_active_change \
-  --validation_json diagnostics/lorasa_eggroll_pop_update_validation.json
+python jaxMARLV2/smax_ctm/train_lorasa_eggroll_pop.py \
+  --checkpoint /content/jaxMARLV2/r4_no_recurrent.pkl \
+  --num_epochs 1 \
+  --num_directions 2048 \
+  --population_batch_size 512 \
+  --num_envs_per_candidate 256 \
+  --episodes_per_candidate 256 \
+  --heldout_num_envs 512 \
+  --heldout_episodes 2048 \
+  --sigma 0.05 \
+  --eta 0.0005 \
+  --eval_every 1 \
+  --save_every 1 \
+  --candidate_build device
 ```
 
-## Important Workspace Notes
-
-`git status --short --untracked-files=all` before this handoff showed:
-
-```text
- M riemannian_lorasa_eggroll_todo.md
- M smax_ctm/train_lorasa_eggroll_pop.py
+If it fits and improves throughput, try:
+```bash
+python jaxMARLV2/smax_ctm/train_lorasa_eggroll_pop.py \
+  --checkpoint /content/jaxMARLV2/r4_no_recurrent.pkl \
+  --num_epochs 1 \
+  --num_directions 2048 \
+  --population_batch_size 1024 \
+  --num_envs_per_candidate 256 \
+  --episodes_per_candidate 256 \
+  --heldout_num_envs 512 \
+  --heldout_episodes 2048 \
+  --sigma 0.05 \
+  --eta 0.0005 \
+  --eval_every 1 \
+  --save_every 1 \
+  --candidate_build device
 ```
 
-Before that, there had also been unrelated user/workspace changes:
+Capacity logic:
+- Peak concurrent lanes ~= `population_batch_size * num_envs_per_candidate`.
+- Current big baseline: `256*128=32,768` lanes.
+- Probe 1: `512*256=131,072` lanes, 8 chunks, 1 rollout batch.
+- Probe 2: `1024*256=262,144` lanes, 4 chunks, 1 rollout batch.
 
-```text
- D no_recurrent_lora_final.pkl
-?? r4_no_recurrent.pkl
-?? r8_no_recurrent.pkl
-```
-
-Do not revert or touch these unrelated checkpoint files unless the user asks.
-
-## Research State
-
-Schedule A compressed no-recurrent LoRASA remains the source checkpoint:
-
-```text
-map: protoss_10_vs_10
-active adapter slots: 2, 3, 6
-target active rank: 4
-blocks:
-  params/action_out
-  params/base_0
-  params/base_1
-  params/base_2
-  params/rnn/gru_cell/input_candidate
-  params/rnn/gru_cell/input_reset
-  params/rnn/gru_cell/input_update
-```
-
-Previous structural validations passed:
-
-```text
-num_selected_blocks=7
-active_slot_pairs_changed=21 for nonzero update
-changed_non_active_leaves=0
-active_rank_violations=0
-```
-
-Sequential small-pop pilot did not improve Schedule A and is now considered a
-correctness reference only, not the optimizer.
+Main run will be chosen after capacity probe, likely using best chunk shape with larger `num_directions` (possibly 4096) and 4-6 epochs.
