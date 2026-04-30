@@ -211,14 +211,10 @@ Immediate next experiment: single-GPU population-axis Riemannian LoRASA-EGGROLL
   - Device-builder structural validation passed:
     `passed=true`, `num_violations=0`, `active_slot_pairs_changed=21`,
     `changed_non_active_leaves=0`, `active_rank_violations=0`.
-  - Added early-stop rollout evaluation to
-    `smax_ctm/train_lorasa_eggroll_pop.py`; default is
-    `--early_stop_eval`.
-  - Each rollout batch now stops once all envs have recorded their first
-    episode or `max_steps` is reached. Chunk/held-out logs include `steps=...`
-    to report actual rollout-loop steps.
-  - Disable with `--no-early_stop_eval` if exact fixed-horizon scan behavior is
-    needed for debugging.
+  - Early-stop rollout evaluation was tested after the device-builder path, but
+    the A100-scale probe showed it was straggler/while-loop limited and did not
+    improve steady-state eval time. The trainer was restored to the
+    pre-early-stop GPU-chunking version (`225ee1b`).
   - CPU path remains available as the older correctness/reference builder:
     `--candidate_build cpu`.
 

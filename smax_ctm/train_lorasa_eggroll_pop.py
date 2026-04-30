@@ -156,7 +156,6 @@ def make_eval_stats_fn(
     eval_steps: int,
     num_envs: int,
     rollout_batches: int,
-    early_stop: bool,
 ):
     """Create a deterministic evaluator returning wins, returns, and lengths."""
 
@@ -172,8 +171,8 @@ def make_eval_stats_fn(
         return ac_hstate, pi
 
     def eval_fn(rng, actor_params):
-        def _run_one_rollout(loop_rng):
-            loop_rng, reset_rng = jax.random.split(loop_rng)
+        def _outer_loop(rng, _):
+            rng, reset_rng = jax.random.split(rng)
             reset_keys = jax.random.split(reset_rng, num_envs)
             obsv, env_state = jax.vmap(env.reset, in_axes=(0,))(reset_keys)
 
@@ -186,7 +185,7 @@ def make_eval_stats_fn(
             episode_return = jnp.zeros((num_envs,), dtype=jnp.float32)
             episode_length = jnp.zeros((num_envs,), dtype=jnp.float32)
 
-            def _step_body(carry):
+            def _step(carry, _):
                 (
                     env_state,
                     obsv,
@@ -251,10 +250,7 @@ def make_eval_stats_fn(
                     episode_return,
                     episode_length,
                     rng,
-                )
-
-            def _scan_step(carry, _):
-                return _step_body(carry), None
+                ), None
 
             init_carry = (
                 env_state,
@@ -265,32 +261,9 @@ def make_eval_stats_fn(
                 episode_won,
                 episode_return,
                 episode_length,
-                loop_rng,
+                rng,
             )
-            if early_stop:
-                def _continue(carry_and_step):
-                    carry, step_idx = carry_and_step
-                    already_recorded = carry[4]
-                    return (step_idx < eval_steps) & (~jnp.all(already_recorded))
-
-                def _while_body(carry_and_step):
-                    carry, step_idx = carry_and_step
-                    return _step_body(carry), step_idx + jnp.asarray(1, dtype=jnp.int32)
-
-                final_carry, executed_steps = jax.lax.while_loop(
-                    _continue,
-                    _while_body,
-                    (init_carry, jnp.asarray(0, dtype=jnp.int32)),
-                )
-            else:
-                final_carry, _ = jax.lax.scan(
-                    _scan_step,
-                    init_carry,
-                    None,
-                    eval_steps,
-                )
-                executed_steps = jnp.asarray(eval_steps, dtype=jnp.int32)
-
+            final_carry, _ = jax.lax.scan(_step, init_carry, None, eval_steps)
             (
                 _,
                 _,
@@ -302,7 +275,6 @@ def make_eval_stats_fn(
                 episode_length,
                 rng,
             ) = final_carry
-            del rng
 
             episode_won = jnp.where(already_recorded, episode_won, 0.0)
             episode_return = jnp.where(already_recorded, episode_return, 0.0)
@@ -314,30 +286,8 @@ def make_eval_stats_fn(
                 "returns": episode_return,
                 "lengths": episode_length,
                 "recorded": already_recorded.astype(jnp.float32),
-                "steps": jnp.full(
-                    (num_envs,),
-                    executed_steps.astype(jnp.float32),
-                    dtype=jnp.float32,
-                ),
             }
-            return stats
-
-        if early_stop:
-            def _outer_loop(_, loop_idx):
-                loop_rng = jax.random.fold_in(rng, loop_idx)
-                return None, _run_one_rollout(loop_rng)
-
-            _, stats_by_loop = jax.lax.scan(
-                _outer_loop,
-                None,
-                jnp.arange(rollout_batches, dtype=jnp.int32),
-            )
-            return stats_by_loop
-
-        def _outer_loop(loop_rng, _):
-            stats = _run_one_rollout(loop_rng)
-            loop_rng = jax.random.fold_in(loop_rng, jnp.asarray(1, dtype=jnp.int32))
-            return loop_rng, stats
+            return rng, stats
 
         _, stats_by_loop = jax.lax.scan(_outer_loop, rng, None, rollout_batches)
         return stats_by_loop
@@ -352,7 +302,6 @@ def _build_eval_stats(
     num_envs: int,
     rollout_batches: int,
     max_steps: Optional[int],
-    early_stop: bool,
 ):
     validate_checkpoint(dict(ckpt), checkpoint_path)
     if ckpt["model_type"] != "mappo_t_lorasa":
@@ -405,7 +354,6 @@ def _build_eval_stats(
         eval_steps,
         num_envs,
         rollout_batches,
-        early_stop,
     )
     return eval_fn, config, eval_steps
 
@@ -944,7 +892,6 @@ def _summarize_stats(stats: Mapping[str, Any]) -> Dict[str, Any]:
     returns = np.asarray(stats["returns"], dtype=np.float64).reshape(-1)
     lengths = np.asarray(stats["lengths"], dtype=np.float64).reshape(-1)
     recorded = np.asarray(stats["recorded"], dtype=np.float64).reshape(-1)
-    steps = np.asarray(stats.get("steps", []), dtype=np.float64).reshape(-1)
     episodes = int(wins.size)
     win_rate = float(wins.mean()) if episodes else 0.0
     std = float(wins.std(ddof=1)) if episodes > 1 else 0.0
@@ -957,7 +904,6 @@ def _summarize_stats(stats: Mapping[str, Any]) -> Dict[str, Any]:
         "mean_return": float(returns.mean()) if episodes else 0.0,
         "mean_ep_len": float(lengths.mean()) if episodes else 0.0,
         "recorded_fraction": float(recorded.mean()) if episodes else 0.0,
-        "mean_rollout_steps": float(steps.mean()) if steps.size else 0.0,
     }
 
 
@@ -966,14 +912,12 @@ def _summarize_population_stats(stats: Mapping[str, Any]) -> Dict[str, np.ndarra
     returns = np.asarray(stats["returns"], dtype=np.float64)
     lengths = np.asarray(stats["lengths"], dtype=np.float64)
     recorded = np.asarray(stats["recorded"], dtype=np.float64)
-    steps = np.asarray(stats.get("steps", np.zeros_like(lengths)), dtype=np.float64)
 
     batch = wins.shape[0]
     wins_flat = wins.reshape(batch, -1)
     returns_flat = returns.reshape(batch, -1)
     lengths_flat = lengths.reshape(batch, -1)
     recorded_flat = recorded.reshape(batch, -1)
-    steps_flat = steps.reshape(batch, -1)
     episodes = wins_flat.shape[1]
     std = wins_flat.std(axis=1, ddof=1) if episodes > 1 else np.zeros(batch)
     return {
@@ -983,7 +927,6 @@ def _summarize_population_stats(stats: Mapping[str, Any]) -> Dict[str, np.ndarra
         "mean_return": returns_flat.mean(axis=1),
         "mean_ep_len": lengths_flat.mean(axis=1),
         "recorded_fraction": recorded_flat.mean(axis=1),
-        "mean_rollout_steps": steps_flat.mean(axis=1),
         "episodes": np.full(batch, episodes, dtype=np.int32),
     }
 
@@ -1043,7 +986,6 @@ def _make_checkpoint(
         "population_batch_size": int(args.population_batch_size),
         "num_envs_per_candidate": int(args.num_envs_per_candidate),
         "episodes_per_candidate": int(args.episodes_per_candidate),
-        "early_stop_eval": bool(args.early_stop_eval),
         "fitness_mode": str(args.fitness_mode),
         "candidate_build": str(args.candidate_build),
         "latest_stats": dict(latest_stats),
@@ -1070,15 +1012,6 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     parser.add_argument("--heldout_num_envs", type=int, default=32)
     parser.add_argument("--heldout_episodes", type=int, default=512)
-    parser.add_argument(
-        "--early_stop_eval",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help=(
-            "Stop each rollout batch once every env has recorded its first "
-            "episode, instead of always scanning to max_steps."
-        ),
-    )
 
     parser.add_argument("--sigma", type=float, default=0.05)
     parser.add_argument("--eta", type=float, default=0.0015)
@@ -1189,8 +1122,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"episodes_per_candidate={args.episodes_per_candidate} "
         f"num_envs_per_candidate={args.num_envs_per_candidate} "
         f"rollout_batches={rollout_batches} "
-        f"train_episodes_per_epoch={train_episodes_per_epoch} "
-        f"early_stop_eval={args.early_stop_eval}"
+        f"train_episodes_per_epoch={train_episodes_per_epoch}"
     )
 
     print("Building train evaluator...")
@@ -1201,7 +1133,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.num_envs_per_candidate,
         rollout_batches,
         args.max_steps,
-        args.early_stop_eval,
     )
     print(f"Eval steps: {eval_steps}")
 
@@ -1213,7 +1144,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         args.heldout_num_envs,
         heldout_batches,
         args.max_steps,
-        args.early_stop_eval,
     )
 
     population_in_axes = _make_population_in_axes(
@@ -1277,7 +1207,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         raw_returns = np.zeros(population_size, dtype=np.float64)
         raw_lengths = np.zeros(population_size, dtype=np.float64)
         raw_recorded = np.zeros(population_size, dtype=np.float64)
-        raw_rollout_steps = np.zeros(population_size, dtype=np.float64)
         raw_sem = np.zeros(population_size, dtype=np.float64)
         raw_std = np.zeros(population_size, dtype=np.float64)
 
@@ -1322,7 +1251,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             raw_returns[start_idx:end_idx] = chunk_summary["mean_return"]
             raw_lengths[start_idx:end_idx] = chunk_summary["mean_ep_len"]
             raw_recorded[start_idx:end_idx] = chunk_summary["recorded_fraction"]
-            raw_rollout_steps[start_idx:end_idx] = chunk_summary["mean_rollout_steps"]
             raw_std[start_idx:end_idx] = chunk_summary["std"]
             raw_sem[start_idx:end_idx] = chunk_summary["sem"]
 
@@ -1331,7 +1259,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 f"wr_mean={chunk_summary['mean_wr'].mean():.4f} "
                 f"wr_min={chunk_summary['mean_wr'].min():.4f} "
                 f"wr_max={chunk_summary['mean_wr'].max():.4f} "
-                f"steps={chunk_summary['mean_rollout_steps'].mean():.1f} "
                 f"build={build_elapsed:.2f}s eval={eval_elapsed:.2f}s "
                 f"adapter_metrics={candidate_metric_count}"
             )
@@ -1360,7 +1287,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 "mean_return": float(raw_returns[thread_id]),
                 "mean_ep_len": float(raw_lengths[thread_id]),
                 "recorded_fraction": float(raw_recorded[thread_id]),
-                "mean_rollout_steps": float(raw_rollout_steps[thread_id]),
                 "fitness_score": float(fitness_scores[thread_id]),
                 "episodes": int(args.episodes_per_candidate),
             }
@@ -1376,9 +1302,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "population summary: "
             f"wr_mean={raw_win_rates.mean():.4f} wr_std={raw_win_rates.std():.4f} "
             f"wr_min={raw_win_rates.min():.4f} wr_max={raw_win_rates.max():.4f} "
-            f"return_mean={raw_returns.mean():.4f} "
-            f"rollout_steps_mean={raw_rollout_steps.mean():.1f} "
-            f"eval_total={time.time() - epoch_eval_start:.1f}s"
+            f"return_mean={raw_returns.mean():.4f} eval_total={time.time() - epoch_eval_start:.1f}s"
         )
         print(f"direction weights: {_format_weights(direction_weights)}")
 
@@ -1440,7 +1364,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 f"wr={heldout_eval['mean_wr']:.4f} sem={heldout_eval['sem']:.4f} "
                 f"return={heldout_eval['mean_return']:.4f} "
                 f"episodes={heldout_eval['episodes']} "
-                f"steps={heldout_eval['mean_rollout_steps']:.1f} "
                 f"time={heldout_eval['elapsed_sec']:.1f}s"
             )
 
@@ -1448,14 +1371,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "epoch": epoch,
             "fitness_mode": args.fitness_mode,
             "candidate_build": args.candidate_build,
-            "early_stop_eval": bool(args.early_stop_eval),
             "population_summary": {
                 "win_rate_mean": float(raw_win_rates.mean()),
                 "win_rate_std": float(raw_win_rates.std()),
                 "win_rate_min": float(raw_win_rates.min()),
                 "win_rate_max": float(raw_win_rates.max()),
                 "return_mean": float(raw_returns.mean()),
-                "rollout_steps_mean": float(raw_rollout_steps.mean()),
                 "fitness_mean": float(fitness_scores.mean()),
                 "fitness_std": float(fitness_scores.std()),
             },
