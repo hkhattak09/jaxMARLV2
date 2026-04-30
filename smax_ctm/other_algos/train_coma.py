@@ -562,7 +562,7 @@ def make_train(config):
                 )
                 update_state = (
                     train_states,
-                    jax.tree.map(lambda x: x.squeeze(0), init_hstates),
+                    init_hstates,
                     traj_batch,
                     advantages,
                     targets,
