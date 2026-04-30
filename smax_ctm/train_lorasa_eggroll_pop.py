@@ -99,6 +99,13 @@ def _metrics_to_json(metrics) -> List[Dict[str, Any]]:
     return [asdict(metric) for metric in metrics]
 
 
+def _block_until_ready_tree(tree):
+    leaves = jax.tree_util.tree_leaves(tree)
+    if leaves:
+        jax.block_until_ready(leaves)
+    return tree
+
+
 def _summarize_update_metrics(metrics) -> Dict[str, Any]:
     if not metrics:
         return {
@@ -374,6 +381,441 @@ def _thread_to_direction_and_sign(thread_id: int) -> Tuple[int, int, str]:
     return direction_id, -1, "minus"
 
 
+def _jax_key_for_direction(
+    base_seed: int,
+    epoch,
+    direction_id,
+    block_slot_seed: int,
+):
+    key = jax.random.PRNGKey(int(base_seed))
+    key = jax.random.fold_in(key, jnp.asarray(epoch, dtype=jnp.uint32))
+    key = jax.random.fold_in(key, jnp.asarray(direction_id, dtype=jnp.uint32))
+    key = jax.random.fold_in(key, jnp.asarray(block_slot_seed, dtype=jnp.uint32))
+    return key
+
+
+def _jax_thin_svd(delta, target_rank: int):
+    u, s, vt = jnp.linalg.svd(delta, full_matrices=False)
+    return u[..., :target_rank], s[..., :target_rank], vt[..., :target_rank, :]
+
+
+def _jax_tangent_project(z, u, vt):
+    v = jnp.swapaxes(vt, -1, -2)
+    z_v_vt = jnp.matmul(jnp.matmul(z, v), vt)
+    u_t = jnp.swapaxes(u, -1, -2)
+    u_ut_z = jnp.matmul(u, jnp.matmul(u_t, z))
+    u_ut_z_v_vt = jnp.matmul(
+        u,
+        jnp.matmul(jnp.matmul(jnp.matmul(u_t, z), v), vt),
+    )
+    return z_v_vt + u_ut_z - u_ut_z_v_vt
+
+
+def _jax_balanced_factors_from_svd(
+    u,
+    s,
+    vt,
+    configured_rank: int,
+    out_a_shape: Tuple[int, ...],
+    out_b_shape: Tuple[int, ...],
+    out_dtype,
+    singular_floor: float,
+):
+    sqrt_s = jnp.sqrt(jnp.maximum(s, jnp.asarray(singular_floor, dtype=s.dtype)))
+    active_a = u * sqrt_s[..., None, :]
+    active_b = sqrt_s[..., :, None] * vt
+    a = jnp.zeros(out_a_shape, dtype=out_dtype)
+    b = jnp.zeros(out_b_shape, dtype=out_dtype)
+    active_rank = active_a.shape[-1]
+    del configured_rank
+    a = a.at[..., :active_rank].set(active_a.astype(out_dtype))
+    b = b.at[..., :active_rank, :].set(active_b.astype(out_dtype))
+    return a, b
+
+
+def _jax_low_rank_ambient(
+    direction_id,
+    rows: int,
+    cols: int,
+    noise_rank: int,
+    base_seed: int,
+    epoch,
+    block_slot_seed: int,
+    dtype,
+):
+    key = _jax_key_for_direction(base_seed, epoch, direction_id, block_slot_seed)
+    p_key, q_key = jax.random.split(key)
+    p = jax.random.normal(p_key, (rows, noise_rank), dtype=dtype)
+    q = jax.random.normal(q_key, (noise_rank, cols), dtype=dtype)
+    return (p @ q) / math.sqrt(noise_rank)
+
+
+def _jax_step_from_svd(
+    direction_id,
+    delta,
+    u,
+    vt,
+    noise_rank: int,
+    base_seed: int,
+    epoch,
+    block_slot_seed: int,
+    relative_scale: bool,
+):
+    rows = int(delta.shape[0])
+    cols = int(delta.shape[1])
+    z = _jax_low_rank_ambient(
+        direction_id,
+        rows=rows,
+        cols=cols,
+        noise_rank=noise_rank,
+        base_seed=base_seed,
+        epoch=epoch,
+        block_slot_seed=block_slot_seed,
+        dtype=delta.dtype,
+    )
+    tangent = _jax_tangent_project(z, u, vt)
+    tangent_norm = jnp.sqrt(jnp.sum(jnp.square(tangent)))
+    unit_step = jnp.where(
+        tangent_norm > 0.0,
+        tangent / jnp.maximum(tangent_norm, jnp.asarray(1e-20, dtype=delta.dtype)),
+        jnp.zeros_like(tangent),
+    )
+    if relative_scale:
+        delta_norm = jnp.sqrt(jnp.sum(jnp.square(delta)))
+        unit_step = unit_step * jnp.maximum(delta_norm, jnp.asarray(1e-8, dtype=delta.dtype))
+    step_norm = jnp.sqrt(jnp.sum(jnp.square(unit_step)))
+    return tangent, unit_step, tangent_norm, step_norm
+
+
+def _jax_candidate_factors_for_slot(
+    a_slot,
+    b_slot,
+    direction_ids,
+    signs,
+    sigma: float,
+    target_rank: int,
+    noise_rank: int,
+    base_seed: int,
+    epoch,
+    block_slot_seed: int,
+    relative_scale: bool,
+    singular_floor: float,
+):
+    batch_size = int(direction_ids.shape[0])
+    if float(sigma) == 0.0:
+        return (
+            jnp.broadcast_to(a_slot, (batch_size,) + tuple(a_slot.shape)),
+            jnp.broadcast_to(b_slot, (batch_size,) + tuple(b_slot.shape)),
+        )
+
+    work_dtype = jnp.float32
+    a_work = a_slot.astype(work_dtype)
+    b_work = b_slot.astype(work_dtype)
+    delta = a_work @ b_work
+    u, _, vt = _jax_thin_svd(delta, target_rank)
+
+    def _one(direction_id, sign):
+        _, step, _, _ = _jax_step_from_svd(
+            direction_id,
+            delta,
+            u,
+            vt,
+            noise_rank=noise_rank,
+            base_seed=base_seed,
+            epoch=epoch,
+            block_slot_seed=block_slot_seed,
+            relative_scale=relative_scale,
+        )
+        return delta + sign.astype(work_dtype) * jnp.asarray(sigma, dtype=work_dtype) * step
+
+    candidate_delta = jax.vmap(_one)(direction_ids, signs)
+    u_new, s_new, vt_new = _jax_thin_svd(candidate_delta, target_rank)
+    new_a, new_b = _jax_balanced_factors_from_svd(
+        u_new,
+        s_new,
+        vt_new,
+        configured_rank=int(a_slot.shape[-1]),
+        out_a_shape=(batch_size,) + tuple(a_slot.shape),
+        out_b_shape=(batch_size,) + tuple(b_slot.shape),
+        out_dtype=a_slot.dtype,
+        singular_floor=singular_floor,
+    )
+    return new_a, new_b
+
+
+def _make_device_candidate_builder(
+    actor_params: Any,
+    active_slots: Sequence[int],
+    target_rank: int,
+    noise_rank: int,
+    sigma: float,
+    base_seed: int,
+    relative_scale: bool,
+    singular_floor: float,
+    block_patterns: Sequence[str] = re.NO_RECURRENT_BLOCK_PATTERNS,
+):
+    selected = re.select_lora_blocks(re.discover_lora_blocks(actor_params), block_patterns)
+    active_slots = tuple(sorted(int(slot) for slot in active_slots))
+    for block in selected:
+        if target_rank > block.configured_rank:
+            raise ValueError(
+                f"target_rank {target_rank} exceeds configured rank "
+                f"{block.configured_rank} at {block.path}"
+            )
+        for slot in active_slots:
+            if slot < 0 or slot >= block.num_slots:
+                raise IndexError(f"slot {slot} out of range for {block.path}")
+    block_slot_seeds = {
+        (block.path, slot): re.stable_uint32_seed("device_candidate", block.path, slot)
+        for block in selected
+        for slot in active_slots
+    }
+
+    def _build(params, thread_ids, epoch):
+        flat = re.flatten_tree(params)
+        batch_flat: Dict[Tuple[str, ...], Any] = dict(flat)
+        direction_ids = (thread_ids // 2).astype(jnp.uint32)
+        signs = jnp.where(thread_ids % 2 == 0, 1.0, -1.0)
+        batch_size = int(thread_ids.shape[0])
+
+        for block in selected:
+            base_a = jnp.asarray(flat[block.lora_a_key])
+            base_b = jnp.asarray(flat[block.lora_b_key])
+            batch_a = jnp.broadcast_to(base_a, (batch_size,) + tuple(base_a.shape))
+            batch_b = jnp.broadcast_to(base_b, (batch_size,) + tuple(base_b.shape))
+
+            for slot in active_slots:
+                seed = block_slot_seeds[(block.path, slot)]
+                new_a, new_b = _jax_candidate_factors_for_slot(
+                    base_a[slot],
+                    base_b[slot],
+                    direction_ids,
+                    signs,
+                    sigma=sigma,
+                    target_rank=target_rank,
+                    noise_rank=noise_rank,
+                    base_seed=base_seed,
+                    epoch=epoch,
+                    block_slot_seed=seed,
+                    relative_scale=relative_scale,
+                    singular_floor=singular_floor,
+                )
+                batch_a = batch_a.at[:, slot].set(new_a)
+                batch_b = batch_b.at[:, slot].set(new_b)
+
+            batch_flat[block.lora_a_key] = batch_a
+            batch_flat[block.lora_b_key] = batch_b
+
+        return re.unflatten_tree(batch_flat)
+
+    return jax.jit(_build), selected, active_slots
+
+
+def _jax_weighted_update_for_slot(
+    a_slot,
+    b_slot,
+    direction_ids,
+    direction_weights,
+    eta: float,
+    target_rank: int,
+    noise_rank: int,
+    base_seed: int,
+    epoch,
+    block_slot_seed: int,
+    direction_normalizer: int,
+    relative_scale: bool,
+    singular_floor: float,
+):
+    work_dtype = jnp.float32
+    a_work = a_slot.astype(work_dtype)
+    b_work = b_slot.astype(work_dtype)
+    delta = a_work @ b_work
+    u, s_old, vt = _jax_thin_svd(delta, target_rank)
+
+    def _one(direction_id, weight):
+        tangent, step, tangent_norm, step_norm = _jax_step_from_svd(
+            direction_id,
+            delta,
+            u,
+            vt,
+            noise_rank=noise_rank,
+            base_seed=base_seed,
+            epoch=epoch,
+            block_slot_seed=block_slot_seed,
+            relative_scale=relative_scale,
+        )
+        nonzero = weight != 0.0
+        weighted_step = weight.astype(work_dtype) * step
+        tangent_norm = jnp.where(nonzero, tangent_norm, 0.0)
+        step_norm = jnp.where(nonzero, step_norm, 0.0)
+        return weighted_step, tangent_norm, step_norm
+
+    weighted_steps, tangent_norms, step_norms = jax.vmap(_one)(
+        direction_ids,
+        direction_weights.astype(work_dtype),
+    )
+    aggregate = jnp.sum(weighted_steps, axis=0) / jnp.asarray(
+        max(1, int(direction_normalizer)),
+        dtype=work_dtype,
+    )
+    applied_update = jnp.asarray(eta, dtype=work_dtype) * aggregate
+    updated_delta = delta + applied_update
+    u_new, s_new, vt_new = _jax_thin_svd(updated_delta, target_rank)
+    new_a, new_b = _jax_balanced_factors_from_svd(
+        u_new,
+        s_new,
+        vt_new,
+        configured_rank=int(a_slot.shape[-1]),
+        out_a_shape=tuple(a_slot.shape),
+        out_b_shape=tuple(b_slot.shape),
+        out_dtype=a_slot.dtype,
+        singular_floor=singular_floor,
+    )
+    delta_norm = jnp.sqrt(jnp.sum(jnp.square(delta)))
+    applied_norm = jnp.sqrt(jnp.sum(jnp.square(applied_update)))
+    return (
+        new_a,
+        new_b,
+        delta_norm,
+        jnp.sum(tangent_norms),
+        jnp.sum(step_norms),
+        s_old,
+        s_new,
+        applied_norm,
+    )
+
+
+def _make_device_update_fn(
+    actor_params: Any,
+    selected_blocks: Sequence[re.LoRABlock],
+    active_slots: Sequence[int],
+    target_rank: int,
+    noise_rank: int,
+    eta: float,
+    base_seed: int,
+    direction_normalizer: int,
+    relative_scale: bool,
+    singular_floor: float,
+):
+    for block in selected_blocks:
+        if target_rank > block.configured_rank:
+            raise ValueError(
+                f"target_rank {target_rank} exceeds configured rank "
+                f"{block.configured_rank} at {block.path}"
+            )
+        for slot in active_slots:
+            if slot < 0 or slot >= block.num_slots:
+                raise IndexError(f"slot {slot} out of range for {block.path}")
+    block_slot_seeds = {
+        (block.path, slot): re.stable_uint32_seed("device_candidate", block.path, slot)
+        for block in selected_blocks
+        for slot in active_slots
+    }
+    del actor_params
+
+    def _update(params, direction_weights, epoch):
+        flat = re.flatten_tree(params)
+        updated_flat: Dict[Tuple[str, ...], Any] = dict(flat)
+        direction_ids = jnp.arange(direction_weights.shape[0], dtype=jnp.uint32)
+        delta_norms = []
+        tangent_norms = []
+        step_norms = []
+        singular_values = []
+        retracted_singular_values = []
+        applied_norms = []
+
+        for block in selected_blocks:
+            lora_a = jnp.asarray(flat[block.lora_a_key])
+            lora_b = jnp.asarray(flat[block.lora_b_key])
+            new_lora_a = lora_a
+            new_lora_b = lora_b
+
+            for slot in active_slots:
+                seed = block_slot_seeds[(block.path, slot)]
+                (
+                    new_a,
+                    new_b,
+                    delta_norm,
+                    tangent_norm,
+                    step_norm,
+                    s_old,
+                    s_new,
+                    applied_norm,
+                ) = _jax_weighted_update_for_slot(
+                    lora_a[slot],
+                    lora_b[slot],
+                    direction_ids,
+                    direction_weights,
+                    eta=eta,
+                    target_rank=target_rank,
+                    noise_rank=noise_rank,
+                    base_seed=base_seed,
+                    epoch=epoch,
+                    block_slot_seed=seed,
+                    direction_normalizer=direction_normalizer,
+                    relative_scale=relative_scale,
+                    singular_floor=singular_floor,
+                )
+                new_lora_a = new_lora_a.at[slot].set(new_a)
+                new_lora_b = new_lora_b.at[slot].set(new_b)
+                delta_norms.append(delta_norm)
+                tangent_norms.append(tangent_norm)
+                step_norms.append(step_norm)
+                singular_values.append(s_old)
+                retracted_singular_values.append(s_new)
+                applied_norms.append(applied_norm)
+
+            updated_flat[block.lora_a_key] = new_lora_a
+            updated_flat[block.lora_b_key] = new_lora_b
+
+        metric_tree = {
+            "delta_fro_norm": jnp.stack(delta_norms),
+            "tangent_fro_norm": jnp.stack(tangent_norms),
+            "step_fro_norm": jnp.stack(step_norms),
+            "singular_values": jnp.stack(singular_values),
+            "retracted_singular_values": jnp.stack(retracted_singular_values),
+            "applied_update_fro_norm": jnp.stack(applied_norms),
+        }
+        return re.unflatten_tree(updated_flat), metric_tree
+
+    return jax.jit(_update)
+
+
+def _device_metrics_to_list(
+    metric_tree: Mapping[str, Any],
+    selected_blocks: Sequence[re.LoRABlock],
+    active_slots: Sequence[int],
+    target_rank: int,
+) -> List[re.SlotUpdateMetrics]:
+    arrays = jax.device_get(metric_tree)
+    metrics: List[re.SlotUpdateMetrics] = []
+    idx = 0
+    for block in selected_blocks:
+        for slot in active_slots:
+            metrics.append(
+                re.SlotUpdateMetrics(
+                    path=block.path,
+                    slot=int(slot),
+                    target_rank=int(target_rank),
+                    configured_rank=int(block.configured_rank),
+                    delta_fro_norm=float(arrays["delta_fro_norm"][idx]),
+                    tangent_fro_norm=float(arrays["tangent_fro_norm"][idx]),
+                    step_fro_norm=float(arrays["step_fro_norm"][idx]),
+                    singular_values=tuple(
+                        float(x) for x in arrays["singular_values"][idx]
+                    ),
+                    retracted_singular_values=tuple(
+                        float(x) for x in arrays["retracted_singular_values"][idx]
+                    ),
+                    applied_update_fro_norm=float(
+                        arrays["applied_update_fro_norm"][idx]
+                    ),
+                )
+            )
+            idx += 1
+    return metrics
+
+
 def _make_candidate_batch_actor_params(
     actor_params: Any,
     thread_ids: Sequence[int],
@@ -545,6 +987,7 @@ def _make_checkpoint(
         "num_envs_per_candidate": int(args.num_envs_per_candidate),
         "episodes_per_candidate": int(args.episodes_per_candidate),
         "fitness_mode": str(args.fitness_mode),
+        "candidate_build": str(args.candidate_build),
         "latest_stats": dict(latest_stats),
     }
     return ckpt
@@ -595,6 +1038,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Do not scale unit tangent directions by adapter Frobenius norm",
     )
     parser.add_argument("--singular_floor", type=float, default=0.0)
+    parser.add_argument(
+        "--candidate_build",
+        choices=("device", "cpu"),
+        default="device",
+        help=(
+            "Build per-chunk candidates on device with JAX, or use the older "
+            "host NumPy correctness path."
+        ),
+    )
     parser.add_argument(
         "--print_candidates",
         action="store_true",
@@ -699,6 +1151,40 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         active_slots=args.active_slots,
         target_rank=args.target_rank,
     )
+    selected_blocks = re.select_lora_blocks(
+        re.discover_lora_blocks(source_ckpt["actor_params"]),
+        re.NO_RECURRENT_BLOCK_PATTERNS,
+    )
+    active_slots = tuple(sorted(int(slot) for slot in args.active_slots))
+
+    device_candidate_builder = None
+    device_update_fn = None
+    if args.candidate_build == "device":
+        print("Candidate build: device/JAX batched SVD")
+        device_candidate_builder, selected_blocks, active_slots = _make_device_candidate_builder(
+            source_ckpt["actor_params"],
+            active_slots=args.active_slots,
+            target_rank=args.target_rank,
+            noise_rank=args.noise_rank,
+            sigma=args.sigma,
+            base_seed=args.noise_seed,
+            relative_scale=not args.no_relative_scale,
+            singular_floor=args.singular_floor,
+        )
+        device_update_fn = _make_device_update_fn(
+            source_ckpt["actor_params"],
+            selected_blocks=selected_blocks,
+            active_slots=active_slots,
+            target_rank=args.target_rank,
+            noise_rank=args.noise_rank,
+            eta=args.eta,
+            base_seed=args.noise_seed,
+            direction_normalizer=args.num_directions,
+            relative_scale=not args.no_relative_scale,
+            singular_floor=args.singular_floor,
+        )
+    else:
+        print("Candidate build: cpu/NumPy reference")
 
     def _batched_eval(rng, batched_actor_params):
         return jax.vmap(
@@ -729,18 +1215,31 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             end_idx = start_idx + args.population_batch_size
             thread_ids = list(range(start_idx, end_idx))
             build_start = time.time()
-            batched_params, candidate_metric_count = _make_candidate_batch_actor_params(
-                actor_params,
-                thread_ids=thread_ids,
-                epoch=epoch,
-                sigma=args.sigma,
-                base_seed=args.noise_seed,
-                active_slots=args.active_slots,
-                target_rank=args.target_rank,
-                noise_rank=args.noise_rank,
-                relative_scale=not args.no_relative_scale,
-                singular_floor=args.singular_floor,
-            )
+            if args.candidate_build == "device":
+                assert device_candidate_builder is not None
+                thread_ids_array = jnp.arange(start_idx, end_idx, dtype=jnp.int32)
+                batched_params = device_candidate_builder(
+                    actor_params,
+                    thread_ids_array,
+                    jnp.asarray(epoch, dtype=jnp.int32),
+                )
+                _block_until_ready_tree(batched_params)
+                candidate_metric_count = (
+                    len(thread_ids) * len(selected_blocks) * len(active_slots)
+                )
+            else:
+                batched_params, candidate_metric_count = _make_candidate_batch_actor_params(
+                    actor_params,
+                    thread_ids=thread_ids,
+                    epoch=epoch,
+                    sigma=args.sigma,
+                    base_seed=args.noise_seed,
+                    active_slots=args.active_slots,
+                    target_rank=args.target_rank,
+                    noise_rank=args.noise_rank,
+                    relative_scale=not args.no_relative_scale,
+                    singular_floor=args.singular_floor,
+                )
             build_elapsed = time.time() - build_start
 
             eval_start = time.time()
@@ -807,19 +1306,41 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         )
         print(f"direction weights: {_format_weights(direction_weights)}")
 
-        actor_params, update_metrics = re.apply_weighted_tangent_update(
-            actor_params,
-            direction_weights=direction_weights,
-            eta=args.eta,
-            epoch=epoch,
-            base_seed=args.noise_seed,
-            active_slots=args.active_slots,
-            target_rank=args.target_rank,
-            noise_rank=args.noise_rank,
-            relative_scale=not args.no_relative_scale,
-            direction_normalizer=args.num_directions,
-            singular_floor=args.singular_floor,
-        )
+        if (
+            args.candidate_build == "device"
+            and float(args.eta) != 0.0
+            and any(float(weight) != 0.0 for weight in direction_weights.values())
+        ):
+            assert device_update_fn is not None
+            weights_array = np.zeros(args.num_directions, dtype=np.float32)
+            for direction_id, weight in direction_weights.items():
+                weights_array[int(direction_id)] = float(weight)
+            actor_params, device_metric_tree = device_update_fn(
+                actor_params,
+                jnp.asarray(weights_array),
+                jnp.asarray(epoch, dtype=jnp.int32),
+            )
+            _block_until_ready_tree((actor_params, device_metric_tree))
+            update_metrics = _device_metrics_to_list(
+                device_metric_tree,
+                selected_blocks=selected_blocks,
+                active_slots=active_slots,
+                target_rank=args.target_rank,
+            )
+        else:
+            actor_params, update_metrics = re.apply_weighted_tangent_update(
+                actor_params,
+                direction_weights=direction_weights,
+                eta=args.eta,
+                epoch=epoch,
+                base_seed=args.noise_seed,
+                active_slots=args.active_slots,
+                target_rank=args.target_rank,
+                noise_rank=args.noise_rank,
+                relative_scale=not args.no_relative_scale,
+                direction_normalizer=args.num_directions,
+                singular_floor=args.singular_floor,
+            )
         update_summary = _summarize_update_metrics(update_metrics)
         print(
             "update summary: "
@@ -849,6 +1370,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         latest_stats = {
             "epoch": epoch,
             "fitness_mode": args.fitness_mode,
+            "candidate_build": args.candidate_build,
             "population_summary": {
                 "win_rate_mean": float(raw_win_rates.mean()),
                 "win_rate_std": float(raw_win_rates.std()),

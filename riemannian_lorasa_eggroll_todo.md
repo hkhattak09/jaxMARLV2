@@ -166,11 +166,45 @@ Immediate next experiment: single-GPU population-axis Riemannian LoRASA-EGGROLL
     update, ran held-out eval, and saved cleanly.
   - Validate the nonzero population update with:
     `python smax_ctm/lorasa_eggroll.py --reference_checkpoint /path/to/schedule_A/checkpoint_final_compressed_A.pkl --checkpoint lorasa_eggroll_pop_runs/<run_id>/checkpoint_final.pkl --require_active_change --validation_json diagnostics/lorasa_eggroll_pop_update_validation.json`
+  - Nonzero population update validation passed:
+    `passed=true`, `num_violations=0`, `active_slot_pairs_changed=21`,
+    `changed_non_active_leaves=0`, `active_rank_violations=0`.
 
-- [ ] Run first population-axis protoss_10_vs_10 pilot.
+- [x] Run first population-axis protoss_10_vs_10 pilot.
   - Use the original Schedule A compressed checkpoint as the source.
   - Start with enough candidates/episodes to reduce tie saturation but keep the
     first pilot short enough for Colab iteration.
+  - First pilot completed:
+    `lorasa_eggroll_pop_runs/lorasa_eggroll_pop_20260429_231225/checkpoint_final.pkl`.
+    Settings: `num_epochs=3`, `num_directions=32`,
+    `population_batch_size=8`, `num_envs_per_candidate=16`,
+    `episodes_per_candidate=64`, `sigma=0.05`, `eta=0.001`.
+  - Throughput signal: first epoch compiled in about 38s total; later epochs
+    were about 10s for 4096 train episodes plus held-out eval.
+  - Update signal: all 32 directions were nonzero each epoch; applied update
+    means stayed small (`0.000274`, `0.000281`, `0.000318`) while raw direction
+    sums were large as expected.
+  - Held-out 256-episode win rates by epoch:
+    `0.9258`, `0.9453`, `0.9492`. Treat this as non-collapse, not yet as an
+    improvement claim.
+
+- [ ] Run shared-seed evaluation of population pilot checkpoints.
+  - Compare Schedule A against epoch 1/2/3/final on the same deterministic
+    1024+ episode bundle.
+
+- [ ] Optimize population trainer for A100-scale runs.
+  - A100 `2048`-direction capacity probe completed without OOM:
+    `population_batch_size=256`, `num_envs_per_candidate=128`,
+    `episodes_per_candidate=256`.
+  - Bottleneck observed: per-chunk host candidate build was about `15-18s`,
+    while steady-state GPU rollout eval was about `10.7s`.
+  - Added `--candidate_build {device,cpu}` to
+    `smax_ctm/train_lorasa_eggroll_pop.py`; default is now device/JAX.
+  - Device path builds each population chunk with JAX batched SVD/retraction
+    and uses the same JAX noise backend for the ES update, so candidate scores
+    and update directions stay consistent.
+  - CPU path remains available as the older correctness/reference builder:
+    `--candidate_build cpu`.
 
 ## Rank Compression Schedules
 
