@@ -76,6 +76,11 @@ def get_default_coma_config():
             "see_enemy_actions": True,
             "walls_cause_death": True,
             "attack_mode": "closest",
+            "max_steps": 200,
+            "smacv2_unit_stats": True,
+            "smacv2_position_parity": True,
+            "reward_mode": "smacv2",
+            "movement_mode": "smacv2",
         },
 
         # === Seed ===

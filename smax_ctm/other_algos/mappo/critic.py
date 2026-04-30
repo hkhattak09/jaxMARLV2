@@ -5,6 +5,7 @@ Follows the pattern from smax_ctm/train_mappo_gru.py.
 
 import jax
 import jax.numpy as jnp
+import numpy as np
 import flax.linen as nn
 from flax.linen.initializers import constant, orthogonal
 from typing import Dict

@@ -18,7 +18,7 @@ from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
 import distrax
 
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
@@ -281,7 +281,7 @@ def make_train(config):
                     batchify(reward, env.agents, config["NUM_ACTORS"]).squeeze(),
                     log_prob.squeeze(),
                     obs_batch,
-                    batchify(last_obs["world_state"], env.agents, config["NUM_ACTORS"]),
+                    last_obs["world_state"].swapaxes(0, 1).reshape((config["NUM_ACTORS"], -1)),
                     info,
                     avail_actions,
                     policy_probs,

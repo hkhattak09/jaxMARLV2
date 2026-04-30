@@ -6,9 +6,13 @@ import os
 import sys
 import pickle
 
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
 
 import jax
 import jax.numpy as jnp
@@ -27,9 +31,9 @@ import time
 from jaxmarl.wrappers.baselines import SMAXLogWrapper, JaxMARLWrapper
 from jaxmarl.environments.smax import map_name_to_scenario, HeuristicEnemySMAX
 
-from smax_ctm.mappo import get_default_mappo_config, ActorRNN, CriticRNN
-from smax_ctm.mappo.actor import ScannedRNN
-from smax_ctm.mappo.utils import batchify, unbatchify
+from mappo import get_default_mappo_config, ActorRNN, CriticRNN
+from mappo.actor import ScannedRNN
+from mappo.utils import batchify, unbatchify
 
 
 class SMAXWorldStateWrapper(JaxMARLWrapper):

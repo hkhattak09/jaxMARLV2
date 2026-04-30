@@ -7,9 +7,13 @@ import os
 import sys
 import pickle
 # Inject repo root into sys.path so 'jaxmarl' is always found regardless of CWD
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if _SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, _SCRIPT_DIR)
 
 import jax
 import jax.numpy as jnp
@@ -27,9 +31,9 @@ import time
 from jaxmarl.wrappers.baselines import SMAXLogWrapper
 from jaxmarl.environments.smax import map_name_to_scenario, HeuristicEnemySMAX
 
-from smax_ctm.ippo.config import get_default_ippo_config
-from smax_ctm.ippo.actor import ActorRNN, ScannedRNN
-from smax_ctm.ippo.critic import CriticRNN
+from ippo.config import get_default_ippo_config
+from ippo.actor import ActorRNN, ScannedRNN
+from ippo.critic import CriticRNN
 
 
 def batchify(x: dict, agent_list, num_actors):
