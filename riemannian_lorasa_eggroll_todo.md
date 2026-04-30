@@ -203,6 +203,22 @@ Immediate next experiment: single-GPU population-axis Riemannian LoRASA-EGGROLL
   - Device path builds each population chunk with JAX batched SVD/retraction
     and uses the same JAX noise backend for the ES update, so candidate scores
     and update directions stay consistent.
+  - Tiny device-builder smoke passed in Colab:
+    `lorasa_eggroll_pop_runs/lorasa_eggroll_pop_20260430_103646`.
+    First chunk paid compile (`build=25.74s`, `eval=27.42s`); second chunk
+    showed steady-state builder speed (`build=0.14s`, `eval=0.21s`), confirming
+    the old host-build bottleneck is removed on the device path.
+  - Device-builder structural validation passed:
+    `passed=true`, `num_violations=0`, `active_slot_pairs_changed=21`,
+    `changed_non_active_leaves=0`, `active_rank_violations=0`.
+  - Added early-stop rollout evaluation to
+    `smax_ctm/train_lorasa_eggroll_pop.py`; default is
+    `--early_stop_eval`.
+  - Each rollout batch now stops once all envs have recorded their first
+    episode or `max_steps` is reached. Chunk/held-out logs include `steps=...`
+    to report actual rollout-loop steps.
+  - Disable with `--no-early_stop_eval` if exact fixed-horizon scan behavior is
+    needed for debugging.
   - CPU path remains available as the older correctness/reference builder:
     `--candidate_build cpu`.
 
