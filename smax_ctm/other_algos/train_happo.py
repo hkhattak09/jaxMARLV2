@@ -2,11 +2,13 @@
 HAPPO GRU Baseline for SMAX
 Colab-ready, dependency-light version (no Hydra/wandb).
 """
+import csv
 import os
 import sys
 import pickle
 import time
 import argparse
+from datetime import datetime
 
 # Inject repo root into sys.path so 'jaxmarl' is always found regardless of CWD
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
@@ -117,6 +119,23 @@ def make_train(config):
         update_num = count // actor_steps_per_update
         frac = 1.0 - update_num / config["NUM_UPDATES"]
         return config["LR"] * jnp.maximum(frac, 0.0)
+
+    # === Logging setup ===
+    save_interval = config.get("SAVE_INTERVAL", 1000000)
+    print_interval = max(1, save_interval // 20)
+    run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    run_dir = os.path.join(_REPO_ROOT, "saved_models", run_timestamp)
+    os.makedirs(run_dir, exist_ok=True)
+    csv_path = os.path.join(run_dir, "progress.csv")
+    progress_header = [
+        "step", "update", "return", "win_rate", "win_rate_std",
+        "ep_len", "timeout_rate",
+        "value_loss", "entropy", "clip_frac", "approx_kl",
+        "actor_grad_norm", "critic_grad_norm",
+    ]
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(progress_header)
 
     def train(rng):
         # INIT NETWORK
@@ -386,19 +405,50 @@ def make_train(config):
             returns = jnp.sum(metric["returned_episode_returns"][:, :, 0] * mask) / ep_count
             win_rate = jnp.sum(metric["returned_won_episode"][:, :, 0] * mask) / ep_count
 
-            def log_callback(r, w, s, al, ent, kl, agn, vl, cgn):
-                print(
-                    f"Step {s:8d} | Return: {r:10.2f} | Win Rate: {w:5.2f} "
-                    f"| ActorLoss: {al:10.4f} | Ent: {ent:8.4f} | KL: {kl:8.4f} "
-                    f"| GradN(actor/critic): {agn:8.4f}/{cgn:8.4f} | ValueLoss: {vl:8.4f}"
-                )
+            env_win_rates = jnp.sum(
+                metric["returned_won_episode"][:, :, :] * mask[..., None], axis=0
+            ) / (jnp.sum(mask, axis=0)[..., None] + 1e-8)
+            win_rate_std = jnp.std(env_win_rates, ddof=1)
+            ep_len = jnp.sum(metric["returned_episode_lengths"][:, :, 0] * mask) / ep_count
+            timeout_rate = jnp.sum(metric["returned_timed_out"][:, :, 0] * mask) / ep_count
+
+            loss_info = {
+                "value_loss": critic_loss_avg,
+                "entropy": entropy_avg,
+                "approx_kl": approx_kl_avg,
+                "actor_grad_norm": actor_grad_norm_avg,
+                "critic_grad_norm": critic_grad_norm_avg,
+            }
 
             step_count = update_steps * config["NUM_ENVS"] * config["NUM_STEPS"]
+
+            def _print_and_csv(r, w, ws, el, tr, s, u, vl, ent, cf, akl, agn, cgn):
+                s_int = int(s)
+                if s_int > 0 and s_int % print_interval == 0:
+                    msg = (
+                        f"Step {s:8d} | Update {u:5d} | Return: {r:10.2f} | "
+                        f"Win: {w:5.2f}+-{ws:5.2f} | Len: {el:5.1f} | "
+                        f"TO: {tr:5.2f} | VLoss: {vl:8.4f} | "
+                        f"Ent: {ent:6.4f} | Clip: {cf:5.3f} | KL: {akl:6.5f} | "
+                        f"GradN(A/C): {agn:6.3f}/{cgn:6.3f}"
+                    )
+                    print(msg)
+                    with open(csv_path, "a", newline="") as f_csv:
+                        writer = csv.writer(f_csv)
+                        writer.writerow([
+                            s_int, int(u), float(r), float(w), float(ws),
+                            float(el), float(tr),
+                            float(vl), float(ent), float(cf), float(akl),
+                            float(agn), float(cgn),
+                        ])
+
             jax.experimental.io_callback(
-                log_callback, None,
-                returns, win_rate, step_count,
-                actor_loss_avg, entropy_avg, approx_kl_avg,
-                actor_grad_norm_avg, critic_loss_avg, critic_grad_norm_avg,
+                _print_and_csv, None,
+                returns, win_rate, win_rate_std, ep_len, timeout_rate,
+                step_count, update_steps,
+                loss_info.get("value_loss", 0.0), loss_info.get("entropy", 0.0),
+                loss_info.get("clip_frac", 0.0), loss_info.get("approx_kl", 0.0),
+                loss_info.get("actor_grad_norm", 0.0), loss_info.get("critic_grad_norm", 0.0),
             )
             
             update_steps = update_steps + 1
