@@ -508,7 +508,7 @@ if __name__ == "__main__":
         "ACTIVATION": "relu",
         "OBS_WITH_AGENT_ID": True,
         "ENV_NAME": "HeuristicEnemySMAX",
-        "MAP_NAME": "3m",    # We start with 3m
+        "MAP_NAME": "protoss_10_vs_10",
         "SEED": 42,
         "ENV_KWARGS": {
             "see_enemy_actions": True,
