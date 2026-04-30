@@ -23,6 +23,7 @@ from flax.training.train_state import TrainState
 import distrax
 from functools import partial
 import time
+import argparse
 
 # You may need to adapt imports based on where this is running relative to JaxMARL
 from jaxmarl.wrappers.baselines import SMAXLogWrapper, JaxMARLWrapper
@@ -431,12 +432,68 @@ def make_train(config):
 
     return train
 
+def _override_config_from_cli(config):
+    """Override config values with command-line arguments."""
+    parser = argparse.ArgumentParser(description="MAPPO GRU training for SMAX")
+    parser.add_argument("--map_name", type=str, default=None)
+    parser.add_argument("--num_envs", type=int, default=None)
+    parser.add_argument("--num_steps", type=int, default=None)
+    parser.add_argument("--total_timesteps", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--save_interval", type=int, default=None)
+    parser.add_argument("--max_steps", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--update_epochs", type=int, default=None)
+    parser.add_argument("--num_minibatches", type=int, default=None)
+    parser.add_argument("--clip_eps", type=float, default=None)
+    parser.add_argument("--ent_coef", type=float, default=None)
+    parser.add_argument("--vf_coef", type=float, default=None)
+    parser.add_argument("--gamma", type=float, default=None)
+    parser.add_argument("--gae_lambda", type=float, default=None)
+    parser.add_argument("--max_grad_norm", type=float, default=None)
+    args = parser.parse_args()
+
+    if args.map_name is not None:
+        config["MAP_NAME"] = args.map_name
+    if args.num_envs is not None:
+        config["NUM_ENVS"] = args.num_envs
+    if args.num_steps is not None:
+        config["NUM_STEPS"] = args.num_steps
+    if args.total_timesteps is not None:
+        config["TOTAL_TIMESTEPS"] = args.total_timesteps
+    if args.seed is not None:
+        config["SEED"] = args.seed
+    if args.save_interval is not None:
+        config["SAVE_INTERVAL"] = args.save_interval
+    if args.max_steps is not None:
+        config.setdefault("ENV_KWARGS", {})["max_steps"] = args.max_steps
+    if args.lr is not None:
+        config["LR"] = args.lr
+    if args.update_epochs is not None:
+        config["UPDATE_EPOCHS"] = args.update_epochs
+    if args.num_minibatches is not None:
+        config["NUM_MINIBATCHES"] = args.num_minibatches
+    if args.clip_eps is not None:
+        config["CLIP_EPS"] = args.clip_eps
+    if args.ent_coef is not None:
+        config["ENT_COEF"] = args.ent_coef
+    if args.vf_coef is not None:
+        config["VF_COEF"] = args.vf_coef
+    if args.gamma is not None:
+        config["GAMMA"] = args.gamma
+    if args.gae_lambda is not None:
+        config["GAE_LAMBDA"] = args.gae_lambda
+    if args.max_grad_norm is not None:
+        config["MAX_GRAD_NORM"] = args.max_grad_norm
+    return config
+
+
 if __name__ == "__main__":
     config = {
         "LR": 0.002,
         "NUM_ENVS": 128,
-        "NUM_STEPS": 128, 
-        "TOTAL_TIMESTEPS": int(3e6),  # Train for 3M steps to see convergence
+        "NUM_STEPS": 128,
+        "TOTAL_TIMESTEPS": int(4e7),
         "FC_DIM_SIZE": 128,
         "GRU_HIDDEN_DIM": 128,
         "UPDATE_EPOCHS": 4,
@@ -456,10 +513,12 @@ if __name__ == "__main__":
         "ENV_KWARGS": {
             "see_enemy_actions": True,
             "walls_cause_death": True,
-            "attack_mode": "closest"
+            "attack_mode": "closest",
+            "max_steps": 200,
         },
         "ANNEAL_LR": True
     }
+    config = _override_config_from_cli(config)
 
     print(f"Starting {config['MAP_NAME']} MAPPO Baseline...")
     rng = jax.random.PRNGKey(config["SEED"])

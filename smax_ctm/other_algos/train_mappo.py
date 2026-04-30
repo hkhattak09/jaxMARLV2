@@ -27,6 +27,7 @@ from flax.training.train_state import TrainState
 import distrax
 from functools import partial
 import time
+import argparse
 
 from jaxmarl.wrappers.baselines import SMAXLogWrapper, JaxMARLWrapper
 from jaxmarl.environments.smax import map_name_to_scenario, HeuristicEnemySMAX
@@ -368,8 +369,80 @@ def make_train(config):
     return train
 
 
+def _override_config_from_cli(config):
+    """Override config values with command-line arguments."""
+    parser = argparse.ArgumentParser(description="MAPPO training for SMAX")
+    parser.add_argument("--map_name", type=str, default=None)
+    parser.add_argument("--num_envs", type=int, default=None)
+    parser.add_argument("--num_steps", type=int, default=None)
+    parser.add_argument("--total_timesteps", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--save_interval", type=int, default=None)
+    parser.add_argument("--max_steps", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--critic_lr", type=float, default=None)
+    parser.add_argument("--ppo_epoch", type=int, default=None)
+    parser.add_argument("--critic_epoch", type=int, default=None)
+    parser.add_argument("--actor_num_mini_batch", type=int, default=None)
+    parser.add_argument("--critic_num_mini_batch", type=int, default=None)
+    parser.add_argument("--clip_param", type=float, default=None)
+    parser.add_argument("--ent_coef", type=float, default=None)
+    parser.add_argument("--gamma", type=float, default=None)
+    parser.add_argument("--gae_lambda", type=float, default=None)
+    parser.add_argument("--max_grad_norm", type=float, default=None)
+    parser.add_argument("--value_loss_coef", type=float, default=None)
+    parser.add_argument("--use_recurrent_policy", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--use_valuenorm", action=argparse.BooleanOptionalAction, default=None)
+    args = parser.parse_args()
+
+    if args.map_name is not None:
+        config["MAP_NAME"] = args.map_name
+    if args.num_envs is not None:
+        config["NUM_ENVS"] = args.num_envs
+    if args.num_steps is not None:
+        config["NUM_STEPS"] = args.num_steps
+    if args.total_timesteps is not None:
+        config["TOTAL_TIMESTEPS"] = args.total_timesteps
+    if args.seed is not None:
+        config["SEED"] = args.seed
+    if args.save_interval is not None:
+        config["SAVE_INTERVAL"] = args.save_interval
+    if args.max_steps is not None:
+        config.setdefault("ENV_KWARGS", {})["max_steps"] = args.max_steps
+    if args.lr is not None:
+        config["lr"] = args.lr
+    if args.critic_lr is not None:
+        config["critic_lr"] = args.critic_lr
+    if args.ppo_epoch is not None:
+        config["ppo_epoch"] = args.ppo_epoch
+    if args.critic_epoch is not None:
+        config["critic_epoch"] = args.critic_epoch
+    if args.actor_num_mini_batch is not None:
+        config["actor_num_mini_batch"] = args.actor_num_mini_batch
+    if args.critic_num_mini_batch is not None:
+        config["critic_num_mini_batch"] = args.critic_num_mini_batch
+    if args.clip_param is not None:
+        config["clip_param"] = args.clip_param
+    if args.ent_coef is not None:
+        config["entropy_coef"] = args.ent_coef
+    if args.gamma is not None:
+        config["gamma"] = args.gamma
+    if args.gae_lambda is not None:
+        config["gae_lambda"] = args.gae_lambda
+    if args.max_grad_norm is not None:
+        config["max_grad_norm"] = args.max_grad_norm
+    if args.value_loss_coef is not None:
+        config["value_loss_coef"] = args.value_loss_coef
+    if args.use_recurrent_policy is not None:
+        config["use_recurrent_policy"] = args.use_recurrent_policy
+    if args.use_valuenorm is not None:
+        config["use_valuenorm"] = args.use_valuenorm
+    return config
+
+
 if __name__ == "__main__":
     config = get_default_mappo_config()
+    config = _override_config_from_cli(config)
 
     print(f"Starting {config['MAP_NAME']} MAPPO Baseline...")
     rng = jax.random.PRNGKey(config["SEED"])

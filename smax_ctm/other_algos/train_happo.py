@@ -6,11 +6,7 @@ import os
 import sys
 import pickle
 import time
-
-# Inject repo root into sys.path so 'jaxmarl' is always found regardless of CWD
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
+import argparse
 
 import jax
 import jax.numpy as jnp
@@ -419,8 +415,84 @@ def make_train(config):
     return train
 
 
+def _override_config_from_cli(config):
+    """Override config values with command-line arguments."""
+    parser = argparse.ArgumentParser(description="HAPPO training for SMAX")
+    parser.add_argument("--map_name", type=str, default=None)
+    parser.add_argument("--num_envs", type=int, default=None)
+    parser.add_argument("--num_steps", type=int, default=None)
+    parser.add_argument("--total_timesteps", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--save_interval", type=int, default=None)
+    parser.add_argument("--max_steps", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--critic_lr", type=float, default=None)
+    parser.add_argument("--ppo_epoch", type=int, default=None)
+    parser.add_argument("--critic_epoch", type=int, default=None)
+    parser.add_argument("--actor_num_mini_batch", type=int, default=None)
+    parser.add_argument("--critic_num_mini_batch", type=int, default=None)
+    parser.add_argument("--clip_param", type=float, default=None)
+    parser.add_argument("--ent_coef", type=float, default=None)
+    parser.add_argument("--gamma", type=float, default=None)
+    parser.add_argument("--gae_lambda", type=float, default=None)
+    parser.add_argument("--max_grad_norm", type=float, default=None)
+    parser.add_argument("--value_loss_coef", type=float, default=None)
+    parser.add_argument("--use_recurrent_policy", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--use_valuenorm", action=argparse.BooleanOptionalAction, default=None)
+    args = parser.parse_args()
+
+    if args.map_name is not None:
+        config["MAP_NAME"] = args.map_name
+    if args.num_envs is not None:
+        config["NUM_ENVS"] = args.num_envs
+    if args.num_steps is not None:
+        config["NUM_STEPS"] = args.num_steps
+    if args.total_timesteps is not None:
+        config["TOTAL_TIMESTEPS"] = args.total_timesteps
+    if args.seed is not None:
+        config["SEED"] = args.seed
+    if args.save_interval is not None:
+        config["SAVE_INTERVAL"] = args.save_interval
+    if args.max_steps is not None:
+        config.setdefault("ENV_KWARGS", {})["max_steps"] = args.max_steps
+    if args.lr is not None:
+        config["LR"] = args.lr
+    if args.critic_lr is not None:
+        config["CRITIC_LR"] = args.critic_lr
+    if args.ppo_epoch is not None:
+        config["PPO_EPOCH"] = args.ppo_epoch
+        config["UPDATE_EPOCHS"] = args.ppo_epoch
+    if args.critic_epoch is not None:
+        config["CRITIC_EPOCH"] = args.critic_epoch
+    if args.actor_num_mini_batch is not None:
+        config["ACTOR_NUM_MINI_BATCH"] = args.actor_num_mini_batch
+        config["NUM_MINIBATCHES"] = args.actor_num_mini_batch
+    if args.critic_num_mini_batch is not None:
+        config["CRITIC_NUM_MINI_BATCH"] = args.critic_num_mini_batch
+    if args.clip_param is not None:
+        config["CLIP_PARAM"] = args.clip_param
+        config["CLIP_EPS"] = args.clip_param
+    if args.ent_coef is not None:
+        config["ENT_COEF"] = args.ent_coef
+    if args.gamma is not None:
+        config["GAMMA"] = args.gamma
+    if args.gae_lambda is not None:
+        config["GAE_LAMBDA"] = args.gae_lambda
+    if args.max_grad_norm is not None:
+        config["MAX_GRAD_NORM"] = args.max_grad_norm
+    if args.value_loss_coef is not None:
+        config["VALUE_LOSS_COEF"] = args.value_loss_coef
+        config["VF_COEF"] = args.value_loss_coef
+    if args.use_recurrent_policy is not None:
+        config["use_recurrent_policy"] = args.use_recurrent_policy
+    if args.use_valuenorm is not None:
+        config["use_valuenorm"] = args.use_valuenorm
+    return config
+
+
 if __name__ == "__main__":
     config = get_default_happo_config()
+    config = _override_config_from_cli(config)
 
     print(f"Starting {config['MAP_NAME']} HAPPO Baseline...")
     rng = jax.random.PRNGKey(config["SEED"])

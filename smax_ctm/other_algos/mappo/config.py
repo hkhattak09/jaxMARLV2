@@ -19,7 +19,7 @@ def get_default_mappo_config():
         "MAP_NAME": "protoss_10_vs_10",
         "NUM_ENVS": 128,
         "NUM_STEPS": 128,
-        "TOTAL_TIMESTEPS": int(3e6),
+        "TOTAL_TIMESTEPS": int(4e7),
 
         # === Model Architecture ===
         "hidden_sizes": [128, 128],
