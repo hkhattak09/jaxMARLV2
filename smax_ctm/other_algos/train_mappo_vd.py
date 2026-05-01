@@ -310,16 +310,16 @@ def make_train(config):
                     action,
                     policy_probs,
                 )
-                cr_hstate, (joint_q_value, ind_q_taken, ind_v_values) = critic_network.apply(
+                cr_hstate, (_, joint_v_value, _, _) = critic_network.apply(
                     train_states[1].params, hstates[1], cr_in
                 )
-                joint_q_value = joint_q_value.squeeze()
+                joint_v_value = joint_v_value.squeeze()
 
                 # Optional value normalization
                 if use_valuenorm:
-                    value_to_store = value_norm_normalize(value_norm_state, joint_q_value[..., None]).squeeze(-1)
+                    value_to_store = value_norm_normalize(value_norm_state, joint_v_value[..., None]).squeeze(-1)
                 else:
-                    value_to_store = joint_q_value
+                    value_to_store = joint_v_value
 
                 # STEP ENV
                 rng, _rng = jax.random.split(rng)
@@ -358,9 +358,7 @@ def make_train(config):
             last_world_state = last_world_state.reshape((config["NUM_ACTORS"], -1))
             last_obs_batch = batchify(last_obs, env.agents, config["NUM_ACTORS"])
 
-            # We need dummy actions and policy_probs for the last state critic eval
-            # In practice, for QMIX/VDN the mixer only needs the taken-action Q and state.
-            # For bootstrapping we can use a zero-action Q or sample from the current policy.
+            # The bootstrap value is the mixed expected value under the current policy.
             rng, _rng = jax.random.split(rng)
             last_avail_actions = jax.vmap(env.get_avail_actions)(env_state.env_state)
             last_avail_actions = jax.lax.stop_gradient(
@@ -378,10 +376,10 @@ def make_train(config):
                 last_action,
                 last_policy_probs,
             )
-            _, (last_joint_q_value, _, _) = critic_network.apply(
+            _, (_, last_joint_v_value, _, _) = critic_network.apply(
                 train_states[1].params, hstates[1], last_cr_in
             )
-            last_val = last_joint_q_value.squeeze()
+            last_val = last_joint_v_value.squeeze()
 
             if use_valuenorm:
                 last_val = value_norm_denormalize(value_norm_state, last_val[..., None]).squeeze(-1)
@@ -568,10 +566,10 @@ def make_train(config):
 
                     def _critic_loss_fn(critic_params, init_hstate, cr_in_obs, cr_in_world_state, cr_in_done, cr_in_action, cr_in_policy_probs, targets, value_old):
                         cr_in = (cr_in_obs, cr_in_world_state, cr_in_done, cr_in_action, cr_in_policy_probs)
-                        _, (joint_q_value, _, _) = critic_network.apply(
+                        _, (_, joint_v_value, _, _) = critic_network.apply(
                             critic_params, init_hstate, cr_in
                         )
-                        joint_q_value = joint_q_value.squeeze()
+                        joint_v_value = joint_v_value.squeeze()
 
                         if use_valuenorm and value_norm_state is not None:
                             targets_norm = value_norm_normalize(value_norm_state, targets[..., None]).squeeze(-1)
@@ -580,17 +578,17 @@ def make_train(config):
 
                         if config.get("use_clipped_value_loss", True):
                             value_pred_clipped = value_old + (
-                                joint_q_value - value_old
+                                joint_v_value - value_old
                             ).clip(-config["CLIP_EPS"], config["CLIP_EPS"])
                             if config.get("use_huber_loss", False):
                                 delta = config.get("huber_delta", 10.0)
                                 def huber(err):
                                     abs_err = jnp.abs(err)
                                     return jnp.where(abs_err <= delta, 0.5 * abs_err ** 2, delta * (abs_err - 0.5 * delta))
-                                value_losses = huber(joint_q_value - targets_norm)
+                                value_losses = huber(joint_v_value - targets_norm)
                                 value_losses_clipped = huber(value_pred_clipped - targets_norm)
                             else:
-                                value_losses = jnp.square(joint_q_value - targets_norm)
+                                value_losses = jnp.square(joint_v_value - targets_norm)
                                 value_losses_clipped = jnp.square(value_pred_clipped - targets_norm)
                             value_loss = jnp.maximum(value_losses, value_losses_clipped).mean()
                         else:
@@ -599,9 +597,9 @@ def make_train(config):
                                 def huber(err):
                                     abs_err = jnp.abs(err)
                                     return jnp.where(abs_err <= delta, 0.5 * abs_err ** 2, delta * (abs_err - 0.5 * delta))
-                                value_loss = huber(joint_q_value - targets_norm).mean()
+                                value_loss = huber(joint_v_value - targets_norm).mean()
                             else:
-                                value_loss = jnp.square(joint_q_value - targets_norm).mean()
+                                value_loss = jnp.square(joint_v_value - targets_norm).mean()
 
                         critic_loss = config["VALUE_LOSS_COEF"] * value_loss
                         return critic_loss, (value_loss,)

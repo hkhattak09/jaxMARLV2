@@ -489,7 +489,7 @@ def make_train(config):
                         actor_loss, actor_grads = actor_grad_fn(
                             actor_train_state.params,
                             ac_init_hstate_mb,
-                            mb_obs, mb_done, mb_avail, mb_action, mb_log_prob, mb_adv,
+                            mb_obs, mb_done, mb_avail, mb_action, mb_log_prob, coma_advantages,
                         )
                     else:
                         actor_grad_fn = jax.value_and_grad(_actor_loss_fn, has_aux=True)

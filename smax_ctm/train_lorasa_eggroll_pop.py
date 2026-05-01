@@ -1019,7 +1019,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--eta", type=float, default=0.0015)
     parser.add_argument("--target_rank", type=int, default=re.DEFAULT_TARGET_RANK)
     parser.add_argument("--noise_rank", type=int, default=re.DEFAULT_NOISE_RANK)
-    parser.add_argument("--active_slots", default="2,3,6", type=_parse_slots)
+    parser.add_argument(
+        "--active_slots",
+        default=None,
+        type=_parse_slots,
+        help=(
+            "Comma-separated adapter slots to evolve. Defaults to all slots "
+            "present in every selected LoRA block."
+        ),
+    )
     parser.add_argument("--noise_seed", type=int, default=0)
     parser.add_argument("--eval_seed", type=int, default=1000)
     parser.add_argument("--eval_seed_stride", type=int, default=100)
@@ -1087,12 +1095,51 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--heldout_episodes must be divisible by --heldout_num_envs")
 
 
+def _resolve_active_slots(
+    selected_blocks: Sequence[re.LoRABlock],
+    requested_slots: Optional[Sequence[int]],
+) -> Tuple[int, ...]:
+    if not selected_blocks:
+        raise ValueError("No LoRA blocks matched the configured block patterns")
+
+    min_slots = min(block.num_slots for block in selected_blocks)
+    if min_slots <= 0:
+        bad = ", ".join(block.path for block in selected_blocks if block.num_slots <= 0)
+        raise ValueError(f"Selected LoRA blocks have no adapter slots: {bad}")
+
+    if requested_slots is None:
+        return tuple(range(min_slots))
+
+    active_slots = tuple(sorted(int(slot) for slot in requested_slots))
+    invalid = [
+        (slot, block.path, block.num_slots)
+        for block in selected_blocks
+        for slot in active_slots
+        if slot < 0 or slot >= block.num_slots
+    ]
+    if invalid:
+        slot, path, num_slots = invalid[0]
+        valid = f"0..{num_slots - 1}"
+        raise ValueError(
+            f"active slot {slot} is out of range for {path}; "
+            f"valid slots for that block are {valid}. "
+            "Omit --active_slots to use all slots present in the checkpoint."
+        )
+    return active_slots
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parse_args(argv)
     _validate_args(args)
 
     source_ckpt = _load_checkpoint(args.checkpoint)
     map_name = args.map_name or source_ckpt.get("config", {}).get("MAP_NAME", "protoss_10_vs_10")
+    selected_blocks = re.select_lora_blocks(
+        re.discover_lora_blocks(source_ckpt["actor_params"]),
+        re.NO_RECURRENT_BLOCK_PATTERNS,
+    )
+    active_slots = _resolve_active_slots(selected_blocks, args.active_slots)
+    args.active_slots = active_slots
 
     rollout_batches = args.episodes_per_candidate // args.num_envs_per_candidate
     heldout_batches = args.heldout_episodes // args.heldout_num_envs
@@ -1126,6 +1173,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         f"rollout_batches={rollout_batches} "
         f"train_episodes_per_epoch={train_episodes_per_epoch}"
     )
+    print(f"Active slots: {','.join(str(slot) for slot in active_slots)}")
 
     print("Building train evaluator...")
     train_eval_fn, _, eval_steps = _build_eval_stats(
@@ -1153,12 +1201,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         active_slots=args.active_slots,
         target_rank=args.target_rank,
     )
-    selected_blocks = re.select_lora_blocks(
-        re.discover_lora_blocks(source_ckpt["actor_params"]),
-        re.NO_RECURRENT_BLOCK_PATTERNS,
-    )
-    active_slots = tuple(sorted(int(slot) for slot in args.active_slots))
-
     device_candidate_builder = None
     device_update_fn = None
     if args.candidate_build == "device":

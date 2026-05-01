@@ -45,7 +45,8 @@ def get_default_coma_config():
         "DATA_CHUNK_LENGTH": 10,
 
         # === Value Normalization ===
-        "use_valuenorm": True,
+        # This COMA trainer does not apply ValueNorm in its critic target path.
+        "use_valuenorm": False,
 
         # === Loss Coefficients ===
         "VALUE_LOSS_COEF": 1.0,

@@ -202,6 +202,29 @@ class VDCriticRNN(nn.Module):
     num_agents: int
     config: Dict
 
+    def _prepare_mixer_inputs(self, agent_values, world_state):
+        """Return mixer-ready per-agent values and per-env world states."""
+        time_steps = agent_values.shape[0]
+        num_envs = agent_values.shape[1] // self.num_agents
+
+        agent_values_mix = agent_values.reshape(time_steps, self.num_agents, num_envs)
+        agent_values_mix = jnp.transpose(agent_values_mix, (0, 2, 1))
+        agent_values_mix = agent_values_mix[..., None, :]
+
+        world_state_env = world_state.reshape(time_steps, self.num_agents, num_envs, -1)[
+            :, 0, :, :
+        ]
+
+        batch_size = time_steps * num_envs
+        agent_values_mix_flat = agent_values_mix.reshape(batch_size, 1, self.num_agents)
+        world_state_env_flat = world_state_env.reshape(batch_size, -1)
+
+        return agent_values_mix_flat, world_state_env_flat, time_steps, num_envs
+
+    def _broadcast_mixed_value(self, mixed_value, time_steps, num_envs):
+        mixed_value = mixed_value.reshape(time_steps, num_envs, 1)
+        return jnp.tile(mixed_value, (1, 1, self.num_agents)).reshape(time_steps, -1)
+
     @nn.compact
     def __call__(self, hidden, x):
         """Forward pass.
@@ -216,12 +239,10 @@ class VDCriticRNN(nn.Module):
                 ``policy_probs`` is ``(time, NUM_ACTORS, action_dim)``.
 
         Returns:
-            (new_hidden, (joint_q_value, individual_q_taken, individual_v_values))
-            where each output is ``(time, NUM_ACTORS)``.
+            (new_hidden, (joint_q_value, joint_v_value, individual_q_taken,
+            individual_v_values)) where each output is ``(time, NUM_ACTORS)``.
         """
         local_obs_all, world_state, dones, actions, policy_probs = x
-        time_steps = local_obs_all.shape[0]
-        num_envs = local_obs_all.shape[1] // self.num_agents
         cfg = self.config
 
         # Individual Q-values for all actions
@@ -236,45 +257,32 @@ class VDCriticRNN(nn.Module):
         ind_v_values = jnp.sum(policy_probs * q_values, axis=-1)
         # ind_v_values: (time, NUM_ACTORS)
 
-        # Reshape for mixer: separate agent and env axes
-        # Current ordering in NUM_ACTORS: [agent0_env0..agent0_envN, agent1_env0..agent1_envN, ...]
-        # Reshape to (time, num_agents, num_envs)
-        ind_q_taken_mix = ind_q_taken.reshape(time_steps, self.num_agents, num_envs)
-        ind_q_taken_mix = jnp.transpose(ind_q_taken_mix, (0, 2, 1))  # (time, num_envs, num_agents)
-        ind_q_taken_mix = ind_q_taken_mix[..., None, :]  # (time, num_envs, 1, num_agents)
+        q_mix_input, q_state_input, time_steps, num_envs = self._prepare_mixer_inputs(
+            ind_q_taken, world_state
+        )
+        v_mix_input, v_state_input, _, _ = self._prepare_mixer_inputs(
+            ind_v_values, world_state
+        )
 
-        # World state per environment (all agents share the same world state)
-        world_state_env = world_state.reshape(time_steps, self.num_agents, num_envs, -1)[:, 0, :, :]
-        # (time, num_envs, state_dim)
-
-        # Flatten time and env dimensions for mixer (mixer expects 2D batch)
-        batch_size = time_steps * num_envs
-        ind_q_taken_mix_flat = ind_q_taken_mix.reshape(batch_size, 1, self.num_agents)
-        world_state_env_flat = world_state_env.reshape(batch_size, -1)
-
-        # Apply mixer
         mixer_type = cfg["valuedecomp"]["mixer"]
         if mixer_type == "qmix":
-            embed_dim = cfg["hidden_sizes"][0]
-            state_dim = world_state_env_flat.shape[-1]
-            joint_q_value = QMixer(
+            mixer = QMixer(
                 num_agents=self.num_agents,
-                state_dim=state_dim,
-                embed_dim=embed_dim,
+                state_dim=q_state_input.shape[-1],
+                embed_dim=cfg["hidden_sizes"][0],
                 hypernet_layers=cfg["valuedecomp"]["hypernet_layers"],
                 name="qmixer",
-            )(ind_q_taken_mix_flat, world_state_env_flat)
-        elif mixer_type == "vdn":
-            joint_q_value = VDNMixer(name="vdnmixer")(
-                ind_q_taken_mix_flat.squeeze(-2), world_state_env_flat
             )
+            joint_q_value = mixer(q_mix_input, q_state_input)
+            joint_v_value = mixer(v_mix_input, v_state_input)
+        elif mixer_type == "vdn":
+            mixer = VDNMixer(name="vdnmixer")
+            joint_q_value = mixer(q_mix_input.squeeze(-2), q_state_input)
+            joint_v_value = mixer(v_mix_input.squeeze(-2), v_state_input)
         else:
             raise ValueError(f"Unknown mixer type: {mixer_type}")
 
-        # joint_q_value: (batch_size, 1) -> reshape back to (time_steps, num_envs, 1)
-        joint_q_value = joint_q_value.reshape(time_steps, num_envs, 1)
-        # Broadcast joint value to all actors
-        joint_q_value = jnp.tile(joint_q_value, (1, 1, self.num_agents)).reshape(time_steps, -1)
-        # (time, NUM_ACTORS)
+        joint_q_value = self._broadcast_mixed_value(joint_q_value, time_steps, num_envs)
+        joint_v_value = self._broadcast_mixed_value(joint_v_value, time_steps, num_envs)
 
-        return hidden, (joint_q_value, ind_q_taken, ind_v_values)
+        return hidden, (joint_q_value, joint_v_value, ind_q_taken, ind_v_values)
