@@ -385,12 +385,10 @@ def _thread_to_direction_and_sign(thread_id: int) -> Tuple[int, int, str]:
 
 def _jax_key_for_direction(
     base_seed: int,
-    epoch,
     direction_id,
     block_slot_seed: int,
 ):
     key = jax.random.PRNGKey(int(base_seed))
-    key = jax.random.fold_in(key, jnp.asarray(epoch, dtype=jnp.uint32))
     key = jax.random.fold_in(key, jnp.asarray(direction_id, dtype=jnp.uint32))
     key = jax.random.fold_in(key, jnp.asarray(block_slot_seed, dtype=jnp.uint32))
     return key
@@ -441,11 +439,10 @@ def _jax_low_rank_ambient(
     cols: int,
     noise_rank: int,
     base_seed: int,
-    epoch,
     block_slot_seed: int,
     dtype,
 ):
-    key = _jax_key_for_direction(base_seed, epoch, direction_id, block_slot_seed)
+    key = _jax_key_for_direction(base_seed, direction_id, block_slot_seed)
     p_key, q_key = jax.random.split(key)
     p = jax.random.normal(p_key, (rows, noise_rank), dtype=dtype)
     q = jax.random.normal(q_key, (noise_rank, cols), dtype=dtype)
@@ -459,7 +456,6 @@ def _jax_step_from_svd(
     vt,
     noise_rank: int,
     base_seed: int,
-    epoch,
     block_slot_seed: int,
     relative_scale: bool,
 ):
@@ -471,7 +467,6 @@ def _jax_step_from_svd(
         cols=cols,
         noise_rank=noise_rank,
         base_seed=base_seed,
-        epoch=epoch,
         block_slot_seed=block_slot_seed,
         dtype=delta.dtype,
     )
@@ -498,7 +493,6 @@ def _jax_candidate_factors_for_slot(
     target_rank: int,
     noise_rank: int,
     base_seed: int,
-    epoch,
     block_slot_seed: int,
     relative_scale: bool,
     singular_floor: float,
@@ -524,7 +518,6 @@ def _jax_candidate_factors_for_slot(
             vt,
             noise_rank=noise_rank,
             base_seed=base_seed,
-            epoch=epoch,
             block_slot_seed=block_slot_seed,
             relative_scale=relative_scale,
         )
@@ -573,7 +566,7 @@ def _make_device_candidate_builder(
         for slot in active_slots
     }
 
-    def _build(params, thread_ids, epoch):
+    def _build(params, thread_ids):
         flat = re.flatten_tree(params)
         batch_flat: Dict[Tuple[str, ...], Any] = dict(flat)
         direction_ids = (thread_ids // 2).astype(jnp.uint32)
@@ -597,7 +590,6 @@ def _make_device_candidate_builder(
                     target_rank=target_rank,
                     noise_rank=noise_rank,
                     base_seed=base_seed,
-                    epoch=epoch,
                     block_slot_seed=seed,
                     relative_scale=relative_scale,
                     singular_floor=singular_floor,
@@ -622,7 +614,6 @@ def _jax_weighted_update_for_slot(
     target_rank: int,
     noise_rank: int,
     base_seed: int,
-    epoch,
     block_slot_seed: int,
     direction_normalizer: int,
     relative_scale: bool,
@@ -642,7 +633,6 @@ def _jax_weighted_update_for_slot(
             vt,
             noise_rank=noise_rank,
             base_seed=base_seed,
-            epoch=epoch,
             block_slot_seed=block_slot_seed,
             relative_scale=relative_scale,
         )
@@ -715,7 +705,7 @@ def _make_device_update_fn(
     }
     del actor_params
 
-    def _update(params, direction_weights, epoch):
+    def _update(params, direction_weights):
         flat = re.flatten_tree(params)
         updated_flat: Dict[Tuple[str, ...], Any] = dict(flat)
         direction_ids = jnp.arange(direction_weights.shape[0], dtype=jnp.uint32)
@@ -752,7 +742,6 @@ def _make_device_update_fn(
                     target_rank=target_rank,
                     noise_rank=noise_rank,
                     base_seed=base_seed,
-                    epoch=epoch,
                     block_slot_seed=seed,
                     direction_normalizer=direction_normalizer,
                     relative_scale=relative_scale,
@@ -821,7 +810,6 @@ def _device_metrics_to_list(
 def _make_candidate_batch_actor_params(
     actor_params: Any,
     thread_ids: Sequence[int],
-    epoch: int,
     sigma: float,
     base_seed: int,
     active_slots: Sequence[int],
@@ -859,7 +847,7 @@ def _make_candidate_batch_actor_params(
                     raise IndexError(f"slot {slot} out of range for {block.path}")
 
                 seed = re.stable_uint32_seed(
-                    base_seed, epoch, direction_id, block.path, slot
+                    base_seed, direction_id, block.path, slot
                 )
                 delta, _, step, _, _, _ = re.tangent_step_for_slot(
                     base_a[slot],
@@ -1265,7 +1253,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 batched_params = device_candidate_builder(
                     actor_params,
                     thread_ids_array,
-                    jnp.asarray(epoch, dtype=jnp.int32),
                 )
                 _block_until_ready_tree(batched_params)
                 candidate_metric_count = (
@@ -1275,7 +1262,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 batched_params, candidate_metric_count = _make_candidate_batch_actor_params(
                     actor_params,
                     thread_ids=thread_ids,
-                    epoch=epoch,
                     sigma=args.sigma,
                     base_seed=args.noise_seed,
                     active_slots=args.active_slots,
@@ -1362,7 +1348,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             actor_params, device_metric_tree = device_update_fn(
                 actor_params,
                 jnp.asarray(weights_array),
-                jnp.asarray(epoch, dtype=jnp.int32),
             )
             _block_until_ready_tree((actor_params, device_metric_tree))
             update_metrics = _device_metrics_to_list(
@@ -1376,7 +1361,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 actor_params,
                 direction_weights=direction_weights,
                 eta=args.eta,
-                epoch=epoch,
                 base_seed=args.noise_seed,
                 active_slots=args.active_slots,
                 target_rank=args.target_rank,

@@ -396,12 +396,11 @@ def sample_low_rank_ambient(
 
 def _direction_seed(
     base_seed: int,
-    epoch: int,
     direction_id: int,
     block_path: str,
     slot: int,
 ) -> int:
-    return stable_uint32_seed(base_seed, epoch, direction_id, block_path, slot)
+    return stable_uint32_seed(base_seed, direction_id, block_path, slot)
 
 
 def tangent_step_for_slot(
@@ -453,7 +452,6 @@ def make_candidate_actor_params(
     direction_id: int,
     sign: int,
     sigma: float,
-    epoch: int = 0,
     base_seed: int = 0,
     active_slots: Sequence[int] = DEFAULT_ACTIVE_SLOTS,
     target_rank: int = DEFAULT_TARGET_RANK,
@@ -490,7 +488,7 @@ def make_candidate_actor_params(
             if slot < 0 or slot >= block.num_slots:
                 raise IndexError(f"slot {slot} out of range for {block.path}")
 
-            seed = _direction_seed(base_seed, epoch, direction_id, block.path, slot)
+            seed = _direction_seed(base_seed, direction_id, block.path, slot)
             delta, tangent, step, _, s, _ = tangent_step_for_slot(
                 lora_a[slot],
                 lora_b[slot],
@@ -540,7 +538,6 @@ def apply_weighted_tangent_update(
     actor_params: Any,
     direction_weights: Mapping[int, float],
     eta: float,
-    epoch: int = 0,
     base_seed: int = 0,
     active_slots: Sequence[int] = DEFAULT_ACTIVE_SLOTS,
     target_rank: int = DEFAULT_TARGET_RANK,
@@ -591,7 +588,7 @@ def apply_weighted_tangent_update(
                 s_new = s_old
             else:
                 for direction_id, weight in clean_weights.items():
-                    seed = _direction_seed(base_seed, epoch, direction_id, block.path, slot)
+                    seed = _direction_seed(base_seed, direction_id, block.path, slot)
                     _, tangent, step, _, _, _ = tangent_step_for_slot(
                         lora_a[slot],
                         lora_b[slot],
@@ -935,7 +932,6 @@ def self_test() -> None:
         direction_id=0,
         sign=1,
         sigma=0.0,
-        epoch=0,
         base_seed=0,
     )
     if not zero_metrics:
@@ -947,7 +943,6 @@ def self_test() -> None:
         actor_params,
         direction_weights={0: 1.0, 1: -0.5},
         eta=0.0,
-        epoch=0,
         base_seed=0,
     )
     if not update_metrics:
@@ -960,7 +955,6 @@ def self_test() -> None:
         direction_id=3,
         sign=1,
         sigma=0.01,
-        epoch=5,
         base_seed=7,
     )
     minus_params, _ = make_candidate_actor_params(
@@ -968,7 +962,6 @@ def self_test() -> None:
         direction_id=3,
         sign=-1,
         sigma=0.01,
-        epoch=5,
         base_seed=7,
     )
     _assert_tree_lora_slots_equal(actor_params, plus_params, inactive_slots)
