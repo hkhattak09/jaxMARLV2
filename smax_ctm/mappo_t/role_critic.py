@@ -329,11 +329,10 @@ class RoleEncoder(nn.Module):
             role_ids: ``(batch, n_agents)`` integer indices.
         """
         n_roles, batch, n_agents, *remaining = all_values.shape
-        # Flatten batch×agents into one dim
-        all_flat = all_values.reshape(n_roles, batch * n_agents, *remaining)
-        role_ids_flat = role_ids.reshape(1, -1)  # (1, batch*n_agents)
-        gathered = jnp.take_along_axis(all_flat, role_ids_flat, axis=0)
-        return gathered.squeeze(0).reshape(batch, n_agents, *remaining)
+        batch_idx = jnp.arange(batch)[:, None]   # (batch, 1)
+        agent_idx = jnp.arange(n_agents)[None, :]  # (1, n_agents)
+        gathered = all_values[role_ids, batch_idx, agent_idx]
+        return gathered
 
 
 class RoleTransVCritic(nn.Module):

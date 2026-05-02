@@ -604,7 +604,8 @@ class TestExp4_Full:
         )
 
         rng, h0, obs, resets, avail, role_ids_actor = init_actor_tensors(batch=4, time=3)
-        role_ids_critic = role_ids_actor[0]  # (batch,)
+        # critic expects role_ids of shape (batch, n_agents)
+        role_ids_critic = jnp.broadcast_to(role_ids_actor[0][:, None], (4, 10))
 
         rng, actor_rng, critic_rng = jax.random.split(rng, 3)
 
