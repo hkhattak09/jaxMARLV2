@@ -292,50 +292,63 @@ class TestExp2_RoleSpecificCritic:
     def test_marginalization_preservation(self):
         """EQ_k(s, π) = sum_a π(a) * Q_k(s, a) for each role k.
 
-        Uses n_agents=1 so the action space is small enough to enumerate.
+        Tests with n_agents=2 so the joint action space (7^2=49) is enumerable.
+        This actually stresses multi-agent marginalization, not a trivial 1-agent case.
         """
         cfg = make_tiny_config()
         cfg["transformer"]["n_embd"] = 64
         cfg["transformer"]["zs_dim"] = 256
 
         action_dim = 7
+        n_agents = 2
         critic = RoleTransVCritic(
             config=cfg,
             share_obs_space=None,
             obs_space=None,
             act_space=DummyActSpace(action_dim),
-            num_agents=1,
+            num_agents=n_agents,
             state_type="EP",
         )
 
         rng = jax.random.PRNGKey(0)
         batch = 4
-        obs_all = jax.random.normal(rng, (batch, 1, 13))
-        # Uniform policy
-        policy_probs = jnp.ones((batch, 1, action_dim)) / action_dim
-        rnn_states = jnp.zeros((batch, 1, 64), dtype=jnp.float32)
-        resets = jnp.zeros((batch, 1), dtype=bool)
-        role_ids = jnp.zeros((batch, 1), dtype=jnp.int32)
+        obs_all = jax.random.normal(rng, (batch, n_agents, 13))
+        policy_probs = jnp.ones((batch, n_agents, action_dim)) / action_dim
+        rnn_states = jnp.zeros((batch, n_agents, 64), dtype=jnp.float32)
+        resets = jnp.zeros((batch, n_agents), dtype=bool)
+        role_ids = jnp.zeros((batch, n_agents), dtype=jnp.int32)
 
         params = critic.init(
-            rng, obs_all, jnp.zeros((batch, 1), dtype=jnp.int32),
+            rng, obs_all, jnp.zeros((batch, n_agents), dtype=jnp.int32),
             policy_probs, rnn_states, resets, role_ids, False, True
         )
 
         for k in range(6):
             eq_k = critic.compute_eq_for_role(params, k, obs_all, policy_probs, rnn_states, resets)
 
-            # Enumerate all actions for the single agent
+            # Enumerate all joint actions for 2 agents: 7^2 = 49 combinations
             q_for_all_actions = []
-            for a in range(action_dim):
-                one_hot = jax.nn.one_hot(jnp.full((batch, 1), a), action_dim)
-                _, all_q, _, _, _, _, _, _, _, _, _ = critic.apply(
-                    params, obs_all, one_hot, policy_probs, rnn_states, resets, role_ids, False, True
-                )
-                q_for_all_actions.append(all_q[k])  # (batch, 1)
+            for a0 in range(action_dim):
+                for a1 in range(action_dim):
+                    one_hot = jax.nn.one_hot(
+                        jnp.array([[a0, a1]] * batch), action_dim
+                    )  # (batch, 2, action_dim)
+                    _, all_q, _, _, _, _, _, _, _, _, _ = critic.apply(
+                        params, obs_all, one_hot, policy_probs, rnn_states, resets, role_ids, False, True
+                    )
+                    q_for_all_actions.append(all_q[k])  # (batch, 1)
 
-            q_for_all_actions = jnp.stack(q_for_all_actions, axis=-1)  # (batch, 1, action_dim)
-            manual_eq = jnp.sum(q_for_all_actions * policy_probs, axis=-1, keepdims=True)  # (batch, 1, 1)
+            q_for_all_actions = jnp.stack(q_for_all_actions, axis=-1)  # (batch, 1, 49)
+            # Joint policy probabilities: π(a0) * π(a1) for each combination
+            joint_probs = (
+                policy_probs[:, 0:1, :]  # (batch, 1, 7)
+                .reshape(batch, 1, action_dim, 1)
+                * policy_probs[:, 1:2, :]  # (batch, 1, 7)
+                .reshape(batch, 1, 1, action_dim)
+            )  # (batch, 1, 7, 7)
+            joint_probs = joint_probs.reshape(batch, 1, action_dim * action_dim)  # (batch, 1, 49)
+
+            manual_eq = jnp.sum(q_for_all_actions * joint_probs, axis=-1, keepdims=True)  # (batch, 1, 1)
             manual_eq = manual_eq.squeeze(-1)  # (batch, 1)
 
             max_diff = float(jnp.max(jnp.abs(eq_k - manual_eq)))
@@ -641,9 +654,10 @@ class TestExp4_Full:
         assert pi.logits.shape == (3, 4, 7), f"Actor logits shape mismatch: {pi.logits.shape}"
 
         # Critic forward — use env-level values (mean across roles)
+        # init_critic_tensors returns: rng, obs_all, actions, policy_probs, rnn_states, resets, role_ids
+        _, obs_all_e, actions_e, policy_probs_e, rnn_states_e, resets_e, _ = init_critic_tensors(seed=1, batch=4)
         v_env, q_env, eq_env = critic.get_env_level_values(
-            critic_params,
-            *init_critic_tensors(seed=1, batch=4)[:-1],
+            critic_params, obs_all_e, actions_e, policy_probs_e, rnn_states_e, resets_e
         )
         assert v_env.shape == (4, 1), f"V_env shape mismatch: {v_env.shape}"
 

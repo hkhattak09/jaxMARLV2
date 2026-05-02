@@ -156,24 +156,24 @@ class RoleEncoder(nn.Module):
         # ---- Shared linear sa_encoder (preserves marginalization) -----------
         sa_encoder = nn.Dense(zs_dim, use_bias=bias, name="sa_encoder", **init_kwargs)
 
-        # ---- Per-role Q-heads (linear on sa_encoder output) -----------------
+        # ---- Per-role Q-heads (linear for exact marginalization) -----------
+        # Mirrors transformer.py: sa_encoder -> q_head, NO activation in between.
         all_q = []
         all_eq = []
         all_zsa = []
         all_zspi = []
 
         for k in range(self.n_roles):
-            zsa_k = sa_encoder(jnp.concatenate([z_k_embs[k], action.reshape(batch_size, -1)], axis=-1))
-            zsa_k = active_fn(zsa_k)
-            zsa_k = LayerNorm(zs_dim, bias=bias, name=f"sa_norm_{k}")(zsa_k)
+            zsa_k = sa_encoder(
+                jnp.concatenate([z_k_embs[k], action.reshape(batch_size, -1)], axis=-1)
+            )
+            zspi_k = sa_encoder(
+                jnp.concatenate([z_k_embs[k], policy_prob.reshape(batch_size, -1)], axis=-1)
+            )
 
-            zspi_k = sa_encoder(jnp.concatenate([z_k_embs[k], policy_prob.reshape(batch_size, -1)], axis=-1))
-            zspi_k = active_fn(zspi_k)
-            zspi_k = LayerNorm(zs_dim, bias=bias, name=f"spi_norm_{k}")(zspi_k)
-
-            # Linear Q-head (NO activation) -> preserves marginalization
-            q_k = nn.Dense(1, use_bias=bias, name=f"q_head_{k}", **init_kwargs)(zsa_k)
-            eq_k = nn.Dense(1, use_bias=bias, name=f"eq_head_{k}", **init_kwargs)(zspi_k)
+            q_head = nn.Dense(1, use_bias=bias, name=f"q_head_{k}", **init_kwargs)
+            q_k = q_head(zsa_k)
+            eq_k = q_head(zspi_k)
 
             all_q.append(q_k)
             all_eq.append(eq_k)
