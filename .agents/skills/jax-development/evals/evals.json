@@ -1,0 +1,109 @@
+{
+  "skill_name": "jax-development",
+  "evals": [
+    {
+      "id": "control-flow-cond",
+      "prompt": "Refactor evals/files/bad_control_flow.py into idiomatic JAX that works under jit, and explain why the original version fails.",
+      "expected_output": "A corrected version that replaces data-dependent Python control flow with a JAX control-flow primitive or array-wise selection, plus a clear explanation of tracer/concretisation semantics.",
+      "files": [
+        "evals/files/bad_control_flow.py"
+      ],
+      "assertions": [
+        "The solution replaces Python data-dependent control flow inside jitted code with `lax.cond`, `lax.switch`, or `jnp.where`.",
+        "The response explains that Python tried to use a traced value as a concrete boolean or equivalent control-flow guard.",
+        "The final code is runnable and remains pure."
+      ]
+    },
+    {
+      "id": "prng-threading",
+      "prompt": "Fix the PRNG handling in evals/files/prng_reuse.py. I want explicit key threading and a short note on how to verify we are not reusing keys.",
+      "expected_output": "A rewritten version that accepts and returns keys explicitly, splits keys correctly, and explains why reusing a key gives repeated random behaviour.",
+      "files": [
+        "evals/files/prng_reuse.py"
+      ],
+      "assertions": [
+        "The solution removes the hidden module-level key from the hot path or clearly avoids using it.",
+        "The rewritten code uses `split` or equivalent explicit key management.",
+        "The response explains how to verify the fix, for example by repeated calls or key-reuse debugging."
+      ]
+    },
+    {
+      "id": "benchmark-honesty",
+      "prompt": "Review evals/files/naive_benchmark.py and show me how to benchmark it properly on JAX.",
+      "expected_output": "An answer that distinguishes compile time from steady-state execution, uses blocking, and avoids timing only dispatch.",
+      "files": [
+        "evals/files/naive_benchmark.py"
+      ],
+      "assertions": [
+        "The response mentions warm-up or first-call compilation separately from repeated-call timing.",
+        "The timing method uses `.block_until_ready()` or `jax.block_until_ready(...)`.",
+        "The answer warns about asynchronous dispatch or host timing pitfalls."
+      ]
+    },
+    {
+      "id": "pmap-migration",
+      "prompt": "Look at evals/files/legacy_pmap.py and outline a sensible migration path to newer sharding APIs without changing semantics prematurely.",
+      "expected_output": "A measured migration plan that preserves semantics first, explains the current `pmap` role, and suggests modern sharding APIs deliberately.",
+      "files": [
+        "evals/files/legacy_pmap.py"
+      ],
+      "assertions": [
+        "The answer does not recommend a blind rewrite without discussing semantics.",
+        "The response recognises `pmap` as legacy-oriented relative to newer sharding APIs.",
+        "The migration plan mentions meshes, named sharding, shard_map, or equivalent modern concepts."
+      ]
+    },
+    {
+      "id": "host-roundtrip",
+      "prompt": "Diagnose evals/files/host_roundtrip.py. It works sometimes, but I suspect there's an accidental host round-trip inside jit.",
+      "expected_output": "A diagnosis that identifies the host conversion inside the compiled region and rewrites the code to stay in JAX space until the edge.",
+      "files": [
+        "evals/files/host_roundtrip.py"
+      ],
+      "assertions": [
+        "The response identifies the NumPy conversion inside `jit` as a problem.",
+        "The rewritten code returns a JAX value from the jitted function and moves host conversion outside if needed.",
+        "The explanation mentions performance or tracer implications of host conversion."
+      ]
+    },
+    {
+      "id": "closure-recompile",
+      "prompt": "Review evals/files/closure_recompile.py and tell me why it is likely to trigger repeated tracing or compilation. Then rewrite it cleanly.",
+      "expected_output": "A diagnosis of jitted function creation inside a loop or changing closure capture, plus a cleaner design with hoisted compilation.",
+      "files": [
+        "evals/files/closure_recompile.py"
+      ],
+      "assertions": [
+        "The answer points out that `jax.jit` is being created inside a loop or repeatedly around a closure.",
+        "The rewritten version hoists `jit` or otherwise stabilises the compilation boundary.",
+        "The response mentions compile-cache churn or repeated tracing."
+      ]
+    },
+    {
+      "id": "scan-rewrite",
+      "prompt": "Rewrite evals/files/python_loop_blowup.py in a way that is more JAX-friendly for compile time and explain why.",
+      "expected_output": "A version using `lax.scan` or `lax.fori_loop` with an explanation that large Python loops under jit can inflate the traced program.",
+      "files": [
+        "evals/files/python_loop_blowup.py"
+      ],
+      "assertions": [
+        "The answer replaces the large Python loop with a structured JAX loop primitive.",
+        "The response explains why the original loop could blow up compile size or trace time.",
+        "The rewritten code preserves the intended accumulation semantics."
+      ]
+    },
+    {
+      "id": "dynamic-mask",
+      "prompt": "Fix evals/files/dynamic_mask.py for use under jit. I still want something that preserves the semantics as much as possible.",
+      "expected_output": "An answer that explains why boolean masking creates a dynamic-size result and proposes a fixed-shape alternative such as `where`, padding, or a mask/value pair.",
+      "files": [
+        "evals/files/dynamic_mask.py"
+      ],
+      "assertions": [
+        "The response explains the dynamic-shape issue with boolean masking under jit.",
+        "The answer proposes a fixed-shape rewrite or an explicit alternative representation.",
+        "The answer does not pretend that `x[x > 0]` is directly safe inside jit."
+      ]
+    }
+  ]
+}

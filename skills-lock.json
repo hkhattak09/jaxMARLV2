@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "skills": {
+    "jax-best-practices": {
+      "source": "mindrally/skills",
+      "sourceType": "github",
+      "skillPath": "jax-best-practices/SKILL.md",
+      "computedHash": "71a86fb53bf232f5fe55b2194bf45e115a4cc573c7db496fdcff653c6ccf8e97"
+    },
+    "jax-development": {
+      "source": "tristanmanchester/agent-skills",
+      "sourceType": "github",
+      "skillPath": "jax-development/SKILL.md",
+      "computedHash": "808a1f109a111a01d2395a9954c0b85e77c983769d6b2eb0b8ea9a146fe86be6"
+    },
+    "reinforcement-learning": {
+      "source": "omer-metin/skills-for-antigravity",
+      "sourceType": "github",
+      "skillPath": "skills/reinforcement-learning/SKILL.md",
+      "computedHash": "b2c8580ea8ae26f33b5cbb9a581778a7c9037b4e65d903f0458395ed006dc5da"
+    }
+  }
+}

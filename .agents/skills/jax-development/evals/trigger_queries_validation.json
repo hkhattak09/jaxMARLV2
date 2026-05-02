@@ -1,0 +1,34 @@
+[
+  {
+    "query": "Port this PyTorch forward pass to functional JAX and make the recurrent loop compile efficiently.",
+    "should_trigger": true
+  },
+  {
+    "query": "I need help understanding Mesh, PartitionSpec, and NamedSharding for a 2x4 device setup.",
+    "should_trigger": true
+  },
+  {
+    "query": "This JAX program gets slower every time shapes change. Can you check for recompiles?",
+    "should_trigger": true
+  },
+  {
+    "query": "Please write a tiny Pallas kernel skeleton for a hotspot after ordinary jit did not help.",
+    "should_trigger": true
+  },
+  {
+    "query": "Could you clean up my pandas DataFrame and make a chart from the CSV?",
+    "should_trigger": false
+  },
+  {
+    "query": "Recommend a Linux driver version for CUDA generally; there is no JAX involved.",
+    "should_trigger": false
+  },
+  {
+    "query": "Explain autograd in general, not JAX specifically.",
+    "should_trigger": false
+  },
+  {
+    "query": "Help me refactor this plain Python state machine with lots of dictionaries and strings.",
+    "should_trigger": false
+  }
+]

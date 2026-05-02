@@ -1,0 +1,50 @@
+[
+  {
+    "query": "Can you turn this NumPy finite-difference update into JAX and batch it over 64 parameter sets with vmap?",
+    "should_trigger": true
+  },
+  {
+    "query": "why does jit throw ConcretizationTypeError when I branch on an array value?",
+    "should_trigger": true
+  },
+  {
+    "query": "I think my dropout mask repeats every step in JAX. Please inspect the key plumbing.",
+    "should_trigger": true
+  },
+  {
+    "query": "Benchmark this JAX training step properly on GPU and tell me whether compile or runtime dominates.",
+    "should_trigger": true
+  },
+  {
+    "query": "Migrate this pmap loop to the newer sharding style without breaking semantics.",
+    "should_trigger": true
+  },
+  {
+    "query": "Show me where custom_vjp and batching rules live in the JAX repo.",
+    "should_trigger": true
+  },
+  {
+    "query": "Export this jitted function as StableHLO and explain the shape assumptions.",
+    "should_trigger": true
+  },
+  {
+    "query": "Why does jax.debug.print show values in a weird order inside my compiled function?",
+    "should_trigger": true
+  },
+  {
+    "query": "I need to update formulas in an Excel workbook and fix the conditional formatting.",
+    "should_trigger": false
+  },
+  {
+    "query": "Optimise this pure NumPy code with Numba; JAX is not allowed here.",
+    "should_trigger": false
+  },
+  {
+    "query": "Write a CUDA kernel for a custom NCCL all-reduce without using any JAX code.",
+    "should_trigger": false
+  },
+  {
+    "query": "Can you review my PyTorch Lightning callback setup for checkpoint naming?",
+    "should_trigger": false
+  }
+]
