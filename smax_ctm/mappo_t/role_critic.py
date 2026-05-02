@@ -367,7 +367,11 @@ class RoleTransVCritic(nn.Module):
             return action.astype(jnp.float32)
         if action.shape[-1] == 1 and action.ndim >= 3:
             action = jnp.squeeze(action, axis=-1)
-        return jax.nn.one_hot(action.astype(jnp.int32), self.act_space.n)
+        n_actions = getattr(self.act_space, "n", None)
+        if n_actions is None:
+            # Fallback: infer from action values
+            n_actions = int(jnp.max(action)) + 1
+        return jax.nn.one_hot(action.astype(jnp.int32), n_actions)
 
     def setup(self):
         self.encoder = RoleEncoder(
@@ -440,7 +444,7 @@ class RoleTransVCritic(nn.Module):
         self, params, obs, action, policy_prob, rnn_states, resets, role_ids
     ):
         """Compute MACA baseline per agent using role-specific Q heads."""
-        _, _, _, vq, vq_coma, baseline_weights, _, _, _, _, _ = self.apply(
+        _, _, all_eq, vq, vq_coma, baseline_weights, _, _, _, _, _ = self.apply(
             params, obs, action, policy_prob, rnn_states, resets, role_ids, True, True
         )
 
@@ -448,10 +452,11 @@ class RoleTransVCritic(nn.Module):
             raise ValueError("output_attentions must be True for baseline computation")
 
         # baseline_weights: (batch, n_agents, 3) = [self, group, joint]
+        eq_env = jnp.mean(all_eq, axis=0)[:, None, :]  # (batch, 1, 1)
         baseline = (
             baseline_weights[..., 0:1] * vq_coma +
             baseline_weights[..., 1:2] * vq +
-            baseline_weights[..., 2:3] * jnp.mean(_, axis=0)  # EQ_env
+            baseline_weights[..., 2:3] * eq_env
         )
         return baseline.squeeze(-1)
 

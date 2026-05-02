@@ -172,20 +172,19 @@ class RoleActorTrans(nn.Module):
         """Gather per-role values based on role_ids.
 
         Args:
-            all_values: ``(n_roles, ...)`` tensor where leading dim is roles.
-            role_ids: ``(time, batch)`` or ``(batch,)`` integer indices.
+            all_values: ``(n_roles, time, batch, ...features)`` tensor.
+            role_ids: ``(time, batch)`` integer indices in ``[0, n_roles)``.
 
         Returns:
-            Gathered tensor with role dim removed.
+            Gathered tensor ``(time, batch, ...features)`` with role dim removed.
         """
-        n_roles = all_values.shape[0]
-        # Flatten everything after the role dimension
-        remaining = all_values.shape[1:]
-        flat_size = int(np.prod(remaining))
-        all_flat = all_values.reshape(n_roles, flat_size, -1)
-        role_ids_flat = role_ids.reshape(-1)
-        gathered = all_flat[role_ids_flat]  # JAX advanced indexing
-        return gathered.reshape(*role_ids.shape, *remaining[1:])
+        n_roles, t, b, *feat = all_values.shape
+        # Flatten time×batch, keep features
+        all_flat = all_values.reshape(n_roles, t * b, *feat)
+        role_ids_flat = role_ids.reshape(t * b)
+        # Advanced indexing: pair role_ids_flat[i] with position i
+        gathered = all_flat[role_ids_flat, jnp.arange(t * b)]
+        return gathered.reshape(t, b, *feat)
 
     def _gather_role_logits(
         self, all_logits: jnp.ndarray, role_ids: jnp.ndarray
@@ -206,15 +205,13 @@ class RoleActorTrans(nn.Module):
         avail: Optional[jnp.ndarray],
     ) -> jnp.ndarray:
         """Mean pairwise KL between all role policies on the given obs."""
-
-        def get_logits_for_role(k: int) -> jnp.ndarray:
+        # Compute logits for each role by calling forward with uniform role ids
+        all_logits = []
+        for k in range(self.n_roles):
             role_ids_k = jnp.full_like(obs[:, :, 0], k, dtype=jnp.int32)
             _, pi = self.apply(params, rnn_states, (obs, resets, avail), role_ids_k)
-            return pi.logits
-
-        # vmap over roles
-        ks = jnp.arange(self.n_roles)
-        all_logits = jax.vmap(get_logits_for_role)(ks)  # (n_roles, time, batch, action_dim)
+            all_logits.append(pi.logits)
+        all_logits = jnp.stack(all_logits, axis=0)  # (n_roles, time, batch, action_dim)
 
         kl_sum = 0.0
         count = 0
