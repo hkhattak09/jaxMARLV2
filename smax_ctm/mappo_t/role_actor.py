@@ -108,6 +108,7 @@ class RoleActorTrans(nn.Module):
         role_ids: jnp.ndarray,
     ) -> jnp.ndarray:
         """Compute per-role routes on raw obs and add residually to embedding."""
+        out_dim = shared_embedding.shape[-1]  # Match base MLP output dim
         all_routes = []
         for k in range(self.n_roles):
             route = nn.Dense(
@@ -118,7 +119,7 @@ class RoleActorTrans(nn.Module):
             )(obs)
             route = nn.relu(route)
             route = nn.Dense(
-                64,
+                out_dim,
                 kernel_init=orthogonal(0.1),
                 bias_init=constant(0.0),
                 name=f"route_{k}_dense_1",
@@ -126,8 +127,8 @@ class RoleActorTrans(nn.Module):
             route = nn.relu(route)
             all_routes.append(route)
 
-        all_routes = jnp.stack(all_routes, axis=0)  # (n_roles, time, batch, 64)
-        route = self._gather_by_role(all_routes, role_ids)  # (time, batch, 64)
+        all_routes = jnp.stack(all_routes, axis=0)  # (n_roles, time, batch, out_dim)
+        route = self._gather_by_role(all_routes, role_ids)  # (time, batch, out_dim)
         return shared_embedding + route
 
     # -----------------------------------------------------------------------

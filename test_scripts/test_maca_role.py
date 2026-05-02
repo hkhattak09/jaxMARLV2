@@ -669,7 +669,7 @@ class TestExp4_Full:
 
         # Head params should be standard (in_dim, out_dim) or (out_dim, in_dim) kernels
         for key, val in flat.items():
-            if "head" in str(k) and "kernel" in str(k):
+            if "head" in str(key) and "kernel" in str(key):
                 assert val.ndim == 2, (
                     f"Head param {key} has {val.ndim} dims, expected 2. "
                     "EggRoll requires 2D weight matrices for MM_PARAM."

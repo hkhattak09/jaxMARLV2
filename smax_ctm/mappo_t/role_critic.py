@@ -173,7 +173,7 @@ class RoleEncoder(nn.Module):
 
             # Linear Q-head (NO activation) -> preserves marginalization
             q_k = nn.Dense(1, use_bias=bias, name=f"q_head_{k}", **init_kwargs)(zsa_k)
-            eq_k = nn.Dense(1, use_bias=bias, name=f"q_head_{k}", **init_kwargs)(zspi_k)
+            eq_k = nn.Dense(1, use_bias=bias, name=f"eq_head_{k}", **init_kwargs)(zspi_k)
 
             all_q.append(q_k)
             all_eq.append(eq_k)
@@ -236,8 +236,8 @@ class RoleEncoder(nn.Module):
                 zsa_coma = active_fn(zsa_coma)
                 zsa_coma = LayerNorm(zs_dim, bias=bias)(zsa_coma)
 
-                vq_k = nn.Dense(1, use_bias=bias, name=f"q_head_{k}", **init_kwargs)(zsa_mix)
-                vq_coma_k = nn.Dense(1, use_bias=bias, name=f"q_head_{k}", **init_kwargs)(zsa_coma)
+                vq_k = nn.Dense(1, use_bias=bias, name=f"vq_head_{k}", **init_kwargs)(zsa_mix)
+                vq_coma_k = nn.Dense(1, use_bias=bias, name=f"vq_coma_head_{k}", **init_kwargs)(zsa_coma)
 
                 vq_per_role.append(vq_k.reshape(batch_size, n_agents, -1))
                 vq_coma_per_role.append(vq_coma_k.reshape(batch_size, n_agents, -1))
