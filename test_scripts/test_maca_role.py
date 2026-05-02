@@ -27,7 +27,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from flax.traverse_util import flatten_dict
+from flax.traverse_util import flatten_dict, unflatten_dict
 
 class DummyActSpace:
     """Minimal action space stand-in for tests."""
@@ -609,10 +609,9 @@ class TestExp4_Full:
         rng, actor_rng, critic_rng = jax.random.split(rng, 3)
 
         actor_params = actor.init(actor_rng, h0, (obs, resets, avail), role_ids_actor)
+        _, obs_all, actions, policy_probs, rnn_states, resets, _ = init_critic_tensors(seed=1, batch=4)
         critic_params = critic.init(
-            critic_rng,
-            *init_critic_tensors(seed=1, batch=4)[:-1],
-            role_ids_critic,
+            critic_rng, obs_all, actions, policy_probs, rnn_states, resets, role_ids_critic
         )
 
         # Actor forward
