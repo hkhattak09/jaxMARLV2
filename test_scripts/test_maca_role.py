@@ -290,32 +290,53 @@ class TestExp2_RoleSpecificCritic:
         )
 
     def test_marginalization_preservation(self):
-        """EQ_k(s, π) = sum_a π(a) * Q_k(s, a) for each role k."""
+        """EQ_k(s, π) = sum_a π(a) * Q_k(s, a) for each role k.
+
+        Uses n_agents=1 so the action space is small enough to enumerate.
+        """
         cfg = make_tiny_config()
         cfg["transformer"]["n_embd"] = 64
         cfg["transformer"]["zs_dim"] = 256
 
+        action_dim = 7
         critic = RoleTransVCritic(
             config=cfg,
             share_obs_space=None,
             obs_space=None,
-            act_space=DummyActSpace(7),
-            num_agents=10,
+            act_space=DummyActSpace(action_dim),
+            num_agents=1,
             state_type="EP",
         )
 
-        rng, obs_all, actions, policy_probs, rnn_states, resets, role_ids = init_critic_tensors()
+        rng = jax.random.PRNGKey(0)
+        batch = 4
+        obs_all = jax.random.normal(rng, (batch, 1, 13))
+        # Uniform policy
+        policy_probs = jnp.ones((batch, 1, action_dim)) / action_dim
+        rnn_states = jnp.zeros((batch, 1, 64), dtype=jnp.float32)
+        resets = jnp.zeros((batch, 1), dtype=bool)
+        role_ids = jnp.zeros((batch, 1), dtype=jnp.int32)
 
         params = critic.init(
-            rng, obs_all, actions, policy_probs, rnn_states, resets, role_ids, True, True
+            rng, obs_all, jnp.zeros((batch, 1), dtype=jnp.int32),
+            policy_probs, rnn_states, resets, role_ids, False, True
         )
 
-        # Compute EQ and Q for each role
         for k in range(6):
             eq_k = critic.compute_eq_for_role(params, k, obs_all, policy_probs, rnn_states, resets)
-            # Manual marginalization: sum over actions weighted by policy prob
-            q_vals = critic.compute_all_q_for_role(params, k, obs_all, rnn_states, resets)
-            manual_eq = jnp.sum(q_vals * policy_probs, axis=-1, keepdims=True)
+
+            # Enumerate all actions for the single agent
+            q_for_all_actions = []
+            for a in range(action_dim):
+                one_hot = jax.nn.one_hot(jnp.full((batch, 1), a), action_dim)
+                _, all_q, _, _, _, _, _, _, _, _, _ = critic.apply(
+                    params, obs_all, one_hot, policy_probs, rnn_states, resets, role_ids, False, True
+                )
+                q_for_all_actions.append(all_q[k])  # (batch, 1)
+
+            q_for_all_actions = jnp.stack(q_for_all_actions, axis=-1)  # (batch, 1, action_dim)
+            manual_eq = jnp.sum(q_for_all_actions * policy_probs, axis=-1, keepdims=True)  # (batch, 1, 1)
+            manual_eq = manual_eq.squeeze(-1)  # (batch, 1)
 
             max_diff = float(jnp.max(jnp.abs(eq_k - manual_eq)))
             assert max_diff <= 1e-4, (
@@ -610,12 +631,12 @@ class TestExp4_Full:
         rng, actor_rng, critic_rng = jax.random.split(rng, 3)
 
         actor_params = actor.init(actor_rng, h0, (obs, resets, avail), role_ids_actor)
-        _, obs_all, actions, policy_probs, rnn_states, resets, _ = init_critic_tensors(seed=1, batch=4)
+        _, obs_all, actions, policy_probs, rnn_states, cr_resets, _ = init_critic_tensors(seed=1, batch=4)
         critic_params = critic.init(
-            critic_rng, obs_all, actions, policy_probs, rnn_states, resets, role_ids_critic
+            critic_rng, obs_all, actions, policy_probs, rnn_states, cr_resets, role_ids_critic
         )
 
-        # Actor forward
+        # Actor forward (use original actor resets, not critic resets)
         _, pi = actor.apply(actor_params, h0, (obs, resets, avail), role_ids_actor)
         assert pi.logits.shape == (3, 4, 7), f"Actor logits shape mismatch: {pi.logits.shape}"
 
