@@ -19,6 +19,8 @@ from .lorasa_actor import (
     LoRAScannedRNN,
     LoRASAActorTrans,
 )
+from .role_actor import RoleActorTrans
+from .role_critic import RoleTransVCritic
 
 __all__ = [
     "get_default_mappo_t_config",
@@ -30,4 +32,6 @@ __all__ = [
     "LoRAExplicitGRUCell",
     "LoRAScannedRNN",
     "LoRASAActorTrans",
+    "RoleActorTrans",
+    "RoleTransVCritic",
 ]
