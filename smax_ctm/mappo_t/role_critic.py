@@ -375,14 +375,6 @@ class RoleTransVCritic(nn.Module):
             n_actions = int(jnp.max(action)) + 1
         return jax.nn.one_hot(action.astype(jnp.int32), n_actions)
 
-    def setup(self):
-        self.encoder = RoleEncoder(
-            args=self.config,
-            obs_space=self.obs_space,
-            act_space=self.act_space,
-            n_roles=self.n_roles,
-        )
-
     def _encoder_step(self, encoder, carry, inputs, output_attentions, deterministic):
         obs_t, action_t, policy_t, reset_t, role_ids_t = inputs
         out = encoder(
@@ -529,7 +521,14 @@ class RoleTransVCritic(nn.Module):
                 z_k_embs,
             )
 
-        return self.encoder(
+        encoder = RoleEncoder(
+            args=self.config,
+            obs_space=self.obs_space,
+            act_space=self.act_space,
+            n_roles=self.n_roles,
+            name="role_encoder",
+        )
+        return encoder(
             obs,
             action_onehot,
             policy_prob,
