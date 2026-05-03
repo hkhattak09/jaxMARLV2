@@ -59,7 +59,7 @@ class RoleActorTrans(nn.Module):
         if role_conditioning == "embedding":
             emb_dim = cfg.get("ROLE_EMB_DIM", 16)
             role_emb = self.param(
-                "role_emb", nn.initializers.normal(0.01), (self.n_roles, emb_dim)
+                "role_emb", nn.initializers.normal(1.0), (self.n_roles, emb_dim)
             )
             role_vec = role_emb[role_ids]
 

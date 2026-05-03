@@ -138,7 +138,7 @@ class RoleEncoder(nn.Module):
             z_k_dim = z_k_dims[-1] if z_k_dims else zs.shape[-1]
 
             role_emb = self.param(
-                "role_emb", nn.initializers.normal(0.01), (self.n_roles, emb_dim)
+                "role_emb", nn.initializers.normal(1.0), (self.n_roles, emb_dim)
             )
             z_shared = nn.Dense(
                 z_k_dim, use_bias=bias, name="z_shared_proj", **init_kwargs

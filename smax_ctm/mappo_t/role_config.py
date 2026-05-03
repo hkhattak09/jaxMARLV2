@@ -166,8 +166,8 @@ def get_default_maca_role_config():
 
         # === KL Diversity (actor) ===
         "USE_KL_DIVERSITY": True,
-        "KL_DIVERSITY_WEIGHT": 0.001,
-        "KL_DECAY_FRACTION": 0.3,
+        "KL_DIVERSITY_WEIGHT": 0.01,
+        "KL_DECAY_FRACTION": 1.0,
 
         # === Critic Diversity (role-specific heads only) ===
         "USE_CRITIC_DIVERSITY": False,
