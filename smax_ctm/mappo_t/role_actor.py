@@ -172,18 +172,23 @@ class RoleActorTrans(nn.Module):
     ) -> jnp.ndarray:
         """Gather per-role values based on role_ids.
 
-        Args:
-            all_values: ``(n_roles, time, batch, ...features)`` tensor.
-            role_ids: ``(time, batch)`` integer indices in ``[0, n_roles)``.
+        Supports two shapes:
+          - ``(n_roles, time, batch, ...features)`` with ``role_ids=(time, batch)``
+          - ``(n_roles, batch, ...features)`` with ``role_ids=(batch,)`` (no time dim)
 
         Returns:
-            Gathered tensor ``(time, batch, ...features)`` with role dim removed.
+            Gathered tensor with role dim removed.
         """
+        if all_values.ndim == 3:
+            # No time dimension: (n_roles, batch, feat), role_ids=(batch,)
+            n_roles, batch, *feat = all_values.shape
+            gathered = all_values[role_ids, jnp.arange(batch)]
+            return gathered
+
+        # With time dimension: (n_roles, time, batch, feat)
         n_roles, t, b, *feat = all_values.shape
-        # Flatten time×batch, keep features
         all_flat = all_values.reshape(n_roles, t * b, *feat)
         role_ids_flat = role_ids.reshape(t * b)
-        # Advanced indexing: pair role_ids_flat[i] with position i
         gathered = all_flat[role_ids_flat, jnp.arange(t * b)]
         return gathered.reshape(t, b, *feat)
 
