@@ -1041,7 +1041,7 @@ def make_train(config):
 
                     # Handle role-specific critic: tile targets across roles
                     if use_role_critic:
-                        n_r = values.shape[0]
+                        n_r = n_roles
                         value_pred = values.squeeze(-1).reshape(-1)            # (n_roles * batch)
                         q_pred = q_values.squeeze(-1).reshape(-1)
                         eq_pred = eq_values.squeeze(-1).reshape(-1)
