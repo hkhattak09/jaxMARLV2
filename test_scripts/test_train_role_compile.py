@@ -32,7 +32,9 @@ def test_compile_experiment(exp_id: int):
     cfg["MAP_NAME"] = "protoss_10_vs_10"
     cfg["N_ROLES"] = 3
     cfg["USE_KL_DIVERSITY"] = True
-    cfg["USE_CRITIC_DIVERSITY"] = True
+    # Critic diversity only for role-specific critic experiments
+    if exp_id in (2, 4):
+        cfg["USE_CRITIC_DIVERSITY"] = True
     cfg["PPO_EPOCH"] = 1
     cfg["CRITIC_EPOCH"] = 1
     cfg["ACTOR_NUM_MINI_BATCH"] = 1

@@ -266,11 +266,15 @@ def make_train(config):
     use_pre_gru_routes = exp_cfg["use_pre_gru_routes"]
     n_roles = config["N_ROLES"]
 
+    # Auto-enable critic diversity for role-specific critics unless explicitly disabled
+    if use_role_critic and "USE_CRITIC_DIVERSITY" not in config:
+        config["USE_CRITIC_DIVERSITY"] = True
+
     # KL diversity schedule config
     kl_initial_weight = config.get("KL_DIVERSITY_WEIGHT", 0.001)
     kl_decay_fraction = config.get("KL_DECAY_FRACTION", 0.3)
     use_kl_diversity = config.get("USE_KL_DIVERSITY", True)
-    use_critic_diversity = config.get("USE_CRITIC_DIVERSITY", True) and use_role_critic
+    use_critic_diversity = config.get("USE_CRITIC_DIVERSITY", False) and use_role_critic
     critic_diversity_coef = config.get("CRITIC_DIVERSITY_COEF", 1e-4)
 
     def actor_to_env_agent(x):

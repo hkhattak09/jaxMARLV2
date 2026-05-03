@@ -164,7 +164,7 @@ def get_default_maca_role_config():
         "KL_DECAY_FRACTION": 0.3,
 
         # === Critic Diversity (role-specific heads only) ===
-        "USE_CRITIC_DIVERSITY": True,
+        "USE_CRITIC_DIVERSITY": False,
         "CRITIC_DIVERSITY_COEF": 1e-4,
     }
 
