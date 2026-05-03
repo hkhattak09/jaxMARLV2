@@ -383,6 +383,95 @@ class RoleTransVCritic(nn.Module):
             n_roles=self.n_roles,
         )
 
+    def _encoder_step(self, encoder, carry, inputs, output_attentions, deterministic):
+        obs_t, action_t, policy_t, reset_t, role_ids_t = inputs
+        out = encoder(
+            obs_t,
+            action_t,
+            policy_t,
+            carry,
+            reset_t,
+            output_attentions,
+            deterministic,
+            role_ids_t,
+        )
+        # out[9] is rnn_states (carry), out[10] is z_k_embs
+        carry_out = out[9]
+        outputs = out[:9] + out[10:]
+        return carry_out, outputs
+
+    @functools.partial(
+        nn.scan,
+        variable_broadcast="params",
+        in_axes=0,
+        out_axes=0,
+        split_rngs={"params": False},
+    )
+    @nn.compact
+    def _scan_encoder_attn_det(self, carry, inputs):
+        encoder = RoleEncoder(
+            args=self.config,
+            obs_space=self.obs_space,
+            act_space=self.act_space,
+            n_roles=self.n_roles,
+            name="role_encoder",
+        )
+        return self._encoder_step(encoder, carry, inputs, True, True)
+
+    @functools.partial(
+        nn.scan,
+        variable_broadcast="params",
+        in_axes=0,
+        out_axes=0,
+        split_rngs={"params": False},
+    )
+    @nn.compact
+    def _scan_encoder_no_attn_det(self, carry, inputs):
+        encoder = RoleEncoder(
+            args=self.config,
+            obs_space=self.obs_space,
+            act_space=self.act_space,
+            n_roles=self.n_roles,
+            name="role_encoder",
+        )
+        return self._encoder_step(encoder, carry, inputs, False, True)
+
+    @functools.partial(
+        nn.scan,
+        variable_broadcast="params",
+        in_axes=0,
+        out_axes=0,
+        split_rngs={"params": False, "dropout": True},
+    )
+    @nn.compact
+    def _scan_encoder_attn_train(self, carry, inputs):
+        encoder = RoleEncoder(
+            args=self.config,
+            obs_space=self.obs_space,
+            act_space=self.act_space,
+            n_roles=self.n_roles,
+            name="role_encoder",
+        )
+        return self._encoder_step(encoder, carry, inputs, True, False)
+
+    @functools.partial(
+        nn.scan,
+        variable_broadcast="params",
+        in_axes=0,
+        out_axes=0,
+        split_rngs={"params": False, "dropout": True},
+    )
+    @nn.compact
+    def _scan_encoder_no_attn_train(self, carry, inputs):
+        encoder = RoleEncoder(
+            args=self.config,
+            obs_space=self.obs_space,
+            act_space=self.act_space,
+            n_roles=self.n_roles,
+            name="role_encoder",
+        )
+        return self._encoder_step(encoder, carry, inputs, False, False)
+
     @nn.compact
     def __call__(
         self,
@@ -398,11 +487,46 @@ class RoleTransVCritic(nn.Module):
         action_onehot = self._one_hot_actions(action)
 
         if obs.ndim == 4:
-            # Sequence input — unroll with scan
-            # (For simplicity, we handle single-step here; scan wrappers can be added)
-            raise NotImplementedError(
-                "Sequence input for RoleTransVCritic not yet implemented. "
-                "Use single-step (batch, n_agents, obs_dim) input."
+            if output_attentions:
+                scan_fn = (
+                    self._scan_encoder_attn_det
+                    if deterministic
+                    else self._scan_encoder_attn_train
+                )
+            else:
+                scan_fn = (
+                    self._scan_encoder_no_attn_det
+                    if deterministic
+                    else self._scan_encoder_no_attn_train
+                )
+            final_carry, outputs = scan_fn(
+                rnn_states,
+                (obs, action_onehot, policy_prob, resets, role_ids),
+            )
+            (
+                all_v,
+                all_q,
+                all_eq,
+                vq,
+                vq_coma,
+                baseline_weights,
+                final_attentions,
+                zs,
+                all_zsa,
+                z_k_embs,
+            ) = outputs
+            return (
+                all_v,
+                all_q,
+                all_eq,
+                vq,
+                vq_coma,
+                baseline_weights,
+                final_attentions,
+                zs,
+                all_zsa,
+                final_carry,
+                z_k_embs,
             )
 
         return self.encoder(
@@ -464,9 +588,17 @@ class RoleTransVCritic(nn.Module):
 
     def compute_diversity_penalty(self, params, obs, action, policy_prob, rnn_states, resets):
         """Activation-space diversity: -sum of pairwise L2 distances between z_k means."""
+        if obs.ndim == 4:
+            # Recurrent: (time, batch, n_agents, obs_dim)
+            dummy_role_ids = jnp.zeros(
+                (obs.shape[0], obs.shape[1], self.num_agents), dtype=jnp.int32
+            )
+        else:
+            # Single-step: (batch, n_agents, obs_dim)
+            dummy_role_ids = jnp.zeros((obs.shape[0], self.num_agents), dtype=jnp.int32)
         _, _, _, _, _, _, _, _, _, _, z_k_embs = self.apply(
             params, obs, action, policy_prob, rnn_states, resets,
-            jnp.zeros((obs.shape[0], self.num_agents), dtype=jnp.int32),
+            dummy_role_ids,
             False, True,
         )
         # z_k_embs: (n_roles, batch, dim)

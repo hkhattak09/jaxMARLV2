@@ -16,6 +16,7 @@ import argparse
 import csv
 import json
 import os
+import pickle
 import sys
 import time
 from datetime import datetime
@@ -469,8 +470,103 @@ def make_train(config):
             (config["NUM_ENVS"], env.num_agents, critic_hidden_dim), dtype=jnp.float32
         )
 
+        # === Eval function (greedy, compiled separately) ===
+        def _run_eval(eval_rng, actor_params):
+            eval_num_envs = config.get("EVAL_NUM_ENVS", config["NUM_ENVS"])
+            eval_steps = config.get("EVAL_STEPS", config["NUM_STEPS"])
+            eval_rng, reset_rng = jax.random.split(eval_rng)
+            reset_rng = jax.random.split(reset_rng, eval_num_envs)
+            eval_obsv, eval_env_state = jax.vmap(env.reset, in_axes=(0,))(reset_rng)
+            eval_ac_hstate = ScannedRNN.initialize_carry(
+                eval_num_envs * env.num_agents, actor_hidden_dim
+            )
+            eval_last_done = jnp.zeros(
+                (eval_num_envs * env.num_agents,), dtype=bool
+            )
+
+            def _eval_env_step(carry, _):
+                env_s, last_obs, last_done, ac_hstate, rng = carry
+                rng, _ = jax.random.split(rng)
+                avail_actions = jax.vmap(env.get_avail_actions)(env_s.env_state)
+                avail_actions = jax.lax.stop_gradient(
+                    batchify(avail_actions, env.agents, eval_num_envs * env.num_agents)
+                )
+                obs_batch = batchify(last_obs, env.agents, eval_num_envs * env.num_agents)
+                ac_in = (
+                    obs_batch[None, :],
+                    last_done[None, :],
+                    avail_actions[None, :],
+                )
+                # Dummy role IDs for eval (uniform zeros)
+                eval_role_ids = jnp.zeros((1, eval_num_envs * env.num_agents), dtype=jnp.int32)
+                ac_hstate, pi = actor_network.apply(
+                    actor_params, ac_hstate, ac_in, eval_role_ids
+                )
+                action = jnp.argmax(pi.logits, axis=-1).squeeze(0)
+                env_act = unbatchify(
+                    action, env.agents, eval_num_envs, eval_num_envs * env.num_agents
+                )
+                env_act = {k: v.squeeze(-1) for k, v in env_act.items()}
+                rng, step_rng = jax.random.split(rng)
+                step_rng = jax.random.split(step_rng, eval_num_envs)
+                obsv, env_s, reward, done, info = jax.vmap(
+                    env.step, in_axes=(0, 0, 0)
+                )(step_rng, env_s, env_act)
+                reward_batch = batchify(
+                    reward, env.agents, eval_num_envs * env.num_agents
+                ).squeeze()
+                env_done_batch = jnp.tile(done["__all__"], env.num_agents)
+                return (
+                    env_s,
+                    obsv,
+                    env_done_batch,
+                    ac_hstate,
+                    rng,
+                ), reward_batch
+
+            _, eval_rewards = jax.lax.scan(
+                _eval_env_step,
+                (
+                    eval_env_state,
+                    eval_obsv,
+                    eval_last_done,
+                    eval_ac_hstate,
+                    eval_rng,
+                ),
+                None,
+                eval_steps,
+            )
+            return jnp.mean(eval_rewards)
+
+        _run_eval_jit = jax.jit(_run_eval)
+
+        # === Logging setup ===
+        save_interval = config.get("SAVE_INTERVAL", 1000000)
+        print_interval = max(1, save_interval // 20)
+
+        run_timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M")
+        saved_models_dir = os.path.join(_REPO_ROOT, "saved_models")
+        os.makedirs(saved_models_dir, exist_ok=True)
+        run_dir = os.path.join(saved_models_dir, run_timestamp)
+        os.makedirs(run_dir, exist_ok=True)
+
+        params_path = os.path.join(run_dir, "run_params.json")
+        with open(params_path, "w") as f:
+            json.dump(config, f, indent=2, default=str)
+
+        csv_path = os.path.join(run_dir, "progress.csv")
+        progress_header = [
+            "step", "update", "return", "win_rate", "win_rate_std",
+            "ep_len", "timeout_rate",
+            "value_loss", "entropy", "clip_frac", "approx_kl",
+            "kl_div", "q_value_loss", "eq_value_loss", "eval_return",
+            "actor_grad_norm", "critic_grad_norm",
+        ]
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(progress_header)
+
         # === Update step ===
-        @partial(jax.jit, donate_argnums=(0,))
         def _update_step(update_runner_state, unused):
             runner_state, update_steps = update_runner_state
 
@@ -1076,7 +1172,7 @@ def make_train(config):
                             shuffled_active_mask[i].swapaxes(0, 1),
                             shuffled_norm_adv[i].swapaxes(0, 1),
                             shuffled_init_hstate[i],
-                            shuffled_role_ids[i],
+                            shuffled_role_ids[i].swapaxes(0, 1),
                         )
                     else:
                         mb_data = (
@@ -1139,7 +1235,7 @@ def make_train(config):
                             shuffled_q_old[i].swapaxes(0, 1),
                             shuffled_eq_old[i].swapaxes(0, 1),
                             shuffled_init_hstate[i],
-                            shuffled_role_ids[i],
+                            shuffled_role_ids[i].swapaxes(0, 1),
                         )
                     else:
                         mb_data = (
@@ -1213,6 +1309,185 @@ def make_train(config):
                 "battle_won": traj_batch.info["battle_won"].mean(),
             }
 
+            # Per-env stats for logging
+            metric = jax.tree.map(
+                lambda x: x.reshape((config["NUM_STEPS"], config["NUM_ENVS"], env.num_agents)),
+                traj_batch.info,
+            )
+            mask = metric["returned_episode"][:, :, 0]
+            ep_count = jnp.sum(mask) + 1e-8
+            returns = jnp.sum(metric["returned_episode_returns"][:, :, 0] * mask) / ep_count
+            win_rate = jnp.sum(metric["returned_won_episode"][:, :, 0] * mask) / ep_count
+            ep_len = jnp.sum(metric["returned_episode_lengths"][:, :, 0] * mask) / ep_count
+            timeout_rate = (
+                jnp.sum(metric["bad_transition"][:, :, 0].astype(jnp.float32) * mask)
+                / ep_count
+            )
+            env_ep_count = jnp.sum(mask, axis=0)
+            env_wins = jnp.sum(metric["returned_won_episode"][:, :, 0] * mask, axis=0)
+            env_win_rates = env_wins / (env_ep_count + 1e-8)
+            win_rate_std = jnp.std(env_win_rates, ddof=1)
+
+            step_count = update_steps * config["NUM_ENVS"] * config["NUM_STEPS"]
+
+            # Eval callback (same interval as checkpoint, in timesteps)
+            rng, eval_rng = jax.random.split(rng)
+            do_eval = config.get("USE_EVAL", False) & (
+                (step_count > 0) & (step_count % save_interval == 0)
+            )
+            eval_return = jax.lax.cond(
+                do_eval,
+                lambda er: jax.experimental.io_callback(
+                    lambda er2, p: np.array(float(_run_eval_jit(er2, p)), dtype=np.float32),
+                    jax.ShapeDtypeStruct((), jnp.float32),
+                    er,
+                    actor_train_state.params,
+                    ordered=True,
+                ),
+                lambda _: jnp.array(0.0),
+                eval_rng,
+            )
+            metrics["eval_return"] = eval_return
+
+            # Print + CSV callback
+            def _print_and_csv(
+                r, w, ws, el, tr, s, u,
+                vl, ent, cf, akl, kld, qvl, eqvl, evr, agn, cgn
+            ):
+                s_int = int(s)
+                if s_int > 0 and s_int % print_interval == 0:
+                    msg = (
+                        f"Step {s:8d} | Update {u:5d} | Return: {r:10.2f} | "
+                        f"Win: {w:5.2f}+-{ws:5.2f} | Len: {el:5.1f} | "
+                        f"TO: {tr:5.2f} | VLoss: {vl:8.4f} | "
+                        f"Ent: {ent:6.4f} | Clip: {cf:5.3f} | KL: {akl:6.5f} | "
+                        f"KLDiv: {kld:6.5f} | QVL: {qvl:8.4f} | EQVL: {eqvl:8.4f} | "
+                        f"Eval: {evr:8.4f} | GradN(A/C): {agn:6.3f}/{cgn:6.3f}"
+                    )
+                    print(msg)
+                    with open(csv_path, "a", newline="") as f_csv:
+                        writer = csv.writer(f_csv)
+                        writer.writerow([
+                            s_int, int(u), float(r), float(w), float(ws),
+                            float(el), float(tr),
+                            float(vl), float(ent), float(cf), float(akl),
+                            float(kld), float(qvl), float(eqvl), float(evr),
+                            float(agn), float(cgn),
+                        ])
+
+            jax.experimental.io_callback(
+                _print_and_csv, None,
+                returns, win_rate, win_rate_std, ep_len, timeout_rate,
+                step_count, update_steps,
+                metrics["value_loss"], metrics["entropy"],
+                metrics["clip_frac"], metrics["approx_kl"],
+                metrics["kl_div"], metrics["q_value_loss"], metrics["eq_value_loss"],
+                eval_return,
+                metrics["actor_grad_norm"], metrics["critic_grad_norm"],
+            )
+
+            # Checkpoint callback
+            def _checkpoint(
+                step,
+                update,
+                actor_params,
+                critic_params,
+                value_norm_state,
+                actor_opt_state,
+                critic_opt_state,
+                actor_step,
+                critic_step,
+                r,
+                w,
+                ws,
+            ):
+                s_int = int(step)
+                ckpt_path = os.path.join(run_dir, f"checkpoint_{s_int}.pkl")
+
+                ap = jax.device_get(actor_params)
+                cp = jax.device_get(critic_params)
+                vn = jax.device_get(value_norm_state)
+                aos = jax.device_get(actor_opt_state)
+                cos = jax.device_get(critic_opt_state)
+                actor_step_int = int(jax.device_get(actor_step))
+                critic_step_int = int(jax.device_get(critic_step))
+                update_int = int(jax.device_get(update))
+
+                checkpoint = {
+                    "model_type": "maca_role",
+                    "format_version": 1,
+                    "checkpoint_kind": "periodic",
+                    "step": s_int,
+                    "update": update_int,
+                    "config": config,
+                    "actor_params": ap,
+                    "critic_params": cp,
+                    "value_norm_dict": vn,
+                    "actor_opt_state": aos,
+                    "critic_opt_state": cos,
+                    "actor_step": actor_step_int,
+                    "critic_step": critic_step_int,
+                    "metrics": {
+                        "return": float(r),
+                        "win_rate": float(w),
+                        "win_rate_std": float(ws),
+                    },
+                }
+                with open(ckpt_path, "wb") as fckpt:
+                    pickle.dump(checkpoint, fckpt, protocol=pickle.HIGHEST_PROTOCOL)
+
+                # Win rate plot from CSV
+                try:
+                    csv_data = np.genfromtxt(
+                        csv_path, delimiter=",", names=True, dtype=None,
+                    )
+                    steps = csv_data["step"].astype(float)
+                    win_rates = csv_data["win_rate"].astype(float)
+                    win_stds = csv_data["win_rate_std"].astype(float)
+
+                    plt.figure(figsize=(10, 6))
+                    plt.plot(steps, win_rates, "b-", linewidth=1.5, label="Win Rate")
+                    plt.fill_between(
+                        steps,
+                        win_rates - win_stds,
+                        win_rates + win_stds,
+                        alpha=0.2, color="b", label=r"$\pm$1 std",
+                    )
+                    plt.xlabel("Timesteps")
+                    plt.ylabel("Win Rate")
+                    plt.xlim(0, config["TOTAL_TIMESTEPS"])
+                    plt.title(f"MACA-Role Exp {config['ROLE_EXPERIMENT']} on {config['MAP_NAME']}")
+                    plt.legend()
+                    plt.grid(True, alpha=0.3)
+                    plt.tight_layout()
+                    plot_path = os.path.join(run_dir, f"win_rate_{s_int}.png")
+                    plt.savefig(plot_path, dpi=100, bbox_inches="tight")
+                    plt.close()
+
+                    print(f"Checkpoint saved to {ckpt_path}")
+                    print(f"Plot saved to {plot_path}")
+                except Exception as e:
+                    print(f"Checkpoint saved to {ckpt_path} (plot failed: {e})")
+
+            should_save = (step_count > 0) & (step_count % save_interval == 0)
+            jax.lax.cond(
+                should_save,
+                lambda: jax.experimental.io_callback(
+                    _checkpoint, None,
+                    step_count,
+                    update_steps,
+                    actor_train_state.params,
+                    critic_train_state.params,
+                    value_norm_dict,
+                    actor_train_state.opt_state,
+                    critic_train_state.opt_state,
+                    actor_train_state.step,
+                    critic_train_state.step,
+                    returns, win_rate, win_rate_std,
+                ),
+                lambda: None,
+            )
+
             runner_state = (
                 (actor_train_state, critic_train_state),
                 env_state,
@@ -1241,6 +1516,55 @@ def make_train(config):
             _update_step, (runner_state, 0), None, config["NUM_UPDATES"]
         )
 
+        # Final checkpoint via io_callback (same run_dir as periodic checkpoints)
+        def _final_checkpoint(
+            update,
+            actor_params,
+            critic_params,
+            value_norm_state,
+            actor_opt_state,
+            critic_opt_state,
+            actor_step,
+            critic_step,
+        ):
+            update_int = int(jax.device_get(update))
+            s_int = update_int * config["NUM_ENVS"] * config["NUM_STEPS"]
+            ckpt_path = os.path.join(run_dir, "checkpoint_final.pkl")
+            checkpoint = {
+                "model_type": "maca_role",
+                "format_version": 1,
+                "checkpoint_kind": "final",
+                "step": s_int,
+                "update": update_int,
+                "config": config,
+                "actor_params": jax.device_get(actor_params),
+                "critic_params": jax.device_get(critic_params),
+                "value_norm_dict": jax.device_get(value_norm_state),
+                "actor_opt_state": jax.device_get(actor_opt_state),
+                "critic_opt_state": jax.device_get(critic_opt_state),
+                "actor_step": int(jax.device_get(actor_step)),
+                "critic_step": int(jax.device_get(critic_step)),
+            }
+            with open(ckpt_path, "wb") as fckpt:
+                pickle.dump(checkpoint, fckpt, protocol=pickle.HIGHEST_PROTOCOL)
+            print(f"Final checkpoint saved to {ckpt_path}")
+
+        final_runner_state, final_update_steps = runner_state
+        final_actor_state, final_critic_state = final_runner_state[0]
+        final_value_norm_dict = final_runner_state[6]
+        jax.experimental.io_callback(
+            _final_checkpoint,
+            None,
+            final_update_steps,
+            final_actor_state.params,
+            final_critic_state.params,
+            final_value_norm_dict,
+            final_actor_state.opt_state,
+            final_critic_state.opt_state,
+            final_actor_state.step,
+            final_critic_state.step,
+        )
+
         return {"runner_state": runner_state, "metrics": metrics}
 
     return train
@@ -1258,6 +1582,9 @@ def main():
     parser.add_argument("--num_envs", type=int, default=20)
     parser.add_argument("--num_steps", type=int, default=200)
     parser.add_argument("--map_name", type=str, default="protoss_10_vs_10")
+    parser.add_argument("--save_interval", type=int, default=1000000)
+    parser.add_argument("--eval_num_envs", type=int, default=10)
+    parser.add_argument("--eval_steps", type=int, default=200)
     parser.add_argument("--n_roles", type=int, default=6)
     parser.add_argument("--use_kl_diversity", action="store_true", default=True)
     parser.add_argument("--use_critic_diversity", action="store_true", default=True)
@@ -1272,16 +1599,32 @@ def main():
     config["NUM_ENVS"] = args.num_envs
     config["NUM_STEPS"] = args.num_steps
     config["MAP_NAME"] = args.map_name
+    config["SAVE_INTERVAL"] = args.save_interval
+    config["EVAL_NUM_ENVS"] = args.eval_num_envs
+    config["EVAL_STEPS"] = args.eval_steps
+    config["USE_EVAL"] = True
     config["N_ROLES"] = args.n_roles
     config["USE_KL_DIVERSITY"] = args.use_kl_diversity
     config["USE_CRITIC_DIVERSITY"] = args.use_critic_diversity
     config["KL_DIVERSITY_WEIGHT"] = args.kl_diversity_weight
     config["CRITIC_DIVERSITY_COEF"] = args.critic_diversity_coef
 
+    print(f"Starting MACA-Role Experiment {args.role_experiment} on {config['MAP_NAME']}...")
+    print(f"Config: NUM_ENVS={config['NUM_ENVS']}, NUM_STEPS={config['NUM_STEPS']}, TOTAL_TIMESTEPS={config['TOTAL_TIMESTEPS']}")
+
     rng = jax.random.PRNGKey(config["SEED"])
-    train_fn = make_train(config)
-    out = train_fn(rng)
-    print("Training complete. Final metrics:", {k: float(v[-1]) for k, v in out["metrics"].items()})
+    train_jit = jax.jit(make_train(config))
+
+    start_time = time.time()
+    out = train_jit(rng)
+    jax.block_until_ready(out)
+    elapsed = (time.time() - start_time) / 60.0
+
+    metrics = out["metrics"]
+    print(f"\nTraining completed in {elapsed:.1f} minutes.")
+    print(f"Final metrics:")
+    for k, v in metrics.items():
+        print(f"  {k}: {float(v[-1]):.4f}")
 
 
 if __name__ == "__main__":

@@ -71,8 +71,60 @@ def test_compile_experiment(exp_id: int):
     print(f"[Exp {exp_id}] PASS")
 
 
+def test_compile_experiment_recurrent(exp_id: int):
+    """Test with use_recurrent_policy=True (the default)."""
+    cfg = get_default_maca_role_config()
+    cfg["ROLE_EXPERIMENT"] = exp_id
+    cfg["SEED"] = 0
+    cfg["TOTAL_TIMESTEPS"] = 2000
+    cfg["NUM_ENVS"] = 2
+    cfg["NUM_STEPS"] = 100
+    cfg["MAP_NAME"] = "protoss_10_vs_10"
+    cfg["N_ROLES"] = 3
+    cfg["USE_KL_DIVERSITY"] = True
+    if exp_id in (2, 4):
+        cfg["USE_CRITIC_DIVERSITY"] = True
+    cfg["PPO_EPOCH"] = 1
+    cfg["CRITIC_EPOCH"] = 1
+    cfg["ACTOR_NUM_MINI_BATCH"] = 1
+    cfg["CRITIC_NUM_MINI_BATCH"] = 1
+    cfg["use_valuenorm"] = False
+    cfg["ANNEAL_LR"] = False
+    cfg["use_recurrent_policy"] = True          # <--- test the DEFAULT
+    cfg["use_feature_normalization"] = True
+    cfg["hidden_sizes"] = [16, 16]
+    cfg["transformer"]["n_embd"] = 16
+    cfg["transformer"]["zs_dim"] = 32
+    cfg["transformer"]["n_encode_layer"] = 1
+    cfg["transformer"]["n_decode_layer"] = 0
+    cfg["transformer"]["n_head"] = 2
+    cfg["transformer"]["bias"] = True
+    cfg["transformer"]["dropout"] = 0.0
+    cfg["transformer"]["active_fn"] = "relu"
+    cfg["transformer"]["q_value_loss_coef"] = 0.5
+    cfg["transformer"]["eq_value_loss_coef"] = 0.5
+
+    rng = jax.random.PRNGKey(0)
+    train_fn = make_train(cfg)
+
+    print(f"[Exp {exp_id} REC] Compiling...")
+    t0 = time.time()
+    out = jax.block_until_ready(train_fn(rng))
+    t1 = time.time()
+    print(f"[Exp {exp_id} REC] Compiled + ran in {t1 - t0:.2f}s")
+
+    metrics = out["metrics"]
+    assert "actor_loss" in metrics
+    assert "value_loss" in metrics
+    print(f"[Exp {exp_id} REC] actor_loss={float(metrics['actor_loss'][-1]):.4f}, value_loss={float(metrics['value_loss'][-1]):.4f}")
+    print(f"[Exp {exp_id} REC] PASS")
+
+
 if __name__ == "__main__":
     import time
     for exp in [1, 2, 3, 4]:
         test_compile_experiment(exp)
-    print("\nAll 4 experiments compiled successfully!")
+    print("\n--- Non-recurrent tests done ---\n")
+    for exp in [1, 2, 3, 4]:
+        test_compile_experiment_recurrent(exp)
+    print("\nAll 8 tests (4 non-recurrent + 4 recurrent) passed!")
