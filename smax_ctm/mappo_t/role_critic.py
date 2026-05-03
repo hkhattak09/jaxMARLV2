@@ -130,27 +130,34 @@ class RoleEncoder(nn.Module):
         zs = LayerNorm(zs_dim, bias=bias, name="s_enc_1")(zs)
 
         # ---- Per-role projections z_k ---------------------------------------
+        z_k_dims = self.args.get("role_z_k_dims", [128, 64])
         z_k_embs = []
         for k in range(self.n_roles):
-            z_k = nn.Dense(128, use_bias=bias, name=f"z_enc_{k}_dense_0", **init_kwargs)(zs)
-            z_k = active_fn(z_k)
-            z_k = LayerNorm(128, bias=bias, name=f"z_enc_{k}_norm_0")(z_k)
-            z_k = nn.Dense(64, use_bias=bias, name=f"z_enc_{k}_dense_1", **init_kwargs)(z_k)
+            z_k = zs
+            for idx, dim in enumerate(z_k_dims):
+                z_k = nn.Dense(dim, use_bias=bias, name=f"z_enc_{k}_dense_{idx}", **init_kwargs)(z_k)
+                if idx < len(z_k_dims) - 1:
+                    z_k = active_fn(z_k)
+                    z_k = LayerNorm(dim, bias=bias, name=f"z_enc_{k}_norm_{idx}")(z_k)
             z_k_embs.append(z_k)
-        z_k_embs = jnp.stack(z_k_embs, axis=0)  # (n_roles, batch, 64)
+        z_k_embs = jnp.stack(z_k_embs, axis=0)  # (n_roles, batch, last_dim)
 
-        # ---- Per-role V-heads -----------------------------------------------
+        # ---- Per-role V-heads (configurable depth) --------------------------
+        v_head_dims = self.args.get("role_v_head_dims", [64])
         all_v = []
         for k in range(self.n_roles):
-            v_k = MLPHead(
-                hidden_dim=64,
-                out_dim=1,
-                active_fn_name=cfg["active_fn"],
-                bias=bias,
-                weight_init=cfg.get("weight_init", "default"),
-                name=f"v_head_{k}",
-            )(z_k_embs[k])
-            all_v.append(v_k)
+            v = z_k_embs[k]
+            for idx, dim in enumerate(v_head_dims):
+                v = nn.Dense(
+                    dim,
+                    use_bias=bias,
+                    name=f"v_head_{k}_dense_{idx}",
+                    **init_kwargs,
+                )(v)
+                v = active_fn(v)
+                v = LayerNorm(dim, bias=bias, name=f"v_head_{k}_norm_{idx}")(v)
+            v = nn.Dense(1, use_bias=bias, name=f"v_head_{k}_out", **init_kwargs)(v)
+            all_v.append(v)
         all_v = jnp.stack(all_v, axis=0)  # (n_roles, batch, 1)
 
         # ---- Shared linear sa_encoder (preserves marginalization) -----------

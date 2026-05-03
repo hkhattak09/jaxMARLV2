@@ -38,7 +38,7 @@ class DummyActSpace:
 from mappo_t import (
     ActorTrans,
     ScannedRNN,
-    get_default_mappo_t_config,
+    get_default_maca_role_config,
 )
 
 # Modules under test (will be created)
@@ -51,7 +51,7 @@ from mappo_t.role_critic import RoleTransVCritic
 # ---------------------------------------------------------------------------
 
 def make_tiny_config():
-    cfg = get_default_mappo_t_config()
+    cfg = get_default_maca_role_config()
     cfg["hidden_sizes"] = [16, 16, 16]
     cfg["use_recurrent_policy"] = True
     cfg["use_naive_recurrent_policy"] = False
@@ -59,6 +59,12 @@ def make_tiny_config():
     cfg["activation_func"] = "relu"
     cfg["transformer"] = dict(cfg["transformer"])
     cfg["transformer"]["active_fn"] = "gelu"
+    # Small role-specific dims for fast unit tests
+    cfg["role_head_hidden_dims"] = [16, 8]
+    cfg["role_route_hidden_dim"] = 16
+    cfg["role_z_k_dims"] = [16, 8]
+    cfg["role_v_head_dims"] = [16]
+    cfg["N_ROLES"] = 6
     return cfg
 
 

@@ -51,8 +51,9 @@ from mappo_t import (
     RoleTransVCritic,
     ScannedRNN,
     TransVCritic,
-    get_default_mappo_t_config,
+    get_default_maca_role_config,
 )
+from mappo_t.role_config import MACA_ROLE_EXPERIMENTS
 from mappo_t.utils import batchify, unbatchify
 from mappo_t.valuenorm import (
     create_value_norm_dict,
@@ -216,6 +217,18 @@ def make_train(config):
 
     scenario = map_name_to_scenario(config["MAP_NAME"])
     env = HeuristicEnemySMAX(scenario=scenario, **config["ENV_KWARGS"])
+
+    # Compute N_ROLES from scenario (ally unit types only)
+    if len(scenario.unit_type_indices) > 0:
+        # SMACv2 weighted distribution scenario
+        n_roles = int(len(scenario.unit_type_indices))
+    else:
+        # Fixed unit type scenario - count unique ally types
+        import numpy as np
+        ally_types = np.array(scenario.unit_types[:scenario.num_allies])
+        n_roles = int(len(np.unique(ally_types)))
+    config["N_ROLES"] = n_roles
+
     config["NUM_ACTORS"] = env.num_agents * config["NUM_ENVS"]
     config["NUM_UPDATES"] = config["TOTAL_TIMESTEPS"] // config["NUM_STEPS"] // config["NUM_ENVS"]
     config["PPO_EPOCH"] = config.get("PPO_EPOCH", config.get("UPDATE_EPOCHS", 10))
@@ -248,9 +261,10 @@ def make_train(config):
     critic_hidden_dim = config["transformer"]["n_embd"]
 
     role_experiment = config.get("ROLE_EXPERIMENT", 1)
-    use_role_critic = role_experiment in (2, 4)
-    use_pre_gru_routes = role_experiment in (3, 4)
-    n_roles = config.get("N_ROLES", 6)
+    exp_cfg = MACA_ROLE_EXPERIMENTS[role_experiment]
+    use_role_critic = exp_cfg["use_role_critic"]
+    use_pre_gru_routes = exp_cfg["use_pre_gru_routes"]
+    n_roles = config["N_ROLES"]
 
     # KL diversity schedule config
     kl_initial_weight = config.get("KL_DIVERSITY_WEIGHT", 0.001)
@@ -317,8 +331,8 @@ def make_train(config):
         return kl_initial_weight * decay
 
     def train(rng):
-        from mappo_t.config import validate_mappo_t_config
-        validate_mappo_t_config(config, env.num_agents)
+        from mappo_t.role_config import validate_maca_role_config
+        validate_maca_role_config(config, env.num_agents)
 
         if config["transformer"].get("dropout", 0.0) != 0.0:
             raise NotImplementedError("Transformer dropout > 0 not implemented.")
@@ -1244,7 +1258,7 @@ def main():
     parser.add_argument("--critic_diversity_coef", type=float, default=1e-4)
     args = parser.parse_args()
 
-    config = get_default_mappo_t_config()
+    config = get_default_maca_role_config()
     config["ROLE_EXPERIMENT"] = args.role_experiment
     config["SEED"] = args.seed
     config["TOTAL_TIMESTEPS"] = args.total_timesteps

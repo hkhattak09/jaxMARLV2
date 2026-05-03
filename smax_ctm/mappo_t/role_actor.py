@@ -109,10 +109,11 @@ class RoleActorTrans(nn.Module):
     ) -> jnp.ndarray:
         """Compute per-role routes on raw obs and add residually to embedding."""
         out_dim = shared_embedding.shape[-1]  # Match base MLP output dim
+        route_hidden = self.config.get("role_route_hidden_dim", 128)
         all_routes = []
         for k in range(self.n_roles):
             route = nn.Dense(
-                128,
+                route_hidden,
                 kernel_init=orthogonal(0.1),
                 bias_init=constant(0.0),
                 name=f"route_{k}_dense_0",
@@ -137,27 +138,23 @@ class RoleActorTrans(nn.Module):
 
     def _compute_all_role_logits(self, embedding: jnp.ndarray) -> jnp.ndarray:
         """Return logits for every role: (n_roles, time, batch, action_dim)."""
+        head_dims = self.config.get("role_head_hidden_dims", [64, 32])
         all_logits = []
         for k in range(self.n_roles):
-            h = nn.Dense(
-                64,
-                kernel_init=orthogonal(np.sqrt(2.0)),
-                bias_init=constant(0.0),
-                name=f"head_{k}_dense_0",
-            )(embedding)
-            h = nn.relu(h)
-            h = nn.Dense(
-                32,
-                kernel_init=orthogonal(np.sqrt(2.0)),
-                bias_init=constant(0.0),
-                name=f"head_{k}_dense_1",
-            )(h)
-            h = nn.relu(h)
+            h = embedding
+            for idx, dim in enumerate(head_dims):
+                h = nn.Dense(
+                    dim,
+                    kernel_init=orthogonal(np.sqrt(2.0)),
+                    bias_init=constant(0.0),
+                    name=f"head_{k}_dense_{idx}",
+                )(h)
+                h = nn.relu(h)
             logits = nn.Dense(
                 self.action_dim,
                 kernel_init=orthogonal(self.config.get("gain", 0.01)),
                 bias_init=constant(0.0),
-                name=f"head_{k}_dense_2",
+                name=f"head_{k}_out",
             )(h)
             all_logits.append(logits)
         return jnp.stack(all_logits, axis=0)

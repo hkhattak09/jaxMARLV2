@@ -10,6 +10,7 @@ The key components are:
 """
 
 from .config import get_default_mappo_t_config
+from .role_config import get_default_maca_role_config
 from .actor import ActorTrans, ScannedRNN
 from .critic import TransVCritic
 from .lorasa_actor import (
@@ -24,6 +25,7 @@ from .role_critic import RoleTransVCritic
 
 __all__ = [
     "get_default_mappo_t_config",
+    "get_default_maca_role_config",
     "ActorTrans",
     "ScannedRNN",
     "TransVCritic",

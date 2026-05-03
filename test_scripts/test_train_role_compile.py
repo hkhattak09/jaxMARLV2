@@ -18,12 +18,12 @@ if SMAX_CTM not in sys.path:
 import jax
 import jax.numpy as jnp
 from train_mappo_t_role import make_train
-from mappo_t import get_default_mappo_t_config
+from mappo_t import get_default_maca_role_config
 
 
 def test_compile_experiment(exp_id: int):
     """Test that make_train compiles and runs one update for experiment exp_id."""
-    cfg = get_default_mappo_t_config()
+    cfg = get_default_maca_role_config()
     cfg["ROLE_EXPERIMENT"] = exp_id
     cfg["SEED"] = 0
     cfg["TOTAL_TIMESTEPS"] = 2000  # 1 update: 20 envs * 100 steps
