@@ -22,7 +22,7 @@ from typing import Any, Dict, Tuple
 import jax
 import jax.numpy as jnp
 import flax.linen as nn
-from flax.linen.initializers import ones, zeros, xavier_uniform, normal
+from flax.linen.initializers import ones, zeros, xavier_uniform, normal, orthogonal
 
 from .transformer import (
     Encoder,
@@ -138,7 +138,7 @@ class RoleEncoder(nn.Module):
             z_k_dim = z_k_dims[-1] if z_k_dims else zs.shape[-1]
 
             role_emb = self.param(
-                "role_emb", nn.initializers.normal(1.0), (self.n_roles, emb_dim)
+                "role_emb", orthogonal(), (self.n_roles, emb_dim)
             )
             z_shared = nn.Dense(
                 z_k_dim, use_bias=bias, name="z_shared_proj", **init_kwargs
@@ -680,6 +680,31 @@ class RoleTransVCritic(nn.Module):
         count = self.n_roles * (self.n_roles - 1) // 2
 
         return -penalty / (count + 1e-8)
+
+    def compute_embedding_decorrelation(self, params) -> jnp.ndarray:
+        """Barlow-Twins-style decorrelation loss on critic role embeddings."""
+
+        def _find_role_emb(p):
+            if isinstance(p, dict):
+                if "role_emb" in p:
+                    return p["role_emb"]
+                for v in p.values():
+                    if isinstance(v, dict):
+                        r = _find_role_emb(v)
+                        if r is not None:
+                            return r
+            return None
+
+        p = params.get("params", params) if isinstance(params, dict) else params
+        role_emb = _find_role_emb(p)
+        if role_emb is None:
+            raise KeyError("role_emb not found in critic parameter tree")
+
+        n = role_emb.shape[0]
+        norm_emb = role_emb / (jnp.linalg.norm(role_emb, axis=-1, keepdims=True) + 1e-8)
+        corr = norm_emb @ norm_emb.T
+        off_diag = corr - jnp.eye(n)
+        return jnp.sum(jnp.square(off_diag)) / (n * (n - 1) + 1e-8)
 
     def compute_eq_for_role(self, params, k, obs, policy_prob, rnn_states, resets):
         """Compute EQ_k(s, π) for a specific role k."""

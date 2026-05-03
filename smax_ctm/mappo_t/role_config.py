@@ -169,6 +169,9 @@ def get_default_maca_role_config():
         "KL_DIVERSITY_WEIGHT": 0.01,
         "KL_DECAY_FRACTION": 1.0,
 
+        # === Embedding Decorrelation ===
+        "EMB_DECORR_COEF": 0.1,
+
         # === Critic Diversity (role-specific heads only) ===
         "USE_CRITIC_DIVERSITY": False,
         "CRITIC_DIVERSITY_COEF": 1e-4,

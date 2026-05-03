@@ -59,7 +59,7 @@ class RoleActorTrans(nn.Module):
         if role_conditioning == "embedding":
             emb_dim = cfg.get("ROLE_EMB_DIM", 16)
             role_emb = self.param(
-                "role_emb", nn.initializers.normal(1.0), (self.n_roles, emb_dim)
+                "role_emb", orthogonal(), (self.n_roles, emb_dim)
             )
             role_vec = role_emb[role_ids]
 
@@ -343,6 +343,44 @@ class RoleActorTrans(nn.Module):
                 count += 1
 
         return kl_sum / (count + 1e-8)
+
+    def compute_embedding_decorrelation(self, params: Any) -> jnp.ndarray:
+        """Barlow-Twins-style decorrelation loss on role embeddings.
+
+        Forces role embeddings to be orthogonal by minimizing the off-diagonal
+        elements of the normalized correlation matrix. This provides gradients
+        directly to role_emb regardless of whether the shared head uses them,
+        breaking the symmetry collapse cycle.
+
+        Returns:
+            Scalar loss (off-diagonal penalty).
+        """
+        role_emb = self._get_role_emb(params)
+        n = role_emb.shape[0]
+
+        # Normalize each embedding to unit norm
+        norm_emb = role_emb / (jnp.linalg.norm(role_emb, axis=-1, keepdims=True) + 1e-8)
+
+        # Correlation matrix: C = norm_emb @ norm_emb.T
+        corr = norm_emb @ norm_emb.T  # (n_roles, n_roles)
+
+        # Off-diagonal penalty: push toward 0 (orthogonality)
+        # Diagonal should be ~1 (each embedding normalized)
+        off_diag = corr - jnp.eye(n)
+        loss = jnp.sum(jnp.square(off_diag)) / (n * (n - 1) + 1e-8)
+
+        return loss
+
+    @staticmethod
+    def _get_role_emb(params: Any) -> jnp.ndarray:
+        """Extract role_emb from parameter tree."""
+        p = params.get("params", params)
+        if "role_emb" in p:
+            return p["role_emb"]
+        for v in p.values():
+            if isinstance(v, dict) and "role_emb" in v:
+                return v["role_emb"]
+        raise KeyError("role_emb not found in parameter tree")
 
     @staticmethod
     def make_kl_schedule(total_steps: int, initial_weight: float = 0.001) -> Any:

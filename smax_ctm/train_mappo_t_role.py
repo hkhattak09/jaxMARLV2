@@ -277,6 +277,7 @@ def make_train(config):
     use_kl_diversity = config.get("USE_KL_DIVERSITY", True)
     use_critic_diversity = config.get("USE_CRITIC_DIVERSITY", False) and use_role_critic
     critic_diversity_coef = config.get("CRITIC_DIVERSITY_COEF", 1e-4)
+    emb_decor_coef = config.get("EMB_DECORR_COEF", 0.1)
 
     def actor_to_env_agent(x):
         return x.reshape((env.num_agents, config["NUM_ENVS"]) + x.shape[1:]).swapaxes(0, 1)
@@ -559,7 +560,7 @@ def make_train(config):
             "step", "update", "return", "win_rate", "win_rate_std",
             "ep_len", "timeout_rate",
             "value_loss", "entropy", "clip_frac", "approx_kl",
-            "kl_div", "q_value_loss", "eq_value_loss", "eval_return",
+            "kl_div", "emb_decor", "q_value_loss", "eq_value_loss", "eval_return",
             "actor_grad_norm", "critic_grad_norm",
         ]
         with open(csv_path, "w", newline="") as f:
@@ -959,6 +960,8 @@ def make_train(config):
 
                     # KL diversity penalty
                     kl_div = 0.0
+                    emb_decor = 0.0
+                    role_conditioning = config.get("ROLE_CONDITIONING", "heads")
                     if use_kl_diversity:
                         kl_div = actor_network.compute_kl_diversity(
                             actor_params,
@@ -970,7 +973,11 @@ def make_train(config):
                         kl_weight = kl_schedule_fn(update_steps)
                         actor_loss = actor_loss + kl_weight * kl_div
 
-                    return actor_loss, (policy_loss, entropy, approx_kl, clip_frac, mb_active_count, kl_div)
+                    if role_conditioning == "embedding" and emb_decor_coef > 0:
+                        emb_decor = actor_network.compute_embedding_decorrelation(actor_params)
+                        actor_loss = actor_loss + emb_decor_coef * emb_decor
+
+                    return actor_loss, (policy_loss, entropy, approx_kl, clip_frac, mb_active_count, kl_div, emb_decor)
 
                 (actor_loss, actor_aux), actor_grads = jax.value_and_grad(
                     _actor_loss_fn, has_aux=True
@@ -986,6 +993,7 @@ def make_train(config):
                     "actor_grad_norm": actor_grad_norm,
                     "mb_active_count": actor_aux[4],
                     "kl_div": actor_aux[5],
+                    "emb_decor": actor_aux[6],
                 }
                 return actor_train_state, actor_info
 
@@ -1110,6 +1118,7 @@ def make_train(config):
                     )
 
                     # Critic diversity penalty (role-specific heads only)
+                    critic_emb_decor = 0.0
                     if use_critic_diversity:
                         div_penalty = critic_network.compute_diversity_penalty(
                             critic_params,
@@ -1121,7 +1130,12 @@ def make_train(config):
                         )
                         critic_loss = critic_loss + critic_diversity_coef * div_penalty
 
-                    return critic_loss, (value_loss, q_value_loss, eq_value_loss)
+                    role_conditioning = config.get("ROLE_CONDITIONING", "heads")
+                    if use_role_critic and role_conditioning == "embedding" and emb_decor_coef > 0:
+                        critic_emb_decor = critic_network.compute_embedding_decorrelation(critic_params)
+                        critic_loss = critic_loss + emb_decor_coef * critic_emb_decor
+
+                    return critic_loss, (value_loss, q_value_loss, eq_value_loss, critic_emb_decor)
 
                 (critic_loss, critic_aux), critic_grads = jax.value_and_grad(
                     _critic_loss_fn, has_aux=True
@@ -1135,6 +1149,7 @@ def make_train(config):
                     "q_value_loss": critic_aux[1],
                     "eq_value_loss": critic_aux[2],
                     "critic_grad_norm": critic_grad_norm,
+                    "critic_emb_decor": critic_aux[3],
                 }
                 return (critic_train_state, value_norm_dict), critic_info
 
@@ -1300,10 +1315,12 @@ def make_train(config):
                 "clip_frac": actor_epoch_infos["clip_frac"].mean(),
                 "actor_grad_norm": actor_epoch_infos["actor_grad_norm"].mean(),
                 "kl_div": actor_epoch_infos["kl_div"].mean(),
+                "emb_decor": actor_epoch_infos["emb_decor"].mean(),
                 "value_loss": critic_epoch_infos["value_loss"].mean(),
                 "q_value_loss": critic_epoch_infos["q_value_loss"].mean(),
                 "eq_value_loss": critic_epoch_infos["eq_value_loss"].mean(),
                 "critic_grad_norm": critic_epoch_infos["critic_grad_norm"].mean(),
+                "critic_emb_decor": critic_epoch_infos["critic_emb_decor"].mean(),
                 "returned_episode_returns": traj_batch.info["returned_episode_returns"].mean(),
                 "returned_episode_lengths": traj_batch.info["returned_episode_lengths"].mean(),
                 "battle_won": traj_batch.info["battle_won"].mean(),
@@ -1352,7 +1369,7 @@ def make_train(config):
             # Print + CSV callback
             def _print_and_csv(
                 r, w, ws, el, tr, s, u,
-                vl, ent, cf, akl, kld, qvl, eqvl, evr, agn, cgn
+                vl, ent, cf, akl, kld, edec, qvl, eqvl, evr, agn, cgn
             ):
                 s_int = int(s)
                 if s_int > 0 and s_int % print_interval == 0:
@@ -1361,7 +1378,8 @@ def make_train(config):
                         f"Win: {w:5.2f}+-{ws:5.2f} | Len: {el:5.1f} | "
                         f"TO: {tr:5.2f} | VLoss: {vl:8.4f} | "
                         f"Ent: {ent:6.4f} | Clip: {cf:5.3f} | KL: {akl:6.5f} | "
-                        f"KLDiv: {kld:6.5f} | QVL: {qvl:8.4f} | EQVL: {eqvl:8.4f} | "
+                        f"KLDiv: {kld:6.5f} | EmbDec: {edec:6.4f} | "
+                        f"QVL: {qvl:8.4f} | EQVL: {eqvl:8.4f} | "
                         f"Eval: {evr:8.4f} | GradN(A/C): {agn:6.3f}/{cgn:6.3f}"
                     )
                     print(msg)
@@ -1371,7 +1389,7 @@ def make_train(config):
                             s_int, int(u), float(r), float(w), float(ws),
                             float(el), float(tr),
                             float(vl), float(ent), float(cf), float(akl),
-                            float(kld), float(qvl), float(eqvl), float(evr),
+                            float(kld), float(edec), float(qvl), float(eqvl), float(evr),
                             float(agn), float(cgn),
                         ])
 
@@ -1381,7 +1399,8 @@ def make_train(config):
                 step_count, update_steps,
                 metrics["value_loss"], metrics["entropy"],
                 metrics["clip_frac"], metrics["approx_kl"],
-                metrics["kl_div"], metrics["q_value_loss"], metrics["eq_value_loss"],
+                metrics["kl_div"], metrics["emb_decor"],
+                metrics["q_value_loss"], metrics["eq_value_loss"],
                 eval_return,
                 metrics["actor_grad_norm"], metrics["critic_grad_norm"],
             )
@@ -1590,6 +1609,7 @@ def main():
     parser.add_argument("--use_critic_diversity", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--kl_diversity_weight", type=float, default=None)
     parser.add_argument("--critic_diversity_coef", type=float, default=None)
+    parser.add_argument("--emb_decor_coef", type=float, default=None)
     args = parser.parse_args()
 
     config = get_default_maca_role_config()
@@ -1622,6 +1642,8 @@ def main():
         config["KL_DIVERSITY_WEIGHT"] = args.kl_diversity_weight
     if args.critic_diversity_coef is not None:
         config["CRITIC_DIVERSITY_COEF"] = args.critic_diversity_coef
+    if args.emb_decor_coef is not None:
+        config["EMB_DECORR_COEF"] = args.emb_decor_coef
 
     print(f"Starting MACA-Role Experiment {args.role_experiment} on {config['MAP_NAME']}...")
     print(f"Config: NUM_ENVS={config['NUM_ENVS']}, NUM_STEPS={config['NUM_STEPS']}, TOTAL_TIMESTEPS={config['TOTAL_TIMESTEPS']}")
