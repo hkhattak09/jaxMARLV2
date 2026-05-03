@@ -1586,8 +1586,8 @@ def main():
     parser.add_argument("--eval_num_envs", type=int, default=10)
     parser.add_argument("--eval_steps", type=int, default=200)
     parser.add_argument("--n_roles", type=int, default=6)
-    parser.add_argument("--use_kl_diversity", action="store_true", default=True)
-    parser.add_argument("--use_critic_diversity", action="store_true", default=True)
+    parser.add_argument("--use_kl_diversity", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--use_critic_diversity", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--kl_diversity_weight", type=float, default=0.001)
     parser.add_argument("--critic_diversity_coef", type=float, default=1e-4)
     args = parser.parse_args()
@@ -1605,7 +1605,8 @@ def main():
     config["USE_EVAL"] = True
     config["N_ROLES"] = args.n_roles
     config["USE_KL_DIVERSITY"] = args.use_kl_diversity
-    config["USE_CRITIC_DIVERSITY"] = args.use_critic_diversity
+    if args.use_critic_diversity is not None:
+        config["USE_CRITIC_DIVERSITY"] = args.use_critic_diversity
     config["KL_DIVERSITY_WEIGHT"] = args.kl_diversity_weight
     config["CRITIC_DIVERSITY_COEF"] = args.critic_diversity_coef
 
