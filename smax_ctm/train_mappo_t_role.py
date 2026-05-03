@@ -470,6 +470,7 @@ def make_train(config):
         )
 
         # === Update step ===
+        @partial(jax.jit, donate_argnums=(0,))
         def _update_step(update_runner_state, unused):
             runner_state, update_steps = update_runner_state
 
@@ -812,6 +813,7 @@ def make_train(config):
                 critic_role_ids = traj_batch.role_ids_env.reshape(critic_sample_count, env.num_agents)
 
             # === Actor minibatch update ===
+            @partial(jax.jit, donate_argnums=(0,))
             def _actor_minibatch_update(actor_state, mb_data):
                 actor_train_state = actor_state
                 (
@@ -892,6 +894,7 @@ def make_train(config):
                 return actor_train_state, actor_info
 
             # === Critic minibatch update ===
+            @partial(jax.jit, donate_argnums=(0,))
             def _critic_minibatch_update(critic_state, mb_data):
                 critic_train_state, value_norm_dict = critic_state
                 (

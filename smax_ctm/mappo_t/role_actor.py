@@ -52,6 +52,29 @@ class RoleActorTrans(nn.Module):
             role_ids: ``(time, batch)`` integer role IDs in ``[0, n_roles)``.
         """
         obs, resets, available_actions = x
+        embedding, rnn_states = self._forward_embedding(rnn_states, obs, resets, role_ids)
+        all_logits = self._compute_all_role_logits(embedding)
+        logits = self._gather_role_logits(all_logits, role_ids)
+
+        if available_actions is not None:
+            if available_actions.ndim == logits.ndim - 1:
+                available_actions = available_actions[None, ...]
+            logits = jnp.where(
+                available_actions > 0.5,
+                logits,
+                jnp.full_like(logits, -1e10),
+            )
+
+        return rnn_states, distrax.Categorical(logits=logits)
+
+    def _forward_embedding(
+        self,
+        rnn_states: jnp.ndarray,
+        obs: jnp.ndarray,
+        resets: jnp.ndarray,
+        role_ids: jnp.ndarray,
+    ):
+        """Shared backbone up to post-GRU embedding. Returns (embedding, rnn_states)."""
         cfg = self.config
         hidden_sizes = cfg["hidden_sizes"]
         activation_name = cfg.get("activation_func", cfg["transformer"]["active_fn"])
@@ -82,20 +105,7 @@ class RoleActorTrans(nn.Module):
                 rnn_states, (embedding, resets)
             )
 
-        # ---- Role-specific post-GRU heads -----------------------------------
-        all_logits = self._compute_all_role_logits(embedding)
-        logits = self._gather_role_logits(all_logits, role_ids)
-
-        if available_actions is not None:
-            if available_actions.ndim == logits.ndim - 1:
-                available_actions = available_actions[None, ...]
-            logits = jnp.where(
-                available_actions > 0.5,
-                logits,
-                jnp.full_like(logits, -1e10),
-            )
-
-        return rnn_states, distrax.Categorical(logits=logits)
+        return embedding, rnn_states
 
     # -----------------------------------------------------------------------
     # Pre-GRU residual routes (Exp 3/4)
@@ -199,6 +209,20 @@ class RoleActorTrans(nn.Module):
     # KL diversity penalty
     # -----------------------------------------------------------------------
 
+    def get_all_logits(
+        self,
+        rnn_states: jnp.ndarray,
+        x: Tuple[jnp.ndarray, jnp.ndarray, Optional[jnp.ndarray]],
+    ):
+        """Return logits for ALL roles in a single forward pass.
+
+        Only valid when use_pre_gru_routes=False (shared embedding).
+        Returns (n_roles, time, batch, action_dim).
+        """
+        obs, resets, _ = x
+        embedding, _ = self._forward_embedding(rnn_states, obs, resets, jnp.zeros_like(obs[:, :, 0], dtype=jnp.int32))
+        return self._compute_all_role_logits(embedding)
+
     def compute_kl_diversity(
         self,
         params: Any,
@@ -210,17 +234,24 @@ class RoleActorTrans(nn.Module):
         """Mean pairwise KL between all role policies on the given obs."""
         # Handle non-recurrent (2D obs) vs recurrent (3D obs)
         if obs.ndim == 2:
-            obs = obs[None, :]          # (1, batch, obs_dim)
-            resets = resets[None, :]    # (1, batch)
+            obs = obs[None, :]
+            resets = resets[None, :]
             if avail is not None:
-                avail = avail[None, :]  # (1, batch, action_dim)
+                avail = avail[None, :]
 
-        all_logits = []
-        for k in range(self.n_roles):
-            role_ids_k = jnp.full_like(obs[:, :, 0], k, dtype=jnp.int32)
-            _, pi = self.apply(params, rnn_states, (obs, resets, avail), role_ids_k)
-            all_logits.append(pi.logits)
-        all_logits = jnp.stack(all_logits, axis=0)  # (n_roles, time, batch, action_dim)
+        if not self.use_pre_gru_routes:
+            # Exp 1/2: shared embedding — compute all_logits once
+            all_logits = self.apply(
+                params, rnn_states, (obs, resets, avail), method=self.get_all_logits
+            )
+        else:
+            # Exp 3/4: per-role routes — must compute embedding per role
+            all_logits = []
+            for k in range(self.n_roles):
+                role_ids_k = jnp.full_like(obs[:, :, 0], k, dtype=jnp.int32)
+                _, pi = self.apply(params, rnn_states, (obs, resets, avail), role_ids_k)
+                all_logits.append(pi.logits)
+            all_logits = jnp.stack(all_logits, axis=0)
 
         kl_sum = 0.0
         count = 0

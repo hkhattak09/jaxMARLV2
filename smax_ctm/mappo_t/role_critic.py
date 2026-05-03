@@ -469,15 +469,14 @@ class RoleTransVCritic(nn.Module):
             jnp.zeros((obs.shape[0], self.num_agents), dtype=jnp.int32),
             False, True,
         )
-        # z_k_embs: (n_roles, batch, 64)
-        z_means = jnp.mean(z_k_embs, axis=1)  # (n_roles, 64)
+        # z_k_embs: (n_roles, batch, dim)
+        z_means = jnp.mean(z_k_embs, axis=1)  # (n_roles, dim)
 
-        penalty = 0.0
-        count = 0
-        for i in range(self.n_roles):
-            for j in range(i + 1, self.n_roles):
-                penalty += jnp.sum(jnp.square(z_means[i] - z_means[j]))
-                count += 1
+        # Vectorized pairwise L2: diffs[i,j] = ||z_i - z_j||^2
+        diffs = z_means[:, None, :] - z_means[None, :, :]  # (n_roles, n_roles, dim)
+        dists = jnp.sum(jnp.square(diffs), axis=-1)  # (n_roles, n_roles)
+        penalty = jnp.sum(jnp.triu(dists, k=1))  # sum over unique pairs
+        count = self.n_roles * (self.n_roles - 1) // 2
 
         return -penalty / (count + 1e-8)
 
