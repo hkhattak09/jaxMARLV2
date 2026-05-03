@@ -526,6 +526,16 @@ def make_train(config):
                     cr_hstate,
                 ) = critic_out[:10]
 
+                # For role-specific critic, mean-pool across roles for env-level values
+                if use_role_critic:
+                    values_env = jnp.mean(values, axis=0)    # (batch, 1)
+                    q_values_env = jnp.mean(q_values, axis=0)  # (batch, 1)
+                    eq_values_env = jnp.mean(eq_values, axis=0)  # (batch, 1)
+                else:
+                    values_env = values
+                    q_values_env = q_values
+                    eq_values_env = eq_values
+
                 rng, step_rng = jax.random.split(rng)
                 step_rng = jax.random.split(step_rng, config["NUM_ENVS"])
                 env_act = unbatchify(action, env.agents, config["NUM_ENVS"], config["NUM_ACTORS"])
@@ -551,7 +561,7 @@ def make_train(config):
                     last_env_done,
                     active_mask,
                     action,
-                    env_value_to_actor(values),
+                    env_value_to_actor(values_env),
                     reward_batch,
                     log_prob,
                     obs_batch,
@@ -562,9 +572,9 @@ def make_train(config):
                     obs_all,
                     actions_all,
                     policy_probs_all,
-                    values.squeeze(-1),
-                    q_values.squeeze(-1),
-                    eq_values.squeeze(-1),
+                    values_env.squeeze(-1),
+                    q_values_env.squeeze(-1),
+                    eq_values_env.squeeze(-1),
                     vq_values.squeeze(-1) if vq_values is not None else jnp.zeros((config["NUM_ENVS"], env.num_agents)),
                     vq_coma_values.squeeze(-1) if vq_coma_values is not None else jnp.zeros((config["NUM_ENVS"], env.num_agents)),
                     baseline_weights if baseline_weights is not None else jnp.zeros((config["NUM_ENVS"], env.num_agents, 3)),
@@ -624,6 +634,11 @@ def make_train(config):
             last_values = last_critic_out[0]
             last_q_values = last_critic_out[1]
             last_eq_values = last_critic_out[2]
+
+            if use_role_critic:
+                last_values = jnp.mean(last_values, axis=0)
+                last_q_values = jnp.mean(last_q_values, axis=0)
+                last_eq_values = jnp.mean(last_eq_values, axis=0)
 
             def _denorm_if_needed(norm_key, x):
                 if use_valuenorm:
@@ -907,28 +922,43 @@ def make_train(config):
                     q_values = critic_out[1]
                     eq_values = critic_out[2]
 
-                    value_pred = values.squeeze(-1).reshape(-1)
-                    q_pred = q_values.squeeze(-1).reshape(-1)
-                    eq_pred = eq_values.squeeze(-1).reshape(-1)
-
-                    mb_value_old_flat = mb_value_old.reshape(-1)
-                    mb_q_old_flat = mb_q_old.reshape(-1)
-                    mb_eq_old_flat = mb_eq_old.reshape(-1)
+                    # Handle role-specific critic: tile targets across roles
+                    if use_role_critic:
+                        n_r = values.shape[0]
+                        value_pred = values.squeeze(-1).reshape(-1)            # (n_roles * batch)
+                        q_pred = q_values.squeeze(-1).reshape(-1)
+                        eq_pred = eq_values.squeeze(-1).reshape(-1)
+                        mb_value_old_flat = jnp.tile(mb_value_old.reshape(-1), n_r)
+                        mb_q_old_flat = jnp.tile(mb_q_old.reshape(-1), n_r)
+                        mb_eq_old_flat = jnp.tile(mb_eq_old.reshape(-1), n_r)
+                        v_t_flat = jnp.tile(mb_value_targets_flat, n_r)
+                        q_t_flat = jnp.tile(mb_q_targets_flat, n_r)
+                        eq_t_flat = jnp.tile(mb_eq_targets_flat, n_r)
+                    else:
+                        value_pred = values.squeeze(-1).reshape(-1)
+                        q_pred = q_values.squeeze(-1).reshape(-1)
+                        eq_pred = eq_values.squeeze(-1).reshape(-1)
+                        mb_value_old_flat = mb_value_old.reshape(-1)
+                        mb_q_old_flat = mb_q_old.reshape(-1)
+                        mb_eq_old_flat = mb_eq_old.reshape(-1)
+                        v_t_flat = mb_value_targets_flat
+                        q_t_flat = mb_q_targets_flat
+                        eq_t_flat = mb_eq_targets_flat
 
                     if norm_dict is not None and use_valuenorm:
                         v_targets_norm = value_norm_normalize(
-                            norm_dict["v"], mb_value_targets_flat[..., None]
+                            norm_dict["v"], v_t_flat[..., None]
                         ).squeeze(-1)
                         q_targets_norm = value_norm_normalize(
-                            norm_dict["q"], mb_q_targets_flat[..., None]
+                            norm_dict["q"], q_t_flat[..., None]
                         ).squeeze(-1)
                         eq_targets_norm = value_norm_normalize(
-                            norm_dict["eq"], mb_eq_targets_flat[..., None]
+                            norm_dict["eq"], eq_t_flat[..., None]
                         ).squeeze(-1)
                     else:
-                        v_targets_norm = mb_value_targets_flat
-                        q_targets_norm = mb_q_targets_flat
-                        eq_targets_norm = mb_eq_targets_flat
+                        v_targets_norm = v_t_flat
+                        q_targets_norm = q_t_flat
+                        eq_targets_norm = eq_t_flat
 
                     def _element_loss(error):
                         if config.get("use_huber_loss", False):
