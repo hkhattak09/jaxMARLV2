@@ -67,6 +67,7 @@ class RoleActorTrans(nn.Module):
 
         return rnn_states, distrax.Categorical(logits=logits)
 
+    @nn.compact
     def _forward_embedding(
         self,
         rnn_states: jnp.ndarray,
