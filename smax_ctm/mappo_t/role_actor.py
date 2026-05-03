@@ -269,7 +269,7 @@ class RoleActorTrans(nn.Module):
         # Tiny role-logit adapter for bootstrapping
         role_logit_bias = nn.Dense(
             self.action_dim,
-            kernel_init=orthogonal(0.01),
+            kernel_init=orthogonal(1.0),
             bias_init=constant(0.0),
             name="role_logit_adapter",
         )(role_vec)
