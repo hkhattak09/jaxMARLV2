@@ -211,7 +211,13 @@ class RoleActorTrans(nn.Module):
         avail: Optional[jnp.ndarray],
     ) -> jnp.ndarray:
         """Mean pairwise KL between all role policies on the given obs."""
-        # Compute logits for each role by calling forward with uniform role ids
+        # Handle non-recurrent (2D obs) vs recurrent (3D obs)
+        if obs.ndim == 2:
+            obs = obs[None, :]          # (1, batch, obs_dim)
+            resets = resets[None, :]    # (1, batch)
+            if avail is not None:
+                avail = avail[None, :]  # (1, batch, action_dim)
+
         all_logits = []
         for k in range(self.n_roles):
             role_ids_k = jnp.full_like(obs[:, :, 0], k, dtype=jnp.int32)
