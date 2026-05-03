@@ -867,14 +867,14 @@ def make_train(config):
                 actor_active_mask = _actor_chunks(traj_batch.active_mask.astype(jnp.float32))
                 actor_norm_adv = _actor_chunks(norm_advantages)
                 actor_init_hstate = _actor_chunks(traj_batch.actor_hstate)[:, 0]
-                actor_role_ids = _actor_chunks(traj_batch.role_ids_actor)[:, 0]
+                actor_role_ids = _actor_chunks(traj_batch.role_ids_actor)
 
                 critic_obs_all = _critic_chunks(traj_batch.obs_all)
                 critic_actions_all = _critic_chunks(traj_batch.actions_all)
                 critic_policy_probs_all = _critic_chunks(traj_batch.policy_probs_all)
                 critic_done = _critic_chunks(actor_to_env_agent_time(traj_batch.done))
                 critic_init_hstate = _critic_chunks(traj_batch.critic_hstate)[:, 0]
-                critic_role_ids = _critic_chunks(traj_batch.role_ids_env)[:, 0]
+                critic_role_ids = _critic_chunks(traj_batch.role_ids_env)
                 critic_value_targets = _critic_chunks(value_targets)
                 critic_q_targets = _critic_chunks(q_targets)
                 critic_eq_targets = _critic_chunks(eq_targets)
