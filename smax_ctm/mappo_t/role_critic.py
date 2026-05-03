@@ -129,44 +129,81 @@ class RoleEncoder(nn.Module):
         zs = active_fn(zs)
         zs = LayerNorm(zs_dim, bias=bias, name="s_enc_1")(zs)
 
-        # ---- Per-role projections z_k ---------------------------------------
+        # ---- Role-conditioned or per-role projections z_k -----------------------
+        role_conditioning = self.args.get("ROLE_CONDITIONING", "heads")
         z_k_dims = self.args.get("role_z_k_dims", [128, 64])
-        z_k_embs = []
-        for k in range(self.n_roles):
-            z_k = zs
-            for idx, dim in enumerate(z_k_dims):
-                z_k = nn.Dense(dim, use_bias=bias, name=f"z_enc_{k}_dense_{idx}", **init_kwargs)(z_k)
-                if idx < len(z_k_dims) - 1:
-                    z_k = active_fn(z_k)
-                    z_k = LayerNorm(dim, bias=bias, name=f"z_enc_{k}_norm_{idx}")(z_k)
-            z_k_embs.append(z_k)
-        z_k_embs = jnp.stack(z_k_embs, axis=0)  # (n_roles, batch, last_dim)
 
-        # ---- Per-role V-heads (configurable depth) --------------------------
+        if role_conditioning == "embedding":
+            emb_dim = self.args.get("ROLE_EMB_DIM", 16)
+            z_k_dim = z_k_dims[-1] if z_k_dims else zs.shape[-1]
+
+            role_emb = self.param(
+                "role_emb", nn.initializers.normal(0.01), (self.n_roles, emb_dim)
+            )
+            z_shared = nn.Dense(
+                z_k_dim, use_bias=bias, name="z_shared_proj", **init_kwargs
+            )(zs)
+            role_offsets = nn.Dense(
+                z_k_dim, use_bias=bias, name="role_offset_proj", **init_kwargs
+            )(role_emb)  # (n_roles, z_k_dim)
+
+            z_k_embs = z_shared[None, :, :] + role_offsets[:, None, :]
+
+            if z_k_dims:
+                for idx, dim in enumerate(z_k_dims[:-1] if len(z_k_dims) > 1 else []):
+                    z_k_embs = nn.Dense(
+                        dim, use_bias=bias, name=f"z_enc_mlp_{idx}", **init_kwargs
+                    )(z_k_embs)
+                    z_k_embs = active_fn(z_k_embs)
+                    z_k_embs = LayerNorm(
+                        dim, bias=bias, name=f"z_enc_norm_{idx}"
+                    )(z_k_embs)
+                z_k_embs = nn.Dense(
+                    z_k_dims[-1], use_bias=bias, name=f"z_enc_mlp_{len(z_k_dims)-1}", **init_kwargs
+                )(z_k_embs)
+        else:
+            z_k_embs = []
+            for k in range(self.n_roles):
+                z_k = zs
+                for idx, dim in enumerate(z_k_dims):
+                    z_k = nn.Dense(dim, use_bias=bias, name=f"z_enc_{k}_dense_{idx}", **init_kwargs)(z_k)
+                    if idx < len(z_k_dims) - 1:
+                        z_k = active_fn(z_k)
+                        z_k = LayerNorm(dim, bias=bias, name=f"z_enc_{k}_norm_{idx}")(z_k)
+                z_k_embs.append(z_k)
+            z_k_embs = jnp.stack(z_k_embs, axis=0)
+
+        # ---- V-heads (shared in embedding mode, per-role in heads mode) ----------
         v_head_dims = self.args.get("role_v_head_dims", [64])
-        all_v = []
-        for k in range(self.n_roles):
-            v = z_k_embs[k]
+        if role_conditioning == "embedding":
+            all_v = z_k_embs
             for idx, dim in enumerate(v_head_dims):
-                v = nn.Dense(
-                    dim,
-                    use_bias=bias,
-                    name=f"v_head_{k}_dense_{idx}",
-                    **init_kwargs,
-                )(v)
-                v = active_fn(v)
-                v = LayerNorm(dim, bias=bias, name=f"v_head_{k}_norm_{idx}")(v)
-            v = nn.Dense(1, use_bias=bias, name=f"v_head_{k}_out", **init_kwargs)(v)
-            all_v.append(v)
-        all_v = jnp.stack(all_v, axis=0)  # (n_roles, batch, 1)
+                all_v = nn.Dense(
+                    dim, use_bias=bias, name=f"v_head_dense_{idx}", **init_kwargs
+                )(all_v)
+                all_v = active_fn(all_v)
+                all_v = LayerNorm(dim, bias=bias, name=f"v_head_norm_{idx}")(all_v)
+            all_v = nn.Dense(1, use_bias=bias, name="v_head_out", **init_kwargs)(all_v)
+        else:
+            all_v = []
+            for k in range(self.n_roles):
+                v = z_k_embs[k]
+                for idx, dim in enumerate(v_head_dims):
+                    v = nn.Dense(
+                        dim,
+                        use_bias=bias,
+                        name=f"v_head_{k}_dense_{idx}",
+                        **init_kwargs,
+                    )(v)
+                    v = active_fn(v)
+                    v = LayerNorm(dim, bias=bias, name=f"v_head_{k}_norm_{idx}")(v)
+                v = nn.Dense(1, use_bias=bias, name=f"v_head_{k}_out", **init_kwargs)(v)
+                all_v.append(v)
+            all_v = jnp.stack(all_v, axis=0)
 
-        # ---- Shared linear sa_encoder (preserves marginalization) -----------
+        # ---- Q/EQ heads (shared in embedding mode, per-role in heads mode) ------
         sa_encoder = nn.Dense(zs_dim, use_bias=bias, name="sa_encoder", **init_kwargs)
 
-        # ---- Per-role Q-heads (linear for exact marginalization) -----------
-        # Mirrors transformer.py: sa_encoder -> q_head, NO activation in between.
-        all_q = []
-        all_eq = []
         all_zsa = []
         all_zspi = []
 
@@ -177,20 +214,25 @@ class RoleEncoder(nn.Module):
             zspi_k = sa_encoder(
                 jnp.concatenate([z_k_embs[k], policy_prob.reshape(batch_size, -1)], axis=-1)
             )
-
-            q_head = nn.Dense(1, use_bias=bias, name=f"q_head_{k}", **init_kwargs)
-            q_k = q_head(zsa_k)
-            eq_k = q_head(zspi_k)
-
-            all_q.append(q_k)
-            all_eq.append(eq_k)
             all_zsa.append(zsa_k)
             all_zspi.append(zspi_k)
 
-        all_q = jnp.stack(all_q, axis=0)    # (n_roles, batch, 1)
-        all_eq = jnp.stack(all_eq, axis=0)  # (n_roles, batch, 1)
-        all_zsa = jnp.stack(all_zsa, axis=0)
-        all_zspi = jnp.stack(all_zspi, axis=0)
+        all_zsa = jnp.stack(all_zsa, axis=0)    # (n_roles, batch, zs_dim)
+        all_zspi = jnp.stack(all_zspi, axis=0)  # (n_roles, batch, zs_dim)
+
+        if role_conditioning == "embedding":
+            q_head = nn.Dense(1, use_bias=bias, name="q_head_shared", **init_kwargs)
+            all_q = q_head(all_zsa)               # (n_roles, batch, 1)
+            all_eq = q_head(all_zspi)             # (n_roles, batch, 1)
+        else:
+            all_q = []
+            all_eq = []
+            for k in range(self.n_roles):
+                q_head = nn.Dense(1, use_bias=bias, name=f"q_head_{k}", **init_kwargs)
+                all_q.append(q_head(all_zsa[k]))
+                all_eq.append(q_head(all_zspi[k]))
+            all_q = jnp.stack(all_q, axis=0)
+            all_eq = jnp.stack(all_eq, axis=0)
 
         # ---- Attention-derived baseline (shared) ----------------------------
         if output_attentions and n_encode_layer > 0:
@@ -222,35 +264,63 @@ class RoleEncoder(nn.Module):
         vq_coma_per_role = []
 
         if output_attentions and joint_attentions is not None:
-            for k in range(self.n_roles):
-                # Mixed actions for this role
-                mix_k = mix_a_pi.reshape(batch_size * n_agents, n_agents, -1)
-                coma_k = coma_a_pi.reshape(batch_size * n_agents, n_agents, -1)
+            if role_conditioning == "embedding":
+                # Vectorized: compute all roles at once with shared heads
+                # mix_a_pi: (batch, n_agents, n_agents, action_dim)
+                # coma_a_pi: (batch, n_agents, n_agents, action_dim)
+                # For each role k, we encode: sa_encoder(concat(z_k_embs[k] tiled, mixed_actions))
+                mix_flat = mix_a_pi.reshape(batch_size * n_agents, n_agents, -1)
+                coma_flat = coma_a_pi.reshape(batch_size * n_agents, n_agents, -1)
+                mix_flat = jnp.tile(mix_flat, (self.n_roles, 1, 1))
+                coma_flat = jnp.tile(coma_flat, (self.n_roles, 1, 1))
+                mix_flat = mix_flat.reshape(self.n_roles * batch_size * n_agents, -1)
+                coma_flat = coma_flat.reshape(self.n_roles * batch_size * n_agents, -1)
 
-                # Encode mixed actions with role's z_k
-                zs_rep = jnp.repeat(z_k_embs[k][:, None, :], n_agents, axis=1)
-                zs_rep = zs_rep.reshape(batch_size * n_agents, -1)
+                # Tile z_k_embs per agent: (n_roles, batch, z_k_dim) -> (n_roles, batch, n_agents, z_k_dim)
+                zs_rep_all = jnp.repeat(z_k_embs[:, :, None, :], n_agents, axis=2)
+                zs_rep_all = zs_rep_all.reshape(self.n_roles * batch_size * n_agents, -1)
 
-                def encode_mixed(m):
-                    m = m.reshape(batch_size * n_agents, -1)
-                    return sa_encoder(jnp.concatenate([zs_rep, m], axis=-1))
+                zsa_mix_all = sa_encoder(jnp.concatenate([zs_rep_all, mix_flat], axis=-1))
+                zsa_coma_all = sa_encoder(jnp.concatenate([zs_rep_all, coma_flat], axis=-1))
+                zsa_mix_all = active_fn(zsa_mix_all)
+                zsa_mix_all = LayerNorm(zs_dim, bias=bias, name="vq_mix_ln")(zsa_mix_all)
+                zsa_coma_all = active_fn(zsa_coma_all)
+                zsa_coma_all = LayerNorm(zs_dim, bias=bias, name="vq_coma_ln")(zsa_coma_all)
 
-                zsa_mix = encode_mixed(mix_k)
-                zsa_mix = active_fn(zsa_mix)
-                zsa_mix = LayerNorm(zs_dim, bias=bias)(zsa_mix)
+                vq_head = nn.Dense(1, use_bias=bias, name="vq_head_shared", **init_kwargs)
+                vq_coma_head = nn.Dense(1, use_bias=bias, name="vq_coma_head_shared", **init_kwargs)
+                vq_all = vq_head(zsa_mix_all).reshape(self.n_roles, batch_size, n_agents, 1)
+                vq_coma_all = vq_coma_head(zsa_coma_all).reshape(self.n_roles, batch_size, n_agents, 1)
+                vq_per_role = vq_all
+                vq_coma_per_role = vq_coma_all
+            else:
+                for k in range(self.n_roles):
+                    mix_k = mix_a_pi.reshape(batch_size * n_agents, n_agents, -1)
+                    coma_k = coma_a_pi.reshape(batch_size * n_agents, n_agents, -1)
 
-                zsa_coma = encode_mixed(coma_k)
-                zsa_coma = active_fn(zsa_coma)
-                zsa_coma = LayerNorm(zs_dim, bias=bias)(zsa_coma)
+                    zs_rep = jnp.repeat(z_k_embs[k][:, None, :], n_agents, axis=1)
+                    zs_rep = zs_rep.reshape(batch_size * n_agents, -1)
 
-                vq_k = nn.Dense(1, use_bias=bias, name=f"vq_head_{k}", **init_kwargs)(zsa_mix)
-                vq_coma_k = nn.Dense(1, use_bias=bias, name=f"vq_coma_head_{k}", **init_kwargs)(zsa_coma)
+                    def encode_mixed(m):
+                        m = m.reshape(batch_size * n_agents, -1)
+                        return sa_encoder(jnp.concatenate([zs_rep, m], axis=-1))
 
-                vq_per_role.append(vq_k.reshape(batch_size, n_agents, -1))
-                vq_coma_per_role.append(vq_coma_k.reshape(batch_size, n_agents, -1))
+                    zsa_mix = encode_mixed(mix_k)
+                    zsa_mix = active_fn(zsa_mix)
+                    zsa_mix = LayerNorm(zs_dim, bias=bias, name=f"vq_mix_ln_{k}")(zsa_mix)
 
-            vq_per_role = jnp.stack(vq_per_role, axis=0)          # (n_roles, batch, n_agents, 1)
-            vq_coma_per_role = jnp.stack(vq_coma_per_role, axis=0)
+                    zsa_coma = encode_mixed(coma_k)
+                    zsa_coma = active_fn(zsa_coma)
+                    zsa_coma = LayerNorm(zs_dim, bias=bias, name=f"vq_coma_ln_{k}")(zsa_coma)
+
+                    vq_k = nn.Dense(1, use_bias=bias, name=f"vq_head_{k}", **init_kwargs)(zsa_mix)
+                    vq_coma_k = nn.Dense(1, use_bias=bias, name=f"vq_coma_head_{k}", **init_kwargs)(zsa_coma)
+
+                    vq_per_role.append(vq_k.reshape(batch_size, n_agents, -1))
+                    vq_coma_per_role.append(vq_coma_k.reshape(batch_size, n_agents, -1))
+
+                vq_per_role = jnp.stack(vq_per_role, axis=0)
+                vq_coma_per_role = jnp.stack(vq_coma_per_role, axis=0)
         else:
             vq_per_role = None
             vq_coma_per_role = None

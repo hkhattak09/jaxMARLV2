@@ -42,7 +42,7 @@ def get_default_maca_role_config():
         # === Environment ===
         "ENV_NAME": "HeuristicEnemySMAX",
         "MAP_NAME": "protoss_10_vs_10",
-        "NUM_ENVS": 128,
+        "NUM_ENVS": 40,
         "NUM_STEPS": 100,
         "TOTAL_TIMESTEPS": int(4e7),
         "SAVE_INTERVAL": 1000000,
@@ -92,12 +92,12 @@ def get_default_maca_role_config():
         "USE_CRITIC_LR_DECAY": True,
         "CLIP_PARAM": 0.1,
         "SCALE_CLIP_EPS": False,
-        "PPO_EPOCH": 15,
-        "UPDATE_EPOCHS": 15,
-        "ACTOR_NUM_MINI_BATCH": 4,
-        "NUM_MINIBATCHES": 4,
+        "PPO_EPOCH": 10,
+        "UPDATE_EPOCHS": 10,
+        "ACTOR_NUM_MINI_BATCH": 1,
+        "NUM_MINIBATCHES": 1,
         "CRITIC_EPOCH": 10,
-        "CRITIC_NUM_MINI_BATCH": 4,
+        "CRITIC_NUM_MINI_BATCH": 1,
         "DATA_CHUNK_LENGTH": 10,
 
         # === Value Normalization ===
@@ -150,13 +150,19 @@ def get_default_maca_role_config():
         "USE_PRE_GRU_ROUTES": False,
         "USE_ROLE_CRITIC": False,
 
+        # === Role Conditioning Mode ===
+        # "embedding": single shared head conditioned on learned role embedding (V1)
+        # "heads": separate parameter heads per role (V0, original)
+        "ROLE_CONDITIONING": "embedding",
+        "ROLE_EMB_DIM": 32,
+
         # === Actor Role-Specific Dimensions ===
-        "role_route_hidden_dim": 128,          # Pre-GRU route intermediate dim (Exp 3/4)
-        "role_head_hidden_dims": [32],              # Post-GRU head: Dense(64→32)→ReLU→Dense(32→act_dim)
+        "role_route_hidden_dim": 128,
+        "role_head_hidden_dims": [32],
 
         # === Critic Role-Specific Dimensions ===
-        "role_z_k_dims": [64, 64],               # Dense(256→64)→ReLU→LN→Dense(64→64): one hidden layer
-        "role_v_head_dims": [32],                 # Dense(64→32)→ReLU→LN→Dense(32→1): one hidden layer
+        "role_z_k_dims": [64, 64],
+        "role_v_head_dims": [32],
 
         # === KL Diversity (actor) ===
         "USE_KL_DIVERSITY": True,
@@ -240,6 +246,12 @@ def validate_maca_role_config(config, num_agents):
     if exp not in MACA_ROLE_EXPERIMENTS:
         raise ValueError(
             f"ROLE_EXPERIMENT must be one of {list(MACA_ROLE_EXPERIMENTS.keys())}, got {exp}"
+        )
+
+    role_conditioning = config.get("ROLE_CONDITIONING", "embedding")
+    if role_conditioning not in ("embedding", "heads"):
+        raise ValueError(
+            f"ROLE_CONDITIONING must be 'embedding' or 'heads', got {role_conditioning}"
         )
 
     exp_cfg = MACA_ROLE_EXPERIMENTS[exp]

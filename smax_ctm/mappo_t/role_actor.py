@@ -52,9 +52,26 @@ class RoleActorTrans(nn.Module):
             role_ids: ``(time, batch)`` integer role IDs in ``[0, n_roles)``.
         """
         obs, resets, available_actions = x
-        embedding, rnn_states = self._forward_embedding(rnn_states, obs, resets, role_ids)
-        all_logits = self._compute_all_role_logits(embedding)
-        logits = self._gather_role_logits(all_logits, role_ids)
+        cfg = self.config
+        role_conditioning = cfg.get("ROLE_CONDITIONING", "heads")
+
+        role_vec = None
+        if role_conditioning == "embedding":
+            emb_dim = cfg.get("ROLE_EMB_DIM", 16)
+            role_emb = self.param(
+                "role_emb", nn.initializers.normal(0.01), (self.n_roles, emb_dim)
+            )
+            role_vec = role_emb[role_ids]
+
+        embedding, rnn_states = self._forward_embedding(
+            rnn_states, obs, resets, role_ids, role_vec
+        )
+
+        if role_conditioning == "embedding":
+            logits = self._compute_conditioned_logits(embedding, role_vec)
+        else:
+            all_logits = self._compute_all_role_logits(embedding)
+            logits = self._gather_role_logits(all_logits, role_ids)
 
         if available_actions is not None:
             if available_actions.ndim == logits.ndim - 1:
@@ -73,9 +90,11 @@ class RoleActorTrans(nn.Module):
         obs: jnp.ndarray,
         resets: jnp.ndarray,
         role_ids: jnp.ndarray,
+        role_vec: Optional[jnp.ndarray] = None,
     ):
-        """Shared backbone up to post-GRU embedding. Returns (embedding, rnn_states)."""
+        """Shared backbone + optional pre-GRU conditioning + GRU."""
         cfg = self.config
+        role_conditioning = cfg.get("ROLE_CONDITIONING", "heads")
         hidden_sizes = cfg["hidden_sizes"]
         activation_name = cfg.get("activation_func", cfg["transformer"]["active_fn"])
         active_fn = get_active_func(activation_name)
@@ -95,9 +114,12 @@ class RoleActorTrans(nn.Module):
             embedding = active_fn(embedding)
             embedding = nn.LayerNorm(epsilon=1e-5, name=f"base_norm_{idx}")(embedding)
 
-        # ---- Optional pre-GRU residual routes (Exp 3/4) ---------------------
+        # ---- Pre-GRU conditioning --------------------------------------------
         if self.use_pre_gru_routes:
-            embedding = self._add_residual_routes(obs, embedding, role_ids)
+            if role_conditioning == "embedding" and role_vec is not None:
+                embedding = self._add_residual_conditioning(obs, embedding, role_vec)
+            else:
+                embedding = self._add_residual_routes(obs, embedding, role_ids)
 
         # ---- Shared GRU ------------------------------------------------------
         if cfg["use_naive_recurrent_policy"] or cfg["use_recurrent_policy"]:
@@ -107,7 +129,7 @@ class RoleActorTrans(nn.Module):
 
         return embedding, rnn_states
 
-    # -----------------------------------------------------------------------
+# -----------------------------------------------------------------------
     # Pre-GRU residual routes (Exp 3/4)
     # -----------------------------------------------------------------------
 
@@ -117,8 +139,8 @@ class RoleActorTrans(nn.Module):
         shared_embedding: jnp.ndarray,
         role_ids: jnp.ndarray,
     ) -> jnp.ndarray:
-        """Compute per-role routes on raw obs and add residually to embedding."""
-        out_dim = shared_embedding.shape[-1]  # Match base MLP output dim
+        """Compute per-role routes on raw obs and add residually to embedding (V0)."""
+        out_dim = shared_embedding.shape[-1]
         route_hidden = self.config.get("role_route_hidden_dim", 128)
         all_routes = []
         for k in range(self.n_roles):
@@ -138,12 +160,49 @@ class RoleActorTrans(nn.Module):
             route = nn.relu(route)
             all_routes.append(route)
 
-        all_routes = jnp.stack(all_routes, axis=0)  # (n_roles, time, batch, out_dim)
-        route = self._gather_by_role(all_routes, role_ids)  # (time, batch, out_dim)
+        all_routes = jnp.stack(all_routes, axis=0)
+        route = self._gather_by_role(all_routes, role_ids)
         return shared_embedding + route
 
     # -----------------------------------------------------------------------
-    # Post-GRU role heads
+    # Pre-GRU residual conditioning (V1 embedding mode)
+    # -----------------------------------------------------------------------
+
+    def _add_residual_conditioning(
+        self,
+        obs: jnp.ndarray,
+        shared_embedding: jnp.ndarray,
+        role_vec: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """Shared route conditioned on role embedding, added residually (V1).
+
+        Args:
+            obs: raw observations, same shape as base MLP input.
+            shared_embedding: output of shared MLP.
+            role_vec: ``(time, batch, emb_dim)`` or ``(batch, emb_dim)``.
+        """
+        out_dim = shared_embedding.shape[-1]
+        route_hidden = self.config.get("role_route_hidden_dim", 128)
+        route_input = jnp.concatenate([obs, role_vec], axis=-1)
+
+        route = nn.Dense(
+            route_hidden,
+            kernel_init=orthogonal(0.1),
+            bias_init=constant(0.0),
+            name="route_dense_0",
+        )(route_input)
+        route = nn.relu(route)
+        route = nn.Dense(
+            out_dim,
+            kernel_init=orthogonal(0.1),
+            bias_init=constant(0.0),
+            name="route_dense_1",
+        )(route)
+        route = nn.relu(route)
+        return shared_embedding + route
+
+    # -----------------------------------------------------------------------
+    # Post-GRU role heads (V0 heads mode)
     # -----------------------------------------------------------------------
 
     def _compute_all_role_logits(self, embedding: jnp.ndarray) -> jnp.ndarray:
@@ -168,6 +227,42 @@ class RoleActorTrans(nn.Module):
             )(h)
             all_logits.append(logits)
         return jnp.stack(all_logits, axis=0)
+
+    # -----------------------------------------------------------------------
+    # Post-GRU conditioned head (V1 embedding mode)
+    # -----------------------------------------------------------------------
+
+    def _compute_conditioned_logits(
+        self, embedding: jnp.ndarray, role_vec: jnp.ndarray
+    ) -> jnp.ndarray:
+        """Compute logits using role-conditioned shared head (V1).
+
+        Every sample updates the shared head. Only the tiny role embedding rows
+        receive per-role gradient slices (~1/n_roles each).
+
+        Args:
+            embedding: ``(time, batch, hidden_dim)`` or ``(batch, hidden_dim)``.
+            role_vec: ``(time, batch, emb_dim)`` or ``(batch, emb_dim)``.
+        """
+        head_dims = self.config.get("role_head_hidden_dims", [32])
+        head_input = jnp.concatenate([embedding, role_vec], axis=-1)
+
+        h = head_input
+        for idx, dim in enumerate(head_dims):
+            h = nn.Dense(
+                dim,
+                kernel_init=orthogonal(np.sqrt(2.0)),
+                bias_init=constant(0.0),
+                name=f"role_head_dense_{idx}",
+            )(h)
+            h = nn.relu(h)
+        logits = nn.Dense(
+            self.action_dim,
+            kernel_init=orthogonal(self.config.get("gain", 0.01)),
+            bias_init=constant(0.0),
+            name="role_head_out",
+        )(h)
+        return logits
 
     # -----------------------------------------------------------------------
     # Helpers
