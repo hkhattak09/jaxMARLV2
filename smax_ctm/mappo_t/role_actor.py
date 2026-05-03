@@ -373,14 +373,13 @@ class RoleActorTrans(nn.Module):
 
     @staticmethod
     def _get_role_emb(params: Any) -> jnp.ndarray:
-        """Extract role_emb from parameter tree."""
-        p = params.get("params", params)
-        if "role_emb" in p:
-            return p["role_emb"]
-        for v in p.values():
-            if isinstance(v, dict) and "role_emb" in v:
-                return v["role_emb"]
-        raise KeyError("role_emb not found in parameter tree")
+        """Extract role_emb from parameter tree regardless of nesting depth."""
+        from flax.traverse_util import flatten_dict
+        flat = flatten_dict(params)
+        for key, val in flat.items():
+            if key[-1] == "role_emb":
+                return val
+        raise KeyError(f"role_emb not found in parameter tree. Available keys: {list(flat.keys())}")
 
     @staticmethod
     def make_kl_schedule(total_steps: int, initial_weight: float = 0.001) -> Any:
