@@ -1331,6 +1331,7 @@ def make_train(config):
                 "actor_grad_norm": actor_epoch_infos["actor_grad_norm"].mean(),
                 "kl_div": actor_epoch_infos["kl_div"].mean(),
                 "emb_decor": actor_epoch_infos["emb_decor"].mean(),
+                "latent_div": actor_epoch_infos["latent_div"].mean(),
                 "value_loss": critic_epoch_infos["value_loss"].mean(),
                 "q_value_loss": critic_epoch_infos["q_value_loss"].mean(),
                 "eq_value_loss": critic_epoch_infos["eq_value_loss"].mean(),
