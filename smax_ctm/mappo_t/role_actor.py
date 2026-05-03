@@ -380,17 +380,19 @@ class RoleActorTrans(nn.Module):
             )
             all_latents.append(latent)
         
-        # (n_roles, time, batch, hidden_dim)
-        role_latents = jnp.stack(all_latents, axis=0)
+        role_latents = jnp.stack(all_latents, axis=0) # (n_roles, time, batch, hidden_dim)
+        z = role_latents.reshape(self.n_roles, -1, role_latents.shape[-1]) # (n_roles, TB, hidden_dim)
         
-        z = role_latents.reshape(self.n_roles, -1, role_latents.shape[-1])
-        z = z.mean(axis=1)  # Average over time/batch -> (n_roles, hidden_dim)
+        # Normalize per-state
         z = z / (jnp.linalg.norm(z, axis=-1, keepdims=True) + 1e-8)
         
-        sim = z @ z.T  # (n_roles, n_roles)
+        # Compute similarity per state
+        # z: (N, TB, D)
+        # sim: (TB, N, N)
+        sim = jnp.einsum('ntd,mtd->tnm', z, z)
         off_diag = sim - jnp.eye(self.n_roles)
         
-        # We want off-diagonal elements to be 0 (decorrelated)
+        # We want off-diagonal elements to be 0 (decorrelated) across all states
         decorrelation_penalty = jnp.mean(jnp.square(off_diag))
         return decorrelation_penalty
 
