@@ -394,6 +394,7 @@ class RoleActorTrans(nn.Module):
         decorrelation_penalty = jnp.mean(jnp.square(off_diag))
         return decorrelation_penalty
 
+    @nn.compact
     def get_role_latent(
         self,
         rnn_states: jnp.ndarray,
