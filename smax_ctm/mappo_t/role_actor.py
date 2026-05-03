@@ -233,7 +233,7 @@ class RoleActorTrans(nn.Module):
     # -----------------------------------------------------------------------
 
     def _compute_conditioned_logits(
-        self, embedding: jnp.ndarray, role_vec: jnp.ndarray
+        self, embedding: jnp.ndarray, role_vec: jnp.ndarray, return_latent: bool = False
     ) -> jnp.ndarray:
         """Compute logits using role-conditioned shared head (V1).
 
@@ -256,12 +256,28 @@ class RoleActorTrans(nn.Module):
                 name=f"role_head_dense_{idx}",
             )(h)
             h = nn.relu(h)
+            
+        role_latent = h
+
         logits = nn.Dense(
             self.action_dim,
             kernel_init=orthogonal(self.config.get("gain", 0.01)),
             bias_init=constant(0.0),
             name="role_head_out",
-        )(h)
+        )(role_latent)
+        
+        # Tiny role-logit adapter for bootstrapping
+        role_logit_bias = nn.Dense(
+            self.action_dim,
+            kernel_init=orthogonal(0.01),
+            bias_init=constant(0.0),
+            name="role_logit_adapter",
+        )(role_vec)
+
+        logits = logits + 0.1 * role_logit_bias
+
+        if return_latent:
+            return logits, role_latent
         return logits
 
     # -----------------------------------------------------------------------
@@ -321,10 +337,6 @@ class RoleActorTrans(nn.Module):
                 avail = avail[None, :]
 
         # Compute logits for each role via separate forward passes.
-        # Exp 1/2 could reuse the shared embedding, but Flax scope handling
-        # makes single-pass all-logits extraction fragile. The per-role
-        # loop is correct and the overhead is small (KL is computed once
-        # per update, not per rollout step).
         all_logits = []
         for k in range(self.n_roles):
             role_ids_k = jnp.full_like(obs[:, :, 0], k, dtype=jnp.int32)
@@ -343,6 +355,71 @@ class RoleActorTrans(nn.Module):
                 count += 1
 
         return kl_sum / (count + 1e-8)
+
+    def compute_latent_diversity(
+        self,
+        params: Any,
+        rnn_states: jnp.ndarray,
+        obs: jnp.ndarray,
+        resets: jnp.ndarray,
+        avail: Optional[jnp.ndarray],
+    ) -> jnp.ndarray:
+        """Maximizes the pre-logit latent separation across roles via Cosine decorrelation."""
+        if obs.ndim == 2:
+            obs = obs[None, :]
+            resets = resets[None, :]
+            if avail is not None:
+                avail = avail[None, :]
+
+        all_latents = []
+        for k in range(self.n_roles):
+            role_ids_k = jnp.full_like(obs[:, :, 0], k, dtype=jnp.int32)
+            latent = self.apply(
+                params, rnn_states, (obs, resets, avail), role_ids_k,
+                method=self.get_role_latent
+            )
+            all_latents.append(latent)
+        
+        # (n_roles, time, batch, hidden_dim)
+        role_latents = jnp.stack(all_latents, axis=0)
+        
+        z = role_latents.reshape(self.n_roles, -1, role_latents.shape[-1])
+        z = z.mean(axis=1)  # Average over time/batch -> (n_roles, hidden_dim)
+        z = z / (jnp.linalg.norm(z, axis=-1, keepdims=True) + 1e-8)
+        
+        sim = z @ z.T  # (n_roles, n_roles)
+        off_diag = sim - jnp.eye(self.n_roles)
+        
+        # We want off-diagonal elements to be 0 (decorrelated)
+        decorrelation_penalty = jnp.mean(jnp.square(off_diag))
+        return decorrelation_penalty
+
+    def get_role_latent(
+        self,
+        rnn_states: jnp.ndarray,
+        x: Tuple[jnp.ndarray, jnp.ndarray, Optional[jnp.ndarray]],
+        role_ids: jnp.ndarray,
+    ) -> jnp.ndarray:
+        """Helper to compute only the role_latent without standard output packaging."""
+        obs, resets, available_actions = x
+        cfg = self.config
+        role_conditioning = cfg.get("ROLE_CONDITIONING", "heads")
+
+        role_vec = None
+        if role_conditioning == "embedding":
+            emb_dim = cfg.get("ROLE_EMB_DIM", 16)
+            role_emb = self.param("role_emb", orthogonal(), (self.n_roles, emb_dim))
+            role_vec = role_emb[role_ids]
+
+        embedding, rnn_states = self._forward_embedding(
+            rnn_states, obs, resets, role_ids, role_vec
+        )
+
+        if role_conditioning == "embedding":
+            _, role_latent = self._compute_conditioned_logits(embedding, role_vec, return_latent=True)
+            return role_latent
+        else:
+            return embedding
 
     def compute_embedding_decorrelation(self, params: Any) -> jnp.ndarray:
         """Barlow-Twins-style decorrelation loss on role embeddings.

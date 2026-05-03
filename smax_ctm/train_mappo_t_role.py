@@ -275,6 +275,8 @@ def make_train(config):
     kl_initial_weight = config.get("KL_DIVERSITY_WEIGHT", 0.001)
     kl_decay_fraction = config.get("KL_DECAY_FRACTION", 0.3)
     use_kl_diversity = config.get("USE_KL_DIVERSITY", True)
+    use_latent_diversity = config.get("USE_LATENT_DIVERSITY", True)
+    latent_decorr_coef = config.get("LATENT_DECORR_COEF", 0.1)
     use_critic_diversity = config.get("USE_CRITIC_DIVERSITY", False) and use_role_critic
     critic_diversity_coef = config.get("CRITIC_DIVERSITY_COEF", 1e-4)
     emb_decor_coef = config.get("EMB_DECORR_COEF", 0.1)
@@ -560,7 +562,7 @@ def make_train(config):
             "step", "update", "return", "win_rate", "win_rate_std",
             "ep_len", "timeout_rate",
             "value_loss", "entropy", "clip_frac", "approx_kl",
-            "kl_div", "emb_decor", "q_value_loss", "eq_value_loss", "eval_return",
+            "kl_div", "emb_decor", "latent_div", "q_value_loss", "eq_value_loss", "eval_return",
             "actor_grad_norm", "critic_grad_norm",
         ]
         with open(csv_path, "w", newline="") as f:
@@ -961,7 +963,9 @@ def make_train(config):
                     # KL diversity penalty
                     kl_div = 0.0
                     emb_decor = 0.0
+                    latent_div = 0.0
                     role_conditioning = config.get("ROLE_CONDITIONING", "heads")
+                    
                     if use_kl_diversity:
                         kl_div = actor_network.compute_kl_diversity(
                             actor_params,
@@ -972,12 +976,22 @@ def make_train(config):
                         )
                         kl_weight = kl_schedule_fn(update_steps)
                         actor_loss = actor_loss + kl_weight * kl_div
+                        
+                    if use_latent_diversity and role_conditioning == "embedding" and latent_decorr_coef > 0:
+                        latent_div = actor_network.compute_latent_diversity(
+                            actor_params,
+                            ac_init_hstate_mb,
+                            mb_obs,
+                            mb_done,
+                            mb_avail,
+                        )
+                        actor_loss = actor_loss + latent_decorr_coef * latent_div
 
                     if role_conditioning == "embedding" and emb_decor_coef > 0:
                         emb_decor = actor_network.compute_embedding_decorrelation(actor_params)
                         actor_loss = actor_loss + emb_decor_coef * emb_decor
 
-                    return actor_loss, (policy_loss, entropy, approx_kl, clip_frac, mb_active_count, kl_div, emb_decor)
+                    return actor_loss, (policy_loss, entropy, approx_kl, clip_frac, mb_active_count, kl_div, emb_decor, latent_div)
 
                 (actor_loss, actor_aux), actor_grads = jax.value_and_grad(
                     _actor_loss_fn, has_aux=True
@@ -994,6 +1008,7 @@ def make_train(config):
                     "mb_active_count": actor_aux[4],
                     "kl_div": actor_aux[5],
                     "emb_decor": actor_aux[6],
+                    "latent_div": actor_aux[7],
                 }
                 return actor_train_state, actor_info
 
@@ -1369,7 +1384,7 @@ def make_train(config):
             # Print + CSV callback
             def _print_and_csv(
                 r, w, ws, el, tr, s, u,
-                vl, ent, cf, akl, kld, edec, qvl, eqvl, evr, agn, cgn
+                vl, ent, cf, akl, kld, edec, ldiv, qvl, eqvl, evr, agn, cgn
             ):
                 s_int = int(s)
                 if s_int > 0 and s_int % print_interval == 0:
@@ -1378,7 +1393,7 @@ def make_train(config):
                         f"Win: {w:5.2f}+-{ws:5.2f} | Len: {el:5.1f} | "
                         f"TO: {tr:5.2f} | VLoss: {vl:8.4f} | "
                         f"Ent: {ent:6.4f} | Clip: {cf:5.3f} | KL: {akl:6.5f} | "
-                        f"KLDiv: {kld:6.5f} | EmbDec: {edec:6.4f} | "
+                        f"KLDiv: {kld:.2e} | EmbDec: {edec:.2e} | LatentDiv: {ldiv:.2e} | "
                         f"QVL: {qvl:8.4f} | EQVL: {eqvl:8.4f} | "
                         f"Eval: {evr:8.4f} | GradN(A/C): {agn:6.3f}/{cgn:6.3f}"
                     )
@@ -1389,7 +1404,7 @@ def make_train(config):
                             s_int, int(u), float(r), float(w), float(ws),
                             float(el), float(tr),
                             float(vl), float(ent), float(cf), float(akl),
-                            float(kld), float(edec), float(qvl), float(eqvl), float(evr),
+                            float(kld), float(edec), float(ldiv), float(qvl), float(eqvl), float(evr),
                             float(agn), float(cgn),
                         ])
 
@@ -1399,7 +1414,7 @@ def make_train(config):
                 step_count, update_steps,
                 metrics["value_loss"], metrics["entropy"],
                 metrics["clip_frac"], metrics["approx_kl"],
-                metrics["kl_div"], metrics["emb_decor"],
+                metrics["kl_div"], metrics["emb_decor"], metrics["latent_div"],
                 metrics["q_value_loss"], metrics["eq_value_loss"],
                 eval_return,
                 metrics["actor_grad_norm"], metrics["critic_grad_norm"],

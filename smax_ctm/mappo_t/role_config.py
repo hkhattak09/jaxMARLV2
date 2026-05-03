@@ -168,6 +168,10 @@ def get_default_maca_role_config():
         "USE_KL_DIVERSITY": True,
         "KL_DIVERSITY_WEIGHT": 0.01,
         "KL_DECAY_FRACTION": 1.0,
+        
+        # === Latent Diversity (actor) ===
+        "USE_LATENT_DIVERSITY": True,
+        "LATENT_DECORR_COEF": 0.1,
 
         # === Embedding Decorrelation ===
         "EMB_DECORR_COEF": 0.1,
