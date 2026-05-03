@@ -67,7 +67,6 @@ class RoleActorTrans(nn.Module):
 
         return rnn_states, distrax.Categorical(logits=logits)
 
-    @nn.compact
     def _forward_embedding(
         self,
         rnn_states: jnp.ndarray,
@@ -210,20 +209,6 @@ class RoleActorTrans(nn.Module):
     # KL diversity penalty
     # -----------------------------------------------------------------------
 
-    def get_all_logits(
-        self,
-        rnn_states: jnp.ndarray,
-        x: Tuple[jnp.ndarray, jnp.ndarray, Optional[jnp.ndarray]],
-    ):
-        """Return logits for ALL roles in a single forward pass.
-
-        Only valid when use_pre_gru_routes=False (shared embedding).
-        Returns (n_roles, time, batch, action_dim).
-        """
-        obs, resets, _ = x
-        embedding, _ = self._forward_embedding(rnn_states, obs, resets, jnp.zeros_like(obs[:, :, 0], dtype=jnp.int32))
-        return self._compute_all_role_logits(embedding)
-
     def compute_kl_diversity(
         self,
         params: Any,
@@ -240,19 +225,17 @@ class RoleActorTrans(nn.Module):
             if avail is not None:
                 avail = avail[None, :]
 
-        if not self.use_pre_gru_routes:
-            # Exp 1/2: shared embedding — compute all_logits once
-            all_logits = self.apply(
-                params, rnn_states, (obs, resets, avail), method=self.get_all_logits
-            )
-        else:
-            # Exp 3/4: per-role routes — must compute embedding per role
-            all_logits = []
-            for k in range(self.n_roles):
-                role_ids_k = jnp.full_like(obs[:, :, 0], k, dtype=jnp.int32)
-                _, pi = self.apply(params, rnn_states, (obs, resets, avail), role_ids_k)
-                all_logits.append(pi.logits)
-            all_logits = jnp.stack(all_logits, axis=0)
+        # Compute logits for each role via separate forward passes.
+        # Exp 1/2 could reuse the shared embedding, but Flax scope handling
+        # makes single-pass all-logits extraction fragile. The per-role
+        # loop is correct and the overhead is small (KL is computed once
+        # per update, not per rollout step).
+        all_logits = []
+        for k in range(self.n_roles):
+            role_ids_k = jnp.full_like(obs[:, :, 0], k, dtype=jnp.int32)
+            _, pi = self.apply(params, rnn_states, (obs, resets, avail), role_ids_k)
+            all_logits.append(pi.logits)
+        all_logits = jnp.stack(all_logits, axis=0)  # (n_roles, time, batch, action_dim)
 
         kl_sum = 0.0
         count = 0
