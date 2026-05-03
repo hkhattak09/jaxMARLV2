@@ -1576,39 +1576,52 @@ def make_train(config):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--role_experiment", type=int, default=1, choices=[1, 2, 3, 4])
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--total_timesteps", type=int, default=int(1e6))
-    parser.add_argument("--num_envs", type=int, default=20)
-    parser.add_argument("--num_steps", type=int, default=200)
-    parser.add_argument("--map_name", type=str, default="protoss_10_vs_10")
-    parser.add_argument("--save_interval", type=int, default=1000000)
-    parser.add_argument("--eval_num_envs", type=int, default=10)
-    parser.add_argument("--eval_steps", type=int, default=200)
-    parser.add_argument("--n_roles", type=int, default=6)
-    parser.add_argument("--use_kl_diversity", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--role_experiment", type=int, default=None, choices=[1, 2, 3, 4])
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--total_timesteps", type=int, default=None)
+    parser.add_argument("--num_envs", type=int, default=None)
+    parser.add_argument("--num_steps", type=int, default=None)
+    parser.add_argument("--map_name", type=str, default=None)
+    parser.add_argument("--save_interval", type=int, default=None)
+    parser.add_argument("--eval_num_envs", type=int, default=None)
+    parser.add_argument("--eval_steps", type=int, default=None)
+    parser.add_argument("--n_roles", type=int, default=None)
+    parser.add_argument("--use_kl_diversity", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--use_critic_diversity", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--kl_diversity_weight", type=float, default=0.001)
-    parser.add_argument("--critic_diversity_coef", type=float, default=1e-4)
+    parser.add_argument("--kl_diversity_weight", type=float, default=None)
+    parser.add_argument("--critic_diversity_coef", type=float, default=None)
     args = parser.parse_args()
 
     config = get_default_maca_role_config()
-    config["ROLE_EXPERIMENT"] = args.role_experiment
-    config["SEED"] = args.seed
-    config["TOTAL_TIMESTEPS"] = args.total_timesteps
-    config["NUM_ENVS"] = args.num_envs
-    config["NUM_STEPS"] = args.num_steps
-    config["MAP_NAME"] = args.map_name
-    config["SAVE_INTERVAL"] = args.save_interval
-    config["EVAL_NUM_ENVS"] = args.eval_num_envs
-    config["EVAL_STEPS"] = args.eval_steps
+    if args.role_experiment is not None:
+        config["ROLE_EXPERIMENT"] = args.role_experiment
+    if args.seed is not None:
+        config["SEED"] = args.seed
+    if args.total_timesteps is not None:
+        config["TOTAL_TIMESTEPS"] = args.total_timesteps
+    if args.num_envs is not None:
+        config["NUM_ENVS"] = args.num_envs
+    if args.num_steps is not None:
+        config["NUM_STEPS"] = args.num_steps
+    if args.map_name is not None:
+        config["MAP_NAME"] = args.map_name
+    if args.save_interval is not None:
+        config["SAVE_INTERVAL"] = args.save_interval
+    if args.eval_num_envs is not None:
+        config["EVAL_NUM_ENVS"] = args.eval_num_envs
+    if args.eval_steps is not None:
+        config["EVAL_STEPS"] = args.eval_steps
     config["USE_EVAL"] = True
-    config["N_ROLES"] = args.n_roles
-    config["USE_KL_DIVERSITY"] = args.use_kl_diversity
+    if args.n_roles is not None:
+        config["N_ROLES"] = args.n_roles
+    if args.use_kl_diversity is not None:
+        config["USE_KL_DIVERSITY"] = args.use_kl_diversity
     if args.use_critic_diversity is not None:
         config["USE_CRITIC_DIVERSITY"] = args.use_critic_diversity
-    config["KL_DIVERSITY_WEIGHT"] = args.kl_diversity_weight
-    config["CRITIC_DIVERSITY_COEF"] = args.critic_diversity_coef
+    if args.kl_diversity_weight is not None:
+        config["KL_DIVERSITY_WEIGHT"] = args.kl_diversity_weight
+    if args.critic_diversity_coef is not None:
+        config["CRITIC_DIVERSITY_COEF"] = args.critic_diversity_coef
 
     print(f"Starting MACA-Role Experiment {args.role_experiment} on {config['MAP_NAME']}...")
     print(f"Config: NUM_ENVS={config['NUM_ENVS']}, NUM_STEPS={config['NUM_STEPS']}, TOTAL_TIMESTEPS={config['TOTAL_TIMESTEPS']}")
