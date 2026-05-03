@@ -42,8 +42,8 @@ def get_default_maca_role_config():
         # === Environment ===
         "ENV_NAME": "HeuristicEnemySMAX",
         "MAP_NAME": "protoss_10_vs_10",
-        "NUM_ENVS": 20,
-        "NUM_STEPS": 200,
+        "NUM_ENVS": 128,
+        "NUM_STEPS": 100,
         "TOTAL_TIMESTEPS": int(4e7),
         "SAVE_INTERVAL": 1000000,
 
@@ -92,12 +92,12 @@ def get_default_maca_role_config():
         "USE_CRITIC_LR_DECAY": True,
         "CLIP_PARAM": 0.1,
         "SCALE_CLIP_EPS": False,
-        "PPO_EPOCH": 10,
-        "UPDATE_EPOCHS": 10,
-        "ACTOR_NUM_MINI_BATCH": 1,
-        "NUM_MINIBATCHES": 1,
+        "PPO_EPOCH": 15,
+        "UPDATE_EPOCHS": 15,
+        "ACTOR_NUM_MINI_BATCH": 4,
+        "NUM_MINIBATCHES": 4,
         "CRITIC_EPOCH": 10,
-        "CRITIC_NUM_MINI_BATCH": 1,
+        "CRITIC_NUM_MINI_BATCH": 4,
         "DATA_CHUNK_LENGTH": 10,
 
         # === Value Normalization ===
@@ -152,11 +152,11 @@ def get_default_maca_role_config():
 
         # === Actor Role-Specific Dimensions ===
         "role_route_hidden_dim": 128,          # Pre-GRU route intermediate dim (Exp 3/4)
-        "role_head_hidden_dims": [64, 32],     # Post-GRU head MLP layers
+        "role_head_hidden_dims": [32],              # Post-GRU head: Dense(64→32)→ReLU→Dense(32→act_dim)
 
         # === Critic Role-Specific Dimensions ===
-        "role_z_k_dims": [128, 64],            # Per-role z_k projection: Dense(128)→ReLU→Dense(64)
-        "role_v_head_dims": [64, 64],         # V-head MLP layers: Dense(128)→ReLU→Dense(64)→ReLU→Dense(1)
+        "role_z_k_dims": [64, 64],               # Dense(256→64)→ReLU→LN→Dense(64→64): one hidden layer
+        "role_v_head_dims": [32],                 # Dense(64→32)→ReLU→LN→Dense(32→1): one hidden layer
 
         # === KL Diversity (actor) ===
         "USE_KL_DIVERSITY": True,
